@@ -1,6 +1,7 @@
 import { config } from '@genre/config';
 import { html } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
+import Script from "next/script";
 
 /**
  * The single HTML shell. Everything renders through here, including the signed-out
@@ -180,6 +181,11 @@ export const Layout = (props) => (
       {props.vapidKey ? html`<script>window.__VAPID = "${props.vapidKey}";</script>` : null}
       {/* One page needs a script of its own; the rest must not carry it. */}
       {props.script ? <script src={props.script} defer /> : null}
+          <div data-cp-ad="" data-slot="72b60aa3-e9cb-4163-9906-2d6176c77806" data-format="banner_300x250" />
+      <div data-cp-ad="" data-slot="72b60aa3-e9cb-4163-9906-2d6176c77806" data-format="banner_728x90" />
+      <div data-cp-ad="" data-slot="72b60aa3-e9cb-4163-9906-2d6176c77806" data-format="banner_320x50" />
+      <div data-cp-ad="" data-slot="72b60aa3-e9cb-4163-9906-2d6176c77806" data-format="text_link" />
+      <Script src="https://crawlproof.com/ad.js" strategy="afterInteractive" />
     </body>
   </html>
 );
