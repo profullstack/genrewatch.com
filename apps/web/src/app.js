@@ -342,12 +342,21 @@ app.get('/events/:id/playlist.m3u', async (c) => {
   if (!event) return c.notFound();
 
   const own = await ownChannelsForEvent({ userId: user.id, event });
-  if (own.length === 0) return c.redirect(`/events/${event.id}`, 303);
 
-  // The first match, which channelsForTitle has already ranked most-specific
+  /*
+   * Which tier the reader clicked.
+   *
+   * The two lists are different claims -- "this carries your show" and "this
+   * carries the genre" -- and they are indexed separately on the page, so the
+   * link has to say which one it means or ?n=0 hands back the wrong channel.
+   */
+  const list = c.req.query('tier') === 'genre' ? (own.genre ?? []) : (own.matches ?? []);
+  if (list.length === 0) return c.redirect(`/events/${event.id}`, 303);
+
+  // The first entry, which rankChannelsForTitle has already ordered most-specific
   // first, unless the reader asked for a particular one by index.
   const wanted = Number(c.req.query('n') ?? 0);
-  const pick = own[Number.isInteger(wanted) && own[wanted] ? wanted : 0];
+  const pick = list[Number.isInteger(wanted) && list[wanted] ? wanted : 0];
 
   c.header('content-type', 'audio/x-mpegurl; charset=utf-8');
   c.header('content-disposition', `attachment; filename="${event.short_name ?? 'channel'}.m3u"`);
@@ -495,6 +504,51 @@ app.get('/api/subjects/search', async (c) => {
   return c.json({ results: await q.searchSubjects(term) });
 });
 
+/* ---------------------------------------------------------------- profile -- */
+
+/**
+ * The name a person is known by.
+ *
+ * Ported from upstream alongside the columns. Only the naming half exists here so
+ * far, so there is no /u/:handle page yet -- a handle is stored and used to sign
+ * comments, and the profile page arrives with the rest of the social layer.
+ */
+app.post('/api/profile', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const handle = String(body.handle ?? '').trim();
+
+  if (handle && !q.handleAvailableShape(handle)) {
+    return respond(c, {
+      json: { error: 'bad handle' },
+      status: 400,
+      redirectTo: `/settings?profile_error=${encodeURIComponent(
+        'A handle is 3-30 letters, numbers or underscores, and cannot be a reserved word.',
+      )}`,
+    });
+  }
+
+  const result = await q.updateProfile({
+    userId: user.id,
+    handle: handle || null,
+    displayName: String(body.display_name ?? '').trim() || null,
+    bio:
+      String(body.bio ?? '')
+        .trim()
+        .slice(0, 500) || null,
+    profilePublic: body.profile_public === 'on' || body.profile_public === 'true',
+  });
+
+  if (!result.ok) {
+    return respond(c, {
+      json: { error: result.error },
+      status: 409,
+      redirectTo: `/settings?profile_error=${encodeURIComponent(result.error)}`,
+    });
+  }
+  return respond(c, { json: result.user, redirectTo: '/settings?profile=saved' });
+});
+
 /* ------------------------------------------------------------------- prefs -- */
 
 app.post('/api/prefs', async (c) => {
@@ -564,6 +618,7 @@ app.get('/settings', async (c) => {
         prefs={
           prefs ?? {
             offsets_minutes: config.reminders.defaultOffsets,
+            date_offsets_minutes: config.reminders.dateOffsets,
             channels: ['webpush', 'email'],
           }
         }
@@ -571,6 +626,8 @@ app.get('/settings', async (c) => {
         playlist={playlist}
         playlistNotice={playlistNotice}
         playlistError={c.req.query('playlist_error') ?? null}
+        profileNotice={c.req.query('profile') ? 'Saved.' : null}
+        profileError={c.req.query('profile_error') ?? null}
       />,
     ),
   );

@@ -26,8 +26,11 @@ const VERSION = 'v1';
  */
 function key() {
   const secret = config.playlists.secret;
-  if (!secret) throw new Error('PLAYLIST_SECRET is not set');
-  return createHash('sha256').update(secret).digest();
+  if (!secret) throw new Error('no playlist encryption key (PLAYLIST_SECRET / DATABASE_URL)');
+  // Domain-separated, so this key is not the bare hash of a value that may also be
+  // hashed elsewhere for another purpose. Changing this string invalidates every
+  // sealed value, which is the intended behaviour for a key rotation.
+  return createHash('sha256').update(`genrewatch/playlist/v1:${secret}`).digest();
 }
 
 /** @param {string} plaintext @returns {string} `v1.<iv>.<tag>.<ciphertext>`, base64url */

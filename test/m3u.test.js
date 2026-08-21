@@ -3,8 +3,10 @@ import {
   channelMatchesTitle,
   channelsForTitle,
   groupsOf,
+  isPlaceholder,
   oneChannelM3u,
   parseM3u,
+  rankChannelsForTitle,
 } from '../packages/catalog/src/m3u.js';
 
 describe('parsing a provider playlist', () => {
@@ -137,5 +139,79 @@ describe('handing one channel back', () => {
   test('a newline in a title cannot break the file format', () => {
     const out = oneChannelM3u({ title: 'Bad\nTitle', url: 'http://x.test/1.ts' });
     expect(out.split('\n').length).toBe(4);
+  });
+});
+
+describe('tiered matching, ported from the sports matcher', () => {
+  const ch = (...titles) => titles.map((t, i) => ({ title: t, url: `u${i}` }));
+
+  /*
+   * TOO STRICT was one of the two faults upstream found. Providers abbreviate:
+   * a list writes "Severance S02" where the catalogue stores "Severance". The
+   * whole-name test still passes there, but a partial like "Foundation Ep 3"
+   * against "Foundation" must not be thrown away.
+   */
+  test('a full-name match is certain', () => {
+    const r = rankChannelsForTitle(ch('Severance S02 FHD'), { title: 'Severance' });
+    expect(r.certain.map((c) => c.title)).toEqual(['Severance S02 FHD']);
+  });
+
+  test('a partial match is likely, not certain', () => {
+    const r = rankChannelsForTitle(ch('Dune HD'), { title: 'Dune Part Three' });
+    expect(r.certain).toEqual([]);
+    expect(r.likely.map((c) => c.title)).toEqual(['Dune HD']);
+  });
+
+  /*
+   * And the guard that makes loose matching safe. "Dune" appears in "Dune Part
+   * Two", so a partial match would happily offer the wrong film to someone
+   * waiting for Part Three. A sequel word the subject does not have refuses it.
+   */
+  test('a different instalment is refused rather than offered', () => {
+    const r = rankChannelsForTitle(ch('Dune Part Two 4K'), { title: 'Dune Part Three' });
+    expect(r.certain).toEqual([]);
+    expect(r.likely).toEqual([]);
+  });
+
+  test('but the right instalment still matches', () => {
+    const r = rankChannelsForTitle(ch('Dune Part Three 4K'), { title: 'Dune Part Three' });
+    expect(r.certain.length).toBe(1);
+  });
+
+  /*
+   * A 24/7 genre channel carries whatever is on. That is worth showing and is a
+   * DIFFERENT claim from "your show is on this", so it gets its own tier.
+   */
+  test('a genre channel is its own tier, not a match', () => {
+    const r = rankChannelsForTitle(ch('Horror HD'), {
+      title: 'The Thing',
+      genreName: 'Horror',
+    });
+    expect(r.certain).toEqual([]);
+    expect(r.genre.map((c) => c.title)).toEqual(['Horror HD']);
+    // And the flat helper excludes it, because it is not an answer to "where is
+    // my show on".
+    expect(channelsForTitle(ch('Horror HD'), { title: 'The Thing', genreName: 'Horror' })).toEqual(
+      [],
+    );
+  });
+
+  /*
+   * Providers park hundreds of unassigned slots. They are short, so they win a
+   * shortest-title tiebreak, and every one is dead air.
+   */
+  test('parked slots are dropped rather than ranked', () => {
+    expect(isPlaceholder('MOVIES 03:')).toBe(true);
+    expect(isPlaceholder('HORROR: BLANK')).toBe(true);
+    expect(isPlaceholder('EN: TBD')).toBe(true);
+    expect(isPlaceholder('Severance')).toBe(false);
+
+    const r = rankChannelsForTitle(ch('MOVIES 03:', 'Severance S02'), { title: 'Severance' });
+    expect(r.certain.map((c) => c.title)).toEqual(['Severance S02']);
+  });
+
+  test('a name made only of stop words still matches on the whole phrase', () => {
+    const r = rankChannelsForTitle(ch('The Show HD'), { title: 'The Show' });
+    expect(r.certain.length).toBe(1);
   });
 });

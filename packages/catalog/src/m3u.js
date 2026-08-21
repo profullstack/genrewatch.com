@@ -134,50 +134,232 @@ export function groupsOf(channels) {
 }
 
 /**
+ * Words that carry no identity, so they can never be the reason two things match.
+ *
+ * Two groups. Broadcast furniture ("hd", "live", "channel") appears in thousands of
+ * provider titles; media furniture ("season", "episode", "movie") appears in most
+ * of the rest. Ported from the sports original, with its competition words
+ * ("grand", "prix", "round") swapped for the ones this catalogue actually collides
+ * on.
+ */
+const STOP = new Set([
+  'hd',
+  'fhd',
+  'sd',
+  'uhd',
+  '4k',
+  'hevc',
+  'h265',
+  'h264',
+  'tv',
+  'live',
+  'channel',
+  'feed',
+  'main',
+  'network',
+  'vip',
+  'raw',
+  'dub',
+  'sub',
+  'multi',
+  'new',
+  'show',
+  'series',
+  'movie',
+  'movies',
+  'film',
+  'season',
+  'episode',
+  'ep',
+  'part',
+  'vol',
+  'volume',
+  'and',
+  'the',
+  'for',
+  'with',
+  'from',
+]);
+
+/**
+ * An unassigned slot, not a channel.
+ *
+ * Providers park spare capacity as "MOVIES 03:" with nothing after the colon, or
+ * name it outright: BLANK, Temp, Test. There are hundreds, they rank well on a
+ * shortest-title tiebreak, and every one of them is dead air.
+ */
+export function isPlaceholder(title) {
+  const t = String(title ?? '').trim();
+  if (!t) return true;
+  // Everything after the last colon is the actual name on these providers.
+  const tail = t.includes(':') ? t.slice(t.lastIndexOf(':') + 1).trim() : t;
+  if (!tail) return true;
+  return /^(blank|temp|tempo|test|tba|tbd|n\/?a|reserved|placeholder)\b/i.test(tail);
+}
+
+/** Significant words of a name, normalised. */
+function tokens(s) {
+  return normaliseTitle(s)
+    .split(' ')
+    .filter((t) => t.length >= 3 && !STOP.has(t));
+}
+
+/**
+ * Words whose whole job is telling one instalment from another.
+ *
+ * This is the genre catalogue's version of the sports matcher's club
+ * discriminators, and it exists for the same reason: a partial match on a shared
+ * word is how you get the wrong thing. "Dune" matches "Dune: Part Three" quite
+ * happily, and a reader who opens it expecting Part Two has been actively
+ * misled. So if a title carries one of these and the subject does not, the match
+ * is refused.
+ *
+ * Like the original it is a heuristic and errs towards refusing: a miss costs a
+ * channel not offered, a false match costs someone opening the wrong thing.
+ */
+const SEQUELS = new Set([
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'ii',
+  'iii',
+  'iv',
+  'vi',
+  'vii',
+  'returns',
+  'reloaded',
+  'redux',
+  'reborn',
+  'origins',
+  'legacy',
+  'begins',
+  'awakens',
+  'rises',
+  'forever',
+  'again',
+  'next',
+  'final',
+]);
+
+/**
  * Does this channel appear to be carrying this event?
  *
- * The sports version required BOTH team names, which made the separator between
- * them irrelevant and was the whole trick. A genre event has one subject, so that
- * trick is gone and the risk is the opposite one: "Dune" would match "Dunedin
- * News". So matching is on a run of consecutive words rather than a substring,
- * and a short title has to match the channel almost exactly.
+ * The sports version could require BOTH team names, which made the separator
+ * between them irrelevant and rejected anything mentioning only one club. A genre
+ * event has ONE name, so that safeguard does not exist here and the risk runs the
+ * other way -- towards matching too much.
+ *
+ * So a subject matches only when every significant word of its name is present.
+ * Partial matches are handled a tier down, where the sequel guard applies.
  *
  * @param {string} channelTitle
- * @param {string} eventTitle the SUBJECT's name -- a show or film, not the
+ * @param {string} eventTitle the SUBJECT's name -- a show or a film, never the
  *   episode line, which carries numbering no provider uses
  */
 export function channelMatchesTitle(channelTitle, eventTitle) {
   const hay = normaliseTitle(channelTitle);
   const needle = normaliseTitle(eventTitle);
   if (!hay || !needle) return false;
+  if (isPlaceholder(channelTitle)) return false;
 
-  // Two characters of overlap is noise. Four is the shortest real title that is
-  // worth matching on ("Dune"), and below that we require the whole channel.
+  // Two characters of overlap is noise. Below four we require the whole channel,
+  // or "Up" matches "UP Network HD".
   if (needle.length < 4) return hay === needle;
 
-  const words = needle.split(' ');
-  if (words.length === 1) {
-    // Single word: must appear as a whole word, not as a prefix of another.
-    return ` ${hay} `.includes(` ${needle} `);
+  const words = new Set(hay.split(' '));
+  const own = tokens(eventTitle);
+
+  // A name made entirely of stop words ("The Show") has no significant words to
+  // match on, so fall back to whole-phrase containment at a word boundary.
+  if (own.length === 0) return ` ${hay} `.includes(` ${needle} `);
+
+  return own.every((t) => words.has(t));
+}
+
+/** Did the title name a DIFFERENT instalment than the one we are looking for? */
+function contradicts(words, name, matched) {
+  const own = tokens(name);
+  // A complete match cannot be contradicted -- every word of the name is there.
+  if (matched.length >= own.length) return false;
+  for (const w of words) {
+    if (SEQUELS.has(w) && !own.includes(w)) return true;
   }
-  return ` ${hay} `.includes(` ${needle} `);
+  return false;
 }
 
 /**
- * Every channel in a list that looks like this event, best first.
+ * Rank a reader's list against one event, in tiers, best first.
  *
- * "Best" is the shortest title among equals, which is a proxy for the most
- * specific entry: a provider that carries something on several numbered slots
- * tends to give the primary one the plainest name, and the long ones are regional
- * alternates and replays with dates baked into the title.
+ * The tiers are the point and they are three different claims:
+ *
+ *   - `certain`  every significant word of the subject is in the title.
+ *   - `likely`   some of them are, and nothing contradicts it. Providers
+ *                abbreviate -- a list writes "Severance S02" where we store
+ *                "Severance" -- so requiring the whole name misses real matches.
+ *   - `genre`    the channel is for the genre or category rather than this
+ *                event. A 24/7 "Horror HD" channel carries whatever horror is on,
+ *                which is worth showing and worth labelling honestly rather than
+ *                presenting as "your show is on this".
+ *
+ * @param {Array<{title:string,url:string}>} channels
+ */
+export function rankChannelsForTitle(channels, { title, genreName, categoryName } = {}) {
+  const certain = [];
+  const likely = [];
+  const genre = [];
+
+  const genreTokens = new Set([...tokens(genreName ?? ''), ...tokens(categoryName ?? '')]);
+
+  for (const c of channels ?? []) {
+    const norm = normaliseTitle(c.title);
+    if (!norm) continue;
+    // Dropped rather than ranked: a parked slot wins a shortest-title tiebreak and
+    // is dead air.
+    if (isPlaceholder(c.title)) continue;
+
+    const words = new Set(norm.split(' '));
+
+    if (title) {
+      if (channelMatchesTitle(c.title, title)) {
+        certain.push({ ...c, score: 100 + tokens(title).length });
+        continue;
+      }
+      const found = tokens(title).filter((t) => words.has(t));
+      if (found.length && !contradicts(words, title, found)) {
+        likely.push({ ...c, score: found.length });
+        continue;
+      }
+    }
+
+    if (genreTokens.size && [...genreTokens].some((t) => words.has(t))) {
+      genre.push({ ...c, score: 1 });
+    }
+  }
+
+  // Score first, then the shorter title: a provider carrying one thing on several
+  // slots gives the primary the plainest name, and the long ones are regional
+  // alternates and replays with a date baked in.
+  const rank = (arr) =>
+    arr
+      .sort((x, y) => y.score - x.score || x.title.length - y.title.length)
+      .map(({ score, ...c }) => c);
+
+  return { certain: rank(certain), likely: rank(likely), genre: rank(genre) };
+}
+
+/**
+ * Flat list of everything that looks like this event, best first.
+ *
+ * Genre-level channels are excluded here: this is the "your thing is on these"
+ * answer, and a 24/7 genre channel is a different claim.
  *
  * @param {Array<{title: string, url: string}>} channels
- * @param {{ title: string }} event
  */
-export function channelsForTitle(channels, { title }) {
-  return (channels ?? [])
-    .filter((c) => channelMatchesTitle(c.title, title))
-    .sort((a, b) => a.title.length - b.title.length);
+export function channelsForTitle(channels, fixture) {
+  const { certain, likely } = rankChannelsForTitle(channels, fixture);
+  return [...certain, ...likely];
 }
 
 /**

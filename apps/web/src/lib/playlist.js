@@ -1,5 +1,5 @@
 import { open, seal } from '@genre/auth';
-import { channelsForTitle, MAX_CHANNELS, normaliseTitle, parseM3u } from '@genre/catalog';
+import { MAX_CHANNELS, normaliseTitle, parseM3u, rankChannelsForTitle } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 
@@ -101,17 +101,46 @@ export async function refreshPlaylist(userId) {
  * URLs, so the caller must already have established that the requester owns them.
  */
 export async function ownChannelsForEvent({ userId, event }) {
-  if (!config.playlists.enabled || !userId) return [];
-  const rows = await q.playlistChannels(userId);
-  if (rows.length === 0) return [];
+  const none = { hasList: false, channelCount: 0, matches: [], genre: [] };
+  if (!config.playlists.enabled || !userId) return none;
 
-  const matches = channelsForTitle(
+  const rows = await q.playlistChannels(userId);
+  if (rows.length === 0) return none;
+
+  const ranked = rankChannelsForTitle(
     rows.map((r) => ({ title: r.title, url: r.stream_url })),
-    { title: event.subject_name },
+    {
+      // The SUBJECT's name, never the event title -- that carries season and
+      // episode numbering no provider writes into a channel name.
+      title: event.subject_name,
+      // Carried so a 24/7 genre channel has something to match on when nothing
+      // matches the thing itself.
+      genreName: event.genre_name,
+      categoryName: event.category,
+    },
   );
 
-  return matches
-    .map((m) => ({ title: m.title, url: open(m.url) }))
-    .filter((m) => m.url)
-    .slice(0, 10);
+  const unseal = (list) =>
+    list
+      .map((m) => ({ title: m.title, url: open(m.url) }))
+      .filter((m) => m.url)
+      .slice(0, 10);
+
+  /*
+   * The count comes back even when nothing matched, and that is the point.
+   *
+   * Showing nothing at all is indistinguishable from the feature being broken --
+   * which is exactly how it read when a list was added and nothing ever lit up.
+   * "None of your 7,059 channels look like they have this" is an answer; silence
+   * is not.
+   */
+  return {
+    hasList: true,
+    channelCount: rows.length,
+    matches: unseal([...ranked.certain, ...ranked.likely]),
+    // Channels for the GENRE rather than this event -- a 24/7 "Horror HD" carries
+    // whatever horror is on. Shown separately so the page never claims more than
+    // it knows.
+    genre: unseal(ranked.genre),
+  };
 }

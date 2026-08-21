@@ -121,6 +121,87 @@ export async function touchPasskey(credentialId, counter) {
   `;
 }
 
+/* ------------------------------------------------------ profiles & people -- */
+
+/*
+ * The naming half of tipoffwatch's 0016_profiles_and_messages, ported so that
+ * comments stop being signed with a fragment of the author's email address.
+ * Following people, blocking and direct messages are NOT ported yet -- the shapes
+ * here match upstream exactly so the rest can land on them rather than colliding
+ * with a parallel invention.
+ */
+
+/** Handles are the profile URL, so the shape is constrained rather than trusted. */
+export const HANDLE_RE = /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])$/i;
+
+/**
+ * Names we refuse to hand out, because a profile at one of these would shadow a
+ * real page or impersonate the site. Checked here rather than in the route so it
+ * cannot be bypassed by a second caller later.
+ *
+ * The list is this site's routes, not upstream's -- genres and subjects where it
+ * has leagues and teams.
+ */
+const RESERVED_HANDLES = new Set([
+  'about',
+  'admin',
+  'api',
+  'calendar',
+  'categories',
+  'events',
+  'feeds',
+  'following',
+  'genres',
+  'genrewatch',
+  'health',
+  'healthz',
+  'help',
+  'login',
+  'logout',
+  'me',
+  'messages',
+  'my',
+  'settings',
+  'signup',
+  'sitemap',
+  'sports',
+  'staff',
+  'subjects',
+  'support',
+  'u',
+  'watch',
+]);
+
+export const handleAvailableShape = (h) =>
+  HANDLE_RE.test(h ?? '') && !RESERVED_HANDLES.has(String(h).toLowerCase());
+
+/**
+ * Set or change the name a person is known by.
+ *
+ * The unique index is the real guard -- two people claiming the same handle in the
+ * same instant is a race no read-then-write can close -- so a conflict is caught
+ * and reported rather than pre-checked.
+ */
+export async function updateProfile({ userId, handle, displayName, bio, profilePublic }) {
+  try {
+    const [row] = await sql`
+      update users set
+        handle = ${handle ?? null},
+        display_name = ${displayName ?? null},
+        bio = ${bio ?? null},
+        profile_public = ${profilePublic}
+      where id = ${userId}
+      returning id, handle, display_name, bio, profile_public
+    `;
+    return { ok: true, user: row };
+  } catch (err) {
+    if (String(err?.message ?? '').includes('users_handle_key')) {
+      return { ok: false, error: 'That handle is taken.' };
+    }
+    throw err;
+  }
+}
+
 /* -------------------------------------------------------- catalogue writes -- */
 
 /**
@@ -518,7 +599,15 @@ export async function scheduleForDay({ day, category = null, limit = 300, viewer
 export async function getEvent(eventId) {
   const [row] = await sql`
     select ${EVENT_COLUMNS}, e.provider, e.subject_id, s.url as subject_url,
-           s.description as subject_description
+           s.description as subject_description,
+           -- One genre name, for matching a reader's own 24/7 genre channels.
+           -- The first alphabetically rather than "the" genre: there is no primary
+           -- one, and picking arbitrarily but STABLY beats picking differently on
+           -- every read.
+           (select g.name from event_genres eg
+              join genres g on g.id = eg.genre_id
+             where eg.event_id = e.id
+             order by g.name limit 1) as genre_name
     from events e
     join subjects s on s.id = e.subject_id
     where e.id = ${eventId}
@@ -938,7 +1027,8 @@ export async function publicEvents({
 
 export async function commentsForEvent(eventId, { limit = 200 } = {}) {
   return sql`
-    select c.id, c.body, c.created_at, u.email
+    select c.id, c.body, c.created_at, c.user_id,
+           u.email, u.handle, u.display_name, u.profile_public
     from comments c join users u on u.id = c.user_id
     where c.event_id = ${eventId} and c.deleted_at is null
     order by c.created_at

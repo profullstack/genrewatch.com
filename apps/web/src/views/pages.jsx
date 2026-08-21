@@ -11,6 +11,20 @@ import {
 import { Layout } from './Layout.jsx';
 
 /**
+ * What to sign a comment with.
+ *
+ * Order matters and is the whole point: a chosen display name, then the handle,
+ * and only then the local part of an email address. That last one used to be the
+ * ONLY option, so every public comment was signed with a fragment of the author's
+ * address -- something they never chose to publish, on a page anyone can read
+ * without an account. It survives as a fallback for accounts that have not picked
+ * a name, and nothing beyond the local part is ever rendered.
+ */
+function commenterName(c) {
+  return c.display_name || (c.handle ? `@${c.handle}` : String(c.email ?? '?').split('@')[0]);
+}
+
+/**
  * What each category is called, and what it actually covers.
  *
  * In one place because the words appear on the nav, the category page, the feeds
@@ -328,27 +342,67 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
 
       {/*
         A reader's own channels, matched against their own list.
+
         Nothing here is shared, pooled or relayed: these URLs came from this
         account and go back only to this account. The page is deliberately not
         cached in Redis for exactly this reason.
+
+        The empty state is not decoration. Rendering nothing when a list is present
+        but nothing matched is indistinguishable from the feature being broken --
+        which is how it read before the count was carried back.
       */}
-      {ownChannels && ownChannels.length > 0 ? (
+      {ownChannels?.hasList ? (
         <section>
           <h2>In your channel list</h2>
-          <p class="muted small">
-            From the playlist you added. Opening one hands a file to your own player — nothing is
-            streamed through GenreWatch.
-          </p>
-          <ul class="channels">
-            {ownChannels.map((ch, i) => (
-              <li>
-                <span>{ch.title}</span>
-                <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?n=${i}`}>
-                  Open
-                </a>
-              </li>
-            ))}
-          </ul>
+          {ownChannels.matches.length > 0 ? (
+            <>
+              <p class="muted small">
+                From the playlist you added. Opening one hands a file to your own player — nothing
+                is streamed through GenreWatch.
+              </p>
+              <ul class="channels">
+                {ownChannels.matches.map((ch, i) => (
+                  <li>
+                    <span>{ch.title}</span>
+                    <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?n=${i}`}>
+                      Open
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p class="empty">
+              None of your {ownChannels.channelCount.toLocaleString('en-US')} channels look like
+              they carry this. Provider names vary a lot, so it may still be in there under a name
+              we did not recognise.
+            </p>
+          )}
+
+          {/* A different claim, worded as one: a 24/7 genre channel carries
+              whatever is on, which is not the same as having this. */}
+          {ownChannels.genre?.length > 0 ? (
+            <>
+              <h3>Channels for this genre</h3>
+              <p class="muted small">
+                These carry the genre rather than this specific thing, so they may or may not be
+                showing it.
+              </p>
+              <ul class="channels">
+                {ownChannels.genre.map((ch, i) => (
+                  <li>
+                    <span>{ch.title}</span>
+                    <a
+                      class="ghost small-btn"
+                      href={`/events/${event.id}/playlist.m3u?tier=genre&n=${i}`}
+                    >
+                      Open
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
         </section>
       ) : null}
 
@@ -360,7 +414,11 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
           <ul class="comments">
             {comments.map((c) => (
               <li>
-                <span class="who">{c.email.split('@')[0]}</span>
+                {/* A chosen name where there is one. Signing a public comment with
+                    the local part of an address was publishing something nobody
+                    chose to publish; a display name or handle replaces it the
+                    moment one is set. */}
+                <span class="who">{commenterName(c)}</span>
                 <LocalTime at={c.created_at} />
                 <p>{c.body}</p>
               </li>
@@ -638,7 +696,16 @@ const COMMON_ZONES = [
   'UTC',
 ];
 
-export const Settings = ({ user, prefs, passkeys, playlist, playlistNotice, playlistError }) => (
+export const Settings = ({
+  user,
+  prefs,
+  passkeys,
+  playlist,
+  playlistNotice,
+  playlistError,
+  profileNotice,
+  profileError,
+}) => (
   <Layout title="Settings" user={user}>
     <h1>Settings</h1>
 
@@ -709,6 +776,51 @@ export const Settings = ({ user, prefs, passkeys, playlist, playlistNotice, play
         The address is stored encrypted because it usually contains your username and password. Only
         you ever see it, and removing the list deletes it.
       </p>
+    </section>
+
+    {/* The name a comment is signed with. Before this there was none, so a public
+        comment carried the local part of the author's email address -- something
+        they never chose to publish. */}
+    <section>
+      <h2>Your name</h2>
+      <p class="muted small">
+        What your comments are signed with. Without one they fall back to part of your email
+        address, which is not something you chose to publish.
+      </p>
+      {profileError ? <p class="feedback error">{profileError}</p> : null}
+      {profileNotice ? <p class="feedback ok">{profileNotice}</p> : null}
+      <form method="post" action="/api/profile">
+        <label class="field">
+          <span>Display name</span>
+          <input
+            type="text"
+            name="display_name"
+            maxlength="60"
+            value={user.display_name ?? ''}
+            placeholder="How you want to be known"
+            autocomplete="nickname"
+          />
+        </label>
+        <label class="field">
+          <span>Handle (optional)</span>
+          <input
+            type="text"
+            name="handle"
+            maxlength="30"
+            value={user.handle ?? ''}
+            placeholder="letters, numbers, underscores"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label class="check">
+          <input type="checkbox" name="profile_public" checked={user.profile_public !== false} />
+          Let others see a profile page for me
+        </label>
+        <button class="cta" type="submit">
+          Save name
+        </button>
+      </form>
     </section>
 
     <section>
