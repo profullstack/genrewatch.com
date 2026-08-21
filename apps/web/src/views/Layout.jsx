@@ -18,7 +18,7 @@ export const Layout = (props) => (
       <meta
         name="description"
         content={
-          props.description ?? 'Follow any team in the world and get told before they play. Free.'
+          props.description ?? 'Follow a genre or a name and get told before it drops. Free.'
         }
       />
       {/* Matches the stylesheet's ground so browser chrome and the PWA splash do
@@ -46,23 +46,23 @@ export const Layout = (props) => (
       <meta name="msapplication-TileImage" content="/icons/apple-touch-icon-144x144.png" />
 
       {/* Autodiscovery: a reader pointed at any page finds the feed without being
-          told where it is. props.feedUrl narrows it to the league or team in view. */}
+          told where it is. props.feedUrl narrows it to the genre or name in view. */}
       <link
         rel="alternate"
         type="application/rss+xml"
-        title="GenreWatch — every sport"
+        title="GenreWatch — everything"
         href="/feeds/all.xml"
       />
       {props.feedUrl ? (
         <link
           rel="alternate"
           type="application/rss+xml"
-          title={props.feedTitle ?? 'Fixtures'}
+          title={props.feedTitle ?? 'Upcoming'}
           href={props.feedUrl}
         />
       ) : null}
 
-      <link rel="stylesheet" href={assetUrl("styles.css")} />
+      <link rel="stylesheet" href={assetUrl('styles.css')} />
       {props.canonical ? (
         <link rel="canonical" href={`${config.siteUrl}${props.canonical}`} />
       ) : null}
@@ -108,8 +108,9 @@ export const Layout = (props) => (
           />
         </a>
         <nav>
-          <a href="/sports">Sports</a>
-          {props.user ? <a href="/following">My games</a> : null}
+          <a href="/genres">Genres</a>
+          <a href="/feeds">Feeds</a>
+          {props.user ? <a href="/following">My calendar</a> : null}
           {props.user ? (
             <a href="/settings">Settings</a>
           ) : (
@@ -142,8 +143,8 @@ export const Layout = (props) => (
 
       {/* Registers the service worker and wires the push opt-in. Everything on the
           site works without this file -- it only adds notifications. */}
-      <script src={assetUrl("vendor-webauthn.js")} defer />
-      <script src={assetUrl("app.js")} defer />
+      <script src={assetUrl('vendor-webauthn.js')} defer />
+      <script src={assetUrl('app.js')} defer />
       {props.vapidKey ? html`<script>window.__VAPID = "${props.vapidKey}";</script>` : null}
       {/* One page needs a script of its own; the rest must not carry it. */}
       {props.script ? <script src={props.script} defer /> : null}

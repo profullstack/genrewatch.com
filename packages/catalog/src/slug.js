@@ -10,22 +10,54 @@
 
 /** Latin-ish transliteration for the accents that actually show up in titles. */
 const FOLD = {
-  à: 'a', á: 'a', â: 'a', ã: 'a', ä: 'a', å: 'a', ā: 'a',
-  è: 'e', é: 'e', ê: 'e', ë: 'e', ē: 'e',
-  ì: 'i', í: 'i', î: 'i', ï: 'i', ī: 'i',
-  ò: 'o', ó: 'o', ô: 'o', õ: 'o', ö: 'o', ø: 'o', ō: 'o',
-  ù: 'u', ú: 'u', û: 'u', ü: 'u', ū: 'u',
-  ñ: 'n', ç: 'c', ß: 'ss', æ: 'ae', œ: 'oe', ð: 'd', þ: 'th',
+  à: 'a',
+  á: 'a',
+  â: 'a',
+  ã: 'a',
+  ä: 'a',
+  å: 'a',
+  ā: 'a',
+  è: 'e',
+  é: 'e',
+  ê: 'e',
+  ë: 'e',
+  ē: 'e',
+  ì: 'i',
+  í: 'i',
+  î: 'i',
+  ï: 'i',
+  ī: 'i',
+  ò: 'o',
+  ó: 'o',
+  ô: 'o',
+  õ: 'o',
+  ö: 'o',
+  ø: 'o',
+  ō: 'o',
+  ù: 'u',
+  ú: 'u',
+  û: 'u',
+  ü: 'u',
+  ū: 'u',
+  ñ: 'n',
+  ç: 'c',
+  ß: 'ss',
+  æ: 'ae',
+  œ: 'oe',
+  ð: 'd',
+  þ: 'th',
 };
 
 /** @param {string} s */
 function fold(s) {
-  return String(s ?? '')
-    .toLowerCase()
-    .replace(/[àáâãäåāèéêëēìíîïīòóôõöøōùúûüūñçßæœðþ]/g, (c) => FOLD[c] ?? c)
-    // Strip combining marks left by anything the table above missed.
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '');
+  return (
+    String(s ?? '')
+      .toLowerCase()
+      .replace(/[àáâãäåāèéêëēìíîïīòóôõöøōùúûüūñçßæœðþ]/g, (c) => FOLD[c] ?? c)
+      // Strip combining marks left by anything the table above missed.
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+  );
 }
 
 /**
@@ -61,13 +93,15 @@ export function slugify(text, discriminator = '') {
  * because it is the only signal left.
  */
 export function normaliseTitle(text) {
-  return fold(text)
-    // Bracketed suffixes are almost always provider furniture: [4K], (2026), (HD).
-    .replace(/[[(][^\])]*[\])]/g, ' ')
-    .replace(/\b(4k|uhd|fhd|hd|sd|hevc|h265|h264|multi|vip|raw|dub|sub)\b/g, ' ')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .replace(/\s+/g, ' ');
+  return (
+    fold(text)
+      // Bracketed suffixes are almost always provider furniture: [4K], (2026), (HD).
+      .replace(/[[(][^\])]*[\])]/g, ' ')
+      .replace(/\b(4k|uhd|fhd|hd|sd|hevc|h265|h264|multi|vip|raw|dub|sub)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ')
+  );
 }
 
 /**
@@ -79,7 +113,11 @@ export function normaliseTitle(text) {
  */
 export function keyFor(...parts) {
   return parts
-    .map((p) => fold(p).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''))
+    .map((p) =>
+      fold(p)
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, ''),
+    )
     .filter(Boolean)
     .join(':');
 }

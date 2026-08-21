@@ -38,28 +38,40 @@ describe('bullmq job ids', () => {
 });
 
 describe('sync job ids', () => {
-  test('a backfill id is not derived from state the backfill itself resets', async () => {
+  test('the seed id is bucketed by minute, not by anything the work resets', async () => {
     const src = await readFile(
       new URL('../packages/queue/src/index.js', import.meta.url).pathname,
       'utf8',
     );
 
-    // The regression, twice over: an hour bucket collided with an earlier routine
-    // sync, then a count-derived id collided with the previous backfill because the
-    // counts reset to the same numbers. Both times BullMQ matched a completed job
-    // and the work silently never ran while the queue reported success.
+    /*
+     * The regression, twice over in the sibling repo: an hour bucket collided with
+     * an earlier routine sync, then a count-derived id collided with the previous
+     * backfill because the counts reset to the same numbers. Both times BullMQ
+     * matched a completed job and the work silently never ran while the queue
+     * reported success.
+     *
+     * A minute bucket still collapses a boot storm across instances, which is all
+     * the deduplication was ever for, and can never block a later pass.
+     */
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on source text
-    expect(src).toContain('backfill-${minuteStamp()}');
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on source text
-    expect(src).not.toContain('u${unnamed}-r${rosterless}');
+    expect(src).toContain('seed-${minuteStamp()}');
+    expect(src).not.toContain('hourStamp()');
   });
 
-  test('the routine sweep keeps an hour bucket, which is genuinely periodic', async () => {
+  test('minuteStamp cannot emit a colon', async () => {
     const src = await readFile(
       new URL('../packages/queue/src/index.js', import.meta.url).pathname,
       'utf8',
     );
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on source text
-    expect(src).toContain('seed-all-${hourStamp()}');
+    // toISOString() is full of colons and the id must not be; the replace is the
+    // only thing standing between this and a runtime crash on every boot.
+    const line = src.split('\n').find((l) => l.includes('const minuteStamp'));
+    expect(line).toBeDefined();
+    expect(line).toContain('replace(');
+
+    // And prove it on the real function rather than only on its source text.
+    const minuteStamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    expect(minuteStamp()).not.toContain(':');
   });
 });

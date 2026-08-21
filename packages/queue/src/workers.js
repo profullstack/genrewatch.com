@@ -1,7 +1,7 @@
+import { syncAll } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendEmail, sendPush } from '@genre/notify';
-import { syncAll, syncCatalogue, syncLiveScores, syncNear, syncPlays } from '@genre/catalog';
 import { Worker } from 'bullmq';
 import { connection, QUEUES, queues } from './index.js';
 
@@ -12,36 +12,49 @@ const log = (...a) => console.log('[worker]', ...a);
 /**
  * Every 30 seconds: which events just crossed a reminder threshold?
  *
+ * Run TWICE, once per reminder class. An event with a real clock time is measured
+ * against offsets_minutes (60, 1); one that only has a date is measured against
+ * date_offsets_minutes (1440, 0). Scanning them together with one offset list is
+ * the bug this split exists to prevent -- it would fire the "starts in 1 minute"
+ * reminder for every album and film at 11:59 UTC, sixty seconds before a noon
+ * anchor that nobody chose and that means nothing to the reader.
+ *
  * One job is enqueued per (event, offset) with a deterministic id, so a scan that
- * runs twice -- two workers, a retry, a clock nudge -- produces the same job rather
- * than a second fan-out.
+ * runs twice -- two workers, a retry, a clock nudge -- produces the same job
+ * rather than a second fan-out.
  */
 async function runScan() {
-  const offsets = await q.distinctReminderOffsets(config.reminders.defaultOffsets);
   let matched = 0;
 
-  for (const offsetMinutes of offsets) {
-    // The lookback must exceed the scan interval or a tick that runs late leaves a
-    // gap no later tick will ever revisit.
-    const events = await q.eventsDueForReminder({
-      offsetMinutes,
-      lookbackSeconds: Math.max(config.reminders.maxLatenessSeconds, 120),
-    });
+  for (const timed of [true, false]) {
+    const defaults = timed ? config.reminders.defaultOffsets : config.reminders.dateOffsets;
+    const offsets = await q.distinctReminderOffsets(defaults, { timed });
 
-    for (const e of events) {
-      // The deterministic job id is doing the deduplication here. An event stays
-      // inside the lookback window for several minutes, so it matches on ten
-      // consecutive ticks; BullMQ returns the existing job for a known id rather
-      // than creating a second fan-out, and completed jobs are retained long
-      // enough (removeOnComplete.age) to outlive the window.
-      await queues.fanout.add(
-        'fanout',
-        { eventId: e.id, offsetMinutes, startsAt: e.startsAt },
-        { jobId: `fo-${e.id}-${offsetMinutes}` },
-      );
-      matched++;
+    for (const offsetMinutes of offsets) {
+      // The lookback must exceed the scan interval or a tick that runs late leaves
+      // a gap no later tick will ever revisit.
+      const events = await q.eventsDueForReminder({
+        offsetMinutes,
+        lookbackSeconds: Math.max(config.reminders.maxLatenessSeconds, 120),
+        timed,
+      });
+
+      for (const e of events) {
+        // The deterministic job id is doing the deduplication here. An event stays
+        // inside the lookback window for several minutes, so it matches on ten
+        // consecutive ticks; BullMQ returns the existing job for a known id rather
+        // than creating a second fan-out, and completed jobs are retained long
+        // enough (removeOnComplete.age) to outlive the window.
+        await queues.fanout.add(
+          'fanout',
+          { eventId: e.id, offsetMinutes, startsAt: e.starts_at, timed },
+          { jobId: `fo-${e.id}-${offsetMinutes}` },
+        );
+        matched++;
+      }
     }
   }
+
   // Says "matched", not "queued": most of these are the same events re-matching on
   // a later tick and being deduplicated away. Logging them as queued work makes a
   // quiet scanner look like a busy one.
@@ -54,25 +67,25 @@ async function runScan() {
 /**
  * Turn one event into pages of recipients.
  *
- * NB: no ':' in any job id. BullMQ reserves that character for its own repeatable-job
- * keys and throws "Custom Id cannot contain :" for anything that does not split into
- * exactly three parts -- so a four-part id here crashed the fan-out outright, and a
- * two-part id elsewhere killed the container on boot.
+ * NB: no ':' in any job id. BullMQ reserves that character for its own
+ * repeatable-job keys and throws "Custom Id cannot contain :" for anything that
+ * does not split into exactly three parts -- so a four-part id here crashed the
+ * fan-out outright, and a two-part id elsewhere killed the container on boot.
  *
  * This is the part that has to survive going viral. The queue never holds one job
- * per follower -- it holds one job per *page* of followers, so a fixture with two
+ * per follower -- it holds one job per *page* of followers, so a premiere with two
  * million followers enqueues four thousand jobs, not two million. Paging is keyset
  * on user_id, which stays flat as the offset grows and cannot skip or repeat a row
- * when someone follows the team mid-fan-out.
+ * when someone follows the show mid-fan-out.
  */
 async function runFanout(job) {
-  const { eventId, offsetMinutes, startsAt } = job.data;
+  const { eventId, offsetMinutes, startsAt, timed = true } = job.data;
 
   const dueAt = new Date(startsAt).getTime() - offsetMinutes * 60_000;
   const lateBy = (Date.now() - dueAt) / 1000;
   if (lateBy > config.reminders.maxLatenessSeconds) {
-    // Telling someone a game starts in an hour, an hour after it started, is worse
-    // than silence. A backlog is dropped rather than delivered wrong.
+    // Telling someone something starts in an hour, an hour after it started, is
+    // worse than silence. A backlog is dropped rather than delivered wrong.
     log(`fanout ${eventId}/${offsetMinutes} dropped, ${Math.round(lateBy)}s late`);
     return { dropped: true };
   }
@@ -92,7 +105,7 @@ async function runFanout(job) {
     const userIds = rows.map((r) => r.user_id);
     await queues.batch.add(
       'batch',
-      { eventId, offsetMinutes, userIds },
+      { eventId, offsetMinutes, userIds, timed },
       { jobId: `bt-${eventId}-${offsetMinutes}-${after}` },
     );
 
@@ -117,7 +130,7 @@ async function runFanout(job) {
  * one -- the right way round for something that buzzes a phone.
  */
 async function runBatch(job) {
-  const { eventId, offsetMinutes, userIds } = job.data;
+  const { eventId, offsetMinutes, userIds, timed = true } = job.data;
   const event = await q.getEvent(eventId);
   if (!event) return { skipped: 'event-gone' };
 
@@ -125,9 +138,16 @@ async function runBatch(job) {
   const claims = [];
 
   for (const t of targets) {
-    // A user only wants the offsets they asked for. The scan is global, so this is
-    // where a 60-minute reminder is withheld from someone who only wants 1 minute.
-    if (!t.offsets_minutes.includes(offsetMinutes)) continue;
+    /*
+     * A user only wants the offsets they asked for, from the right list.
+     *
+     * The scan is global, so this is where a 60-minute reminder is withheld from
+     * someone who only wants 1 minute -- and reading the WRONG list here would
+     * silently deliver nothing at all, because 1440 is never in offsets_minutes
+     * and 60 is never in date_offsets_minutes.
+     */
+    const wanted = timed ? t.offsets_minutes : t.date_offsets_minutes;
+    if (!wanted.includes(offsetMinutes)) continue;
 
     for (const channel of t.channels) {
       if (channel === 'webpush' && t.push_subscriptions.length === 0) continue;
@@ -171,7 +191,8 @@ async function runBatch(job) {
   await settle(wonByChannel.email, (t) => sendEmail(t, { event, offsetMinutes }));
 
   log(
-    `batch ${eventId}/${offsetMinutes}: sent ${sent}, failed ${failed}, deduped ${claims.length - won.length}`,
+    `batch ${eventId}/${offsetMinutes}: sent ${sent}, failed ${failed}, ` +
+      `deduped ${claims.length - won.length}`,
   );
   return { sent, failed };
 }
@@ -182,28 +203,19 @@ export function startWorkers({ concurrency = {} } = {}) {
   const workers = [
     new Worker(QUEUES.scan, runScan, { connection, concurrency: 1 }),
 
-    new Worker(
-      QUEUES.sync,
-      async (job) => {
-        // Explicit rather than a ternary chain: three kinds share this queue so
-        // that concurrency 1 serialises them, and an unknown kind must not
-        // silently fall through to the most expensive one.
-        if (job.data.kind === 'catalogue') return syncCatalogue();
-        if (job.data.kind === 'near') return syncNear();
-        return syncAll();
-      },
-      {
-        connection,
-        concurrency: 1,
-      },
-    ),
-
-    // Scores only; concurrency 1 because it already fans out internally and a
-    // second overlapping tick would just refetch the same leagues.
-    new Worker(QUEUES.live, () => syncLiveScores(), { connection, concurrency: 1 }),
-
-    // Concurrency 1: these responses are large and the point is to stagger them.
-    new Worker(QUEUES.plays, () => syncPlays(), { connection, concurrency: 1 }),
+    /*
+     * Concurrency 1, always.
+     *
+     * The sync worker walks five providers in sequence and several of them are
+     * rate limited to the point where a second concurrent pass would not just be
+     * wasteful but actively harmful -- TheSpaceDevs allows fifteen requests an
+     * hour across the whole deployment, so two overlapping passes exhaust the
+     * budget and both fail.
+     */
+    new Worker(QUEUES.sync, (job) => syncAll({ force: Boolean(job.data?.force) }), {
+      connection,
+      concurrency: 1,
+    }),
 
     new Worker(QUEUES.fanout, runFanout, {
       connection,

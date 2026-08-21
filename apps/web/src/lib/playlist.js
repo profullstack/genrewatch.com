@@ -1,7 +1,7 @@
 import { open, seal } from '@genre/auth';
+import { channelsForTitle, MAX_CHANNELS, normaliseTitle, parseM3u } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
-import { channelsForFixture, MAX_CHANNELS, normaliseTeam, parseM3u } from '@genre/catalog';
 
 /**
  * Importing and reading a reader's own channel list.
@@ -63,10 +63,13 @@ export async function importPlaylist({ userId, url, label }) {
 
   const channels = parseM3u(text).map((c) => ({
     title: c.title,
+    // The provider's own group-title, verbatim. This is what makes a reader's own
+    // list browsable by genre without any of it leaving their account.
+    group: c.group,
     // Sealed individually: each one is the same credential with a channel id on
     // the end, so a leak of any single row is a leak of the line.
     streamUrl: seal(c.url),
-    normTitle: normaliseTeam(c.title),
+    normTitle: normaliseTitle(c.title),
   }));
 
   if (channels.length === 0) {
@@ -88,20 +91,23 @@ export async function refreshPlaylist(userId) {
 }
 
 /**
- * Which of this reader's channels is carrying this fixture.
+ * Which of this reader's channels is carrying this event.
  *
- * Titles are matched with both team names required, so a channel that merely
- * mentions one club is rejected. Returns unsealed URLs, so the caller must already
- * have established that the requester owns them.
+ * Matched on the SUBJECT's name -- the show, the film -- and never on the event
+ * title, which carries season and episode numbering that no provider uses in a
+ * channel name. The sports version could require both team names and let the
+ * separator between them be anything; with one name there is no such trick, so
+ * the match is on a whole run of words rather than a substring. Returns unsealed
+ * URLs, so the caller must already have established that the requester owns them.
  */
 export async function ownChannelsForEvent({ userId, event }) {
   if (!config.playlists.enabled || !userId) return [];
   const rows = await q.playlistChannels(userId);
   if (rows.length === 0) return [];
 
-  const matches = channelsForFixture(
+  const matches = channelsForTitle(
     rows.map((r) => ({ title: r.title, url: r.stream_url })),
-    { home: event.home_name, away: event.away_name },
+    { title: event.subject_name },
   );
 
   return matches

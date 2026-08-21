@@ -124,14 +124,14 @@ test('the kickoff time carries its own separators', async () => {
   // Real text between the parts, not a border or a flex gap.
   expect(components).toContain("{' \u00b7 '}");
   expect(components).toContain('data-tz-abbr');
-  // Below the matchup, not squeezed into the middle column.
-  expect(pages).toContain('<KickoffTime at={event.starts_at} />');
-  expect(pages).toContain('class="kickoff"');
+  // Below the title, in its own stat block rather than squeezed into a column.
+  expect(pages).toContain('<StartTime event={event} />');
+  expect(pages).toContain('class="stat"');
   // And it must stay on one line, overriding the stacking default.
   expect(/time\.line \{[^}]*display: inline/s.test(css)).toBe(true);
   // The stacking default still exists for the schedule rows that rely on it.
   expect(/time\[data-local\] \{[^}]*flex-direction: column/s.test(css)).toBe(true);
-  expect(css).toContain('.scoreboard {');
+  expect(css).toContain('.stats {');
 });
 
 /**
@@ -150,9 +150,11 @@ test('static assets are linked with a content version', async () => {
   );
   const app = await readFile(APP, 'utf8');
 
-  // Linked through the helper, never by bare path.
-  expect(layout).toContain('assetUrl("styles.css")');
-  expect(layout).toContain('assetUrl("app.js")');
+  // Linked through the helper, never by bare path. Quote-agnostic: the formatter
+  // owns quote style, and asserting on it made a `biome --write` run look like a
+  // caching regression.
+  expect(layout).toMatch(/assetUrl\(['"]styles\.css['"]\)/);
+  expect(layout).toMatch(/assetUrl\(['"]app\.js['"]\)/);
   expect(layout).not.toContain('href="/styles.css"');
   expect(layout).not.toContain('src="/app.js"');
 

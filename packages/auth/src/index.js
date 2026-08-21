@@ -1,12 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { config } from '@genre/config';
+import * as q from '@genre/db/queries';
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
   verifyAuthenticationResponse,
   verifyRegistrationResponse,
 } from '@simplewebauthn/server';
-import { config } from '@genre/config';
-import * as q from '@genre/db/queries';
 
 /**
  * Magic link + passkey. There is no password anywhere in this file, by design:

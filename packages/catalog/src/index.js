@@ -252,5 +252,5 @@ export async function anythingStale() {
   return false;
 }
 
-export { parseM3u, groupsOf, channelsForTitle, oneChannelM3u, MAX_CHANNELS } from './m3u.js';
-export { normaliseTitle, slugify, keyFor } from './slug.js';
+export { channelsForTitle, groupsOf, MAX_CHANNELS, oneChannelM3u, parseM3u } from './m3u.js';
+export { keyFor, normaliseTitle, slugify } from './slug.js';

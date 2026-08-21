@@ -18,7 +18,9 @@ const versions = new Map();
 async function hash(path) {
   const file = Bun.file(path);
   if (!(await file.exists())) return null;
-  return Bun.hash(await file.arrayBuffer()).toString(36).slice(0, 8);
+  return Bun.hash(await file.arrayBuffer())
+    .toString(36)
+    .slice(0, 8);
 }
 
 /**

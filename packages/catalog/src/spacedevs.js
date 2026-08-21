@@ -78,7 +78,11 @@ export async function fetchAll({ from = new Date(), horizonDays = 180, maxPages 
        * under a catch-all, for the same reason as elsewhere.
        */
       const missionType = l.mission?.type;
-      if (!missionType) continue;
+      // "Unknown" is a literal value in this field, not an absent one, and it is
+      // common enough to have become the fourth-largest genre on the space page
+      // before it was caught. A genre nobody would ever choose to browse is not a
+      // genre.
+      if (!missionType || missionType.toLowerCase() === 'unknown') continue;
       const genreKey = keyFor(PROVIDER, 'genre', missionType);
       if (!genres.has(genreKey)) {
         genres.set(genreKey, {

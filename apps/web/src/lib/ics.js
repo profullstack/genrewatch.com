@@ -32,7 +32,7 @@ function stamp(date) {
 /**
  * Fold to 75 octets, not 75 characters.
  *
- * A team name with an accent is multi-byte, so counting characters can emit a
+ * A title with an accent is multi-byte, so counting characters can emit a
  * line that is over the limit — and split one mid-codepoint, which renders as
  * mojibake in the client.
  */
@@ -54,11 +54,10 @@ function fold(line) {
   return chunks.join(`${CRLF} `);
 }
 
-function title(event) {
-  return event.away_name && event.home_name
-    ? `${event.away_name} at ${event.home_name}`
-    : event.name;
-}
+const title = (event) => event.name;
+
+/** YYYYMMDD in UTC, for an all-day entry. */
+const dateStamp = (d) => new Date(d).toISOString().slice(0, 10).replace(/-/g, '');
 
 /**
  * @param {object[]} events
@@ -68,12 +67,12 @@ export function buildCalendar(events, { name, siteUrl, defaultMinutes = 150 }) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//GenreWatch//Fixtures//EN',
+    'PRODID:-//GenreWatch//Releases//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     `X-WR-CALNAME:${esc(name)}`,
     // Hints the client to re-fetch hourly. Advisory, but without it some clients
-    // poll once a day and a rescheduled fixture stays wrong until tomorrow.
+    // poll once a day and a rescheduled release stays wrong until tomorrow.
     'X-PUBLISHED-TTL:PT1H',
     'REFRESH-INTERVAL;VALUE=DURATION:PT1H',
   ];
@@ -82,16 +81,54 @@ export function buildCalendar(events, { name, siteUrl, defaultMinutes = 150 }) {
 
   for (const e of events) {
     const start = new Date(e.starts_at);
-    const end = new Date(start.getTime() + defaultMinutes * 60_000);
     const desc = [
-      e.league_name,
-      e.broadcast
-        ? `On ${e.broadcast}${e.broadcast_country ? ` (${e.broadcast_country})` : ''}`
-        : null,
+      e.subject_name,
+      e.venue ? `On ${[e.venue, e.venue_region].filter(Boolean).join(', ')}` : null,
       `${siteUrl}/events/${e.id}`,
     ]
       .filter(Boolean)
       .join('\n');
+
+    /*
+     * A date-only event is an ALL-DAY entry, not a timed one.
+     *
+     * iCalendar has a representation for exactly this -- DTSTART;VALUE=DATE with
+     * no time component -- and using it is the difference between a calendar
+     * showing "Dune: Part Three" across the top of Friday and showing it as a
+     * 2.5-hour block starting at noon UTC, which is 4am in California and a lie
+     * everywhere. DTEND for an all-day entry is EXCLUSIVE, so it is the next day.
+     *
+     * The alarm has to move with it: -PT60M on an all-day entry fires at 11pm the
+     * night before in most clients, which is precisely the reminder the schema's
+     * time_known flag exists to avoid sending.
+     */
+    const allDay = !e.time_known;
+    const timing = allDay
+      ? [
+          `DTSTART;VALUE=DATE:${dateStamp(start)}`,
+          `DTEND;VALUE=DATE:${dateStamp(new Date(start.getTime() + 86_400_000))}`,
+        ]
+      : [
+          `DTSTART:${stamp(start)}`,
+          `DTEND:${stamp(new Date(start.getTime() + defaultMinutes * 60_000))}`,
+        ];
+
+    const alarm = allDay
+      ? [
+          'BEGIN:VALARM',
+          // 09:00 on the day itself, expressed as nine hours after midnight.
+          'TRIGGER;RELATED=START:PT9H',
+          'ACTION:DISPLAY',
+          `DESCRIPTION:${esc(`${title(e)} is out today`)}`,
+          'END:VALARM',
+        ]
+      : [
+          'BEGIN:VALARM',
+          'TRIGGER:-PT60M',
+          'ACTION:DISPLAY',
+          `DESCRIPTION:${esc(`${title(e)} starts in an hour`)}`,
+          'END:VALARM',
+        ];
 
     lines.push(
       'BEGIN:VEVENT',
@@ -99,25 +136,18 @@ export function buildCalendar(events, { name, siteUrl, defaultMinutes = 150 }) {
       // a second copy every time it polls.
       `UID:event-${e.id}@genrewatch.com`,
       `DTSTAMP:${now}`,
-      `DTSTART:${stamp(start)}`,
-      `DTEND:${stamp(end)}`,
+      ...timing,
       `SUMMARY:${esc(title(e))}`,
       `DESCRIPTION:${esc(desc)}`,
-      // The arena plus where it is: a calendar entry that says only "PNC Park" is
-      // useless to the phone trying to work out how long it takes to get there.
-      e.venue
-        ? `LOCATION:${esc([e.venue, e.venue_city, e.venue_region].filter(Boolean).join(', '))}`
-        : null,
+      // The channel or pad plus where it is: an entry saying only "ITV" is useless
+      // to someone in another country.
+      e.venue ? `LOCATION:${esc([e.venue, e.venue_region].filter(Boolean).join(', '))}` : null,
       `URL:${siteUrl}/events/${e.id}`,
-      // Duration is a guess for most sports, so mark it as such rather than
+      // Duration is a guess for most of these, so mark it as such rather than
       // blocking out someone's calendar as if it were a confirmed meeting.
       'TRANSP:TRANSPARENT',
       'STATUS:CONFIRMED',
-      'BEGIN:VALARM',
-      'TRIGGER:-PT60M',
-      'ACTION:DISPLAY',
-      `DESCRIPTION:${esc(`${title(e)} starts in an hour`)}`,
-      'END:VALARM',
+      ...alarm,
       'END:VEVENT',
     );
   }

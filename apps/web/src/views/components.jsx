@@ -3,7 +3,7 @@
 /**
  * Times are rendered in UTC on the server and localised in the browser.
  *
- * Schedule pages are cached in Redis and served byte-identical to everyone, so a
+ * Genre pages are cached in Redis and served byte-identical to everyone, so a
  * time baked in one viewer's zone would be wrong for the next. The server emits a
  * machine-readable UTC `datetime` plus a readable UTC fallback, and public/app.js
  * rewrites the text to the viewer's own zone. With JavaScript off the page still
@@ -24,16 +24,55 @@ const fmtDayUtc = (d) =>
     day: 'numeric',
   });
 
+const fmtMonthUtc = (d) =>
+  new Date(d).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'long', year: 'numeric' });
+
+const fmtYearUtc = (d) =>
+  new Date(d).toLocaleDateString('en-US', { timeZone: 'UTC', year: 'numeric' });
+
+/**
+ * How precisely do we actually know when this happens?
+ *
+ * The single most important distinction on this site, and the one the sports
+ * original never had to make. A fixture always has a kickoff. A release very
+ * often has only "September 2026", and the adapters store that as noon UTC on a
+ * representative day so it can be ordered and indexed like anything else.
+ *
+ * Printing that stored instant as a time would be inventing one. So every
+ * renderer asks here first, and a row without a known time never shows a clock --
+ * not a greyed-out one, not an approximate one, none.
+ */
+export function whenLabel(event) {
+  if (event.time_known) return { kind: 'time' };
+  if (event.precision === 'year') return { kind: 'year', text: fmtYearUtc(event.starts_at) };
+  if (event.precision === 'month') return { kind: 'month', text: fmtMonthUtc(event.starts_at) };
+  return { kind: 'day', text: fmtDayUtc(event.starts_at) };
+}
+
 /**
  * @param zone  also print which timezone the time is in. Worth it where someone
- *              is deciding whether they can watch (a single fixture); noise on a
+ *              is deciding whether they can watch (a single event); noise on a
  *              list, where every row would repeat the same word.
  *
  * The server renders UTC because it has no browser; localiseTimes() in app.js
- * rewrites all three spans to the visitor's zone on load.
+ * rewrites the spans to the visitor's zone on load. A date-only event is emitted
+ * WITHOUT the data-local-time hook, so the client script leaves it alone rather
+ * than "localising" a time that does not exist -- which would shift a release
+ * onto the wrong day for anyone west of UTC.
  */
-export const LocalTime = ({ at, zone = false }) => {
+export const LocalTime = ({ at, zone = false, event = null }) => {
   const iso = new Date(at).toISOString();
+  const when = event ? whenLabel(event) : { kind: 'time' };
+
+  if (when.kind !== 'time') {
+    return (
+      <time datetime={iso} class="undated">
+        <span class="t">{when.text}</span>
+        <span class="d">{when.kind === 'day' ? 'date only' : 'expected'}</span>
+      </time>
+    );
+  }
+
   return (
     <time datetime={iso} data-local>
       <span class="t" data-local-time>
@@ -52,69 +91,66 @@ export const LocalTime = ({ at, zone = false }) => {
 };
 
 /**
- * One line: "3:00 PM · Wed, Aug 19 · PDT".
+ * One line: "3:00 PM · Wed, Aug 19 · PDT", or "September 2026" when that is all
+ * anyone knows.
  *
  * The separators are real text in the markup, not borders or gaps, because the
- * stacked version depends entirely on CSS to be legible -- there is no
- * whitespace between its spans, so anywhere the stylesheet does not reach (a new
- * context, or a browser still holding an old cached copy) it renders as
+ * stacked version depends entirely on CSS to be legible -- there is no whitespace
+ * between its spans, so anywhere the stylesheet does not reach (a new context, or
+ * a browser still holding an old cached copy) it renders as
  * "3:00 PMWed, Aug 19PDT". This one reads correctly with no stylesheet at all.
  */
-export const KickoffTime = ({ at }) => {
-  const iso = new Date(at).toISOString();
+export const StartTime = ({ event }) => {
+  const iso = new Date(event.starts_at).toISOString();
+  const when = whenLabel(event);
+
+  if (when.kind !== 'time') {
+    return (
+      <time class="line undated" datetime={iso}>
+        <span>{when.text}</span>
+        {when.kind === 'day' ? null : <span class="hint"> · exact date not announced</span>}
+      </time>
+    );
+  }
+
   return (
     <time class="line" datetime={iso} data-local>
-      <span data-local-time>{fmtTimeUtc(at)}</span>
+      <span data-local-time>{fmtTimeUtc(event.starts_at)}</span>
       {' · '}
-      <span data-local-day>{fmtDayUtc(at)}</span>
+      <span data-local-day>{fmtDayUtc(event.starts_at)}</span>
       {' · '}
       <span data-tz-abbr>UTC</span>
     </time>
   );
 };
 
-/**
- * The time column for a fixture row.
- *
- * Once a game is under way its kickoff time is the least interesting thing about
- * it, so the column shows how far in it is instead -- with the scheduled time kept
- * underneath for anyone checking they are watching the right one.
- */
-export const RowTime = ({ event }) => {
-  if (event.state !== 'in') return <LocalTime at={event.starts_at} />;
-  return (
-    <time datetime={new Date(event.starts_at).toISOString()} data-local>
-      <span class="t live-clock">{event.status_detail ?? 'Live'}</span>
-      <span class="d" data-local-time>
-        {fmtTimeUtc(event.starts_at)}
-      </span>
-    </time>
-  );
+/** What kind of thing this is, when the word is worth saying. */
+const KIND_LABEL = {
+  premiere: 'Premiere',
+  'season-premiere': 'Season premiere',
+  finale: 'Finale',
+  special: 'Special',
+  launch: 'Launch',
+  release: 'Release',
+  film: 'Film',
 };
 
-/**
- * Where a live game actually is: "Bot 6th", "Top 9th", "68'", "Q3 04:12".
- *
- * The provider already phrases this per sport, so it is passed through rather than
- * reassembled from period and clock -- an inning, a quarter and a football minute
- * are not the same shape and any generic formatting gets one of them wrong. The
- * badge used to say a flat "Live", which is the one thing the viewer already knows.
- */
-export const StateBadge = ({ state, detail }) => {
-  if (state === 'in') return <span class="badge live">{detail ?? 'Live'}</span>;
-  if (state === 'post') return <span class="badge done">{detail ?? 'Final'}</span>;
-  return null;
+export const KindBadge = ({ kind }) => {
+  const label = KIND_LABEL[kind];
+  // "Episode" is the default state of the biggest category on the site, so
+  // badging it would put a grey pill on four thousand rows that says nothing.
+  if (!label) return null;
+  return <span class={`badge kind-${kind}`}>{label}</span>;
 };
 
 /** Follow / unfollow as a plain form, so it works with JavaScript off. */
 export const FollowButton = ({ user, subjectType, subjectId, following, next, label }) => {
-  // Whoever the button is about, in every state. Two of these sit side by side on
-  // an event page, one per team, so a bare "Follow" leaves the reader guessing
-  // which side each one is -- and "Following" with no name is worse, because it is
-  // the state you most need to be able to read back.
+  // Whoever the button is about, in every state. A bare "Follow" leaves the reader
+  // guessing what it follows when more than one sits on a page -- and "Following"
+  // with no name is worse, because it is the state you most need to read back.
   //
-  // Callers that render a long list of one-team rows -- the team picker -- pass no
-  // label at all, because the row already says the name right beside the button.
+  // Callers rendering a long list of one-name rows pass no label, because the row
+  // already says the name right beside the button.
   const who = label ? ` ${label}` : '';
 
   if (!user) {
@@ -147,66 +183,32 @@ export const FollowButton = ({ user, subjectType, subjectId, following, next, la
 };
 
 export const EventRow = ({ event }) => (
-  <li class={`event ${event.state}${event.following ? ' followed' : ''}`}>
-    <RowTime event={event} />
+  <li class={`event ${event.category}${event.following ? ' followed' : ''}`}>
+    <LocalTime at={event.starts_at} event={event} />
 
     <div class="matchup">
       <a href={`/events/${event.id}`}>
-        {/* The star marks a fixture the viewer already follows, so a schedule page
-            reads the same way as the My games list. It is decorative for a signed-out
+        {/* The star marks something the viewer already follows, so a genre page
+            reads the same way as their own list. It is decorative for a signed-out
             visitor, who never has one. */}
         {event.following ? (
-          <span
-            class="followed-star"
-            role="img"
-            title="You follow one of these teams"
-            aria-label="Following"
-          >
+          <span class="followed-star" role="img" title="You follow this" aria-label="Following">
             ★
           </span>
         ) : null}
-        {event.away_name && event.home_name ? (
-          <>
-            {/* Which side is at home cannot be read from the order: North America
-                writes the visitor first, most of the world writes the host first,
-                and a row mixing both conventions in one list settles nothing. The
-                tags say it outright -- except at a neutral ground, where there is
-                nothing to say. */}
-            {event.neutral_site ? null : (
-              <abbr class="ha away" title="Away team">
-                A
-              </abbr>
-            )}
-            {event.away_name}
-            <span class="join">{event.neutral_site ? 'vs' : 'at'}</span>
-            {event.neutral_site ? null : (
-              <abbr class="ha home" title="Home team">
-                H
-              </abbr>
-            )}
-            {event.home_name}
-          </>
-        ) : (
-          event.name
-        )}
+        {event.name}
       </a>
       <span class="meta">
-        {event.league_name}
+        <a class="subject-link" href={`/subjects/${event.subject_slug}`}>
+          {event.subject_name}
+        </a>
         {event.venue ? ` · ${event.venue}` : ''}
-        {/* The arena name alone only means something to people who already know the
-            city, which is nobody browsing 354 leagues. */}
-        {event.venue_city ? `, ${event.venue_city}` : ''}
-        <StateBadge state={event.state} detail={event.status_detail} />
+        {/* A channel or a pad name alone only means something to people who already
+            know the market, which is nobody browsing five categories at once. */}
+        {event.venue_region ? `, ${event.venue_region}` : ''}
+        <KindBadge kind={event.kind} />
       </span>
     </div>
-
-    {/* Shown while a game is in progress too, not only once it is finished --
-        a live row with no score was the whole point of watching it. */}
-    {(event.state === 'in' || event.state === 'post') && event.home_score !== null ? (
-      <span class={`score${event.state === 'in' ? ' live' : ''}`}>
-        {event.away_score}–{event.home_score}
-      </span>
-    ) : null}
   </li>
 );
 
@@ -221,26 +223,39 @@ export const EventList = ({ events, emptyText }) =>
     </ul>
   );
 
-/** A team in the follow picker. */
-export const TeamRow = ({ team, user, next }) => (
-  <li class="team">
-    {team.logo_url ? (
-      <img src={team.logo_url} alt="" loading="lazy" width="28" height="28" />
+/** One followable name in a picker: a show, a film, an artist, an agency. */
+export const SubjectRow = ({ subject, user, next }) => (
+  <li class="subject">
+    {subject.image_url ? (
+      <img src={subject.image_url} alt="" loading="lazy" width="28" height="28" />
     ) : (
-      <span class="team-blank" />
+      <span class="subject-blank" />
     )}
-    <div class="team-name">
-      <a href={`/teams/${team.slug}`}>{team.display_name}</a>
+    <div class="subject-name">
+      <a href={`/subjects/${subject.slug}`}>{subject.display_name}</a>
       <span class="meta">
-        {team.upcoming > 0 ? `${team.upcoming} upcoming` : 'no fixtures scheduled'}
+        {subject.kind}
+        {subject.upcoming > 0 ? ` · ${subject.upcoming} upcoming` : ' · nothing scheduled'}
       </span>
     </div>
     <FollowButton
       user={user}
-      subjectType="team"
-      subjectId={team.id}
-      following={team.following}
+      subjectType="subject"
+      subjectId={subject.id}
+      following={subject.following}
       next={next}
     />
   </li>
 );
+
+/** A genre chip, used wherever an event or a name has to show what it is filed as. */
+export const GenreChips = ({ genres }) =>
+  !genres || genres.length === 0 ? null : (
+    <p class="chips">
+      {genres.map((g) => (
+        <a class="chip" href={`/genres/${g.slug}`}>
+          {g.name}
+        </a>
+      ))}
+    </p>
+  );

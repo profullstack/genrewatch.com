@@ -37,9 +37,9 @@ export const MAX_CHANNELS = 20000;
 function parseAttrs(head) {
   /** @type {Record<string,string>} */
   const out = {};
-  const re = /([a-zA-Z0-9_-]+)="([^"]*)"/g;
-  let m;
-  while ((m = re.exec(head)) !== null) out[m[1].toLowerCase()] = m[2];
+  for (const m of head.matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)) {
+    out[m[1].toLowerCase()] = m[2];
+  }
   return out;
 }
 

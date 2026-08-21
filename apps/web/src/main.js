@@ -1,4 +1,4 @@
-import { assertCoinpayMerchantKey, config } from '@genre/config';
+import { config } from '@genre/config';
 import { close as closeDb, healthcheck } from '@genre/db';
 import { migrate } from '@genre/db/migrate';
 import { closeQueues, installSchedules } from '@genre/queue';
@@ -14,7 +14,6 @@ import { app } from './app.js';
  */
 
 // Fail at boot rather than at checkout if the CoinPay credential is the wrong family.
-assertCoinpayMerchantKey();
 
 /**
  * Turn an infrastructure failure into a sentence someone can act on.

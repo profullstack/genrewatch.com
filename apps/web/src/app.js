@@ -1,10 +1,9 @@
 import * as auth from '@genre/auth';
+import { CATEGORIES, EXTERNAL_CATEGORIES, oneChannelM3u } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendLoginLink } from '@genre/notify';
-import * as pay from '@genre/payments';
 import { connection } from '@genre/queue';
-import { oneChannelM3u } from '@genre/catalog';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
@@ -14,18 +13,18 @@ import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
 import {
   About,
+  CategoryPage,
+  Channels,
   EventPage,
   Following,
+  GenrePage,
+  GenresIndex,
   Landing,
-  LeaguePage,
   NotFound,
   PushCheck,
   Settings,
   SignIn,
-  SportPage,
-  SportsIndex,
-  TeamPage,
-  WatchPage,
+  SubjectPage,
 } from './views/pages.jsx';
 
 export const app = new Hono();
@@ -123,38 +122,63 @@ app.get('/', async (c) => {
   });
 });
 
-app.get('/sports', async (c) =>
-  cached(c, 'page:sports', 300, async () => {
-    const sports = await q.listSports();
-    return render(<SportsIndex user={c.get('user')} sports={sports} />);
+/**
+ * Sports is a link, not a section.
+ *
+ * tipoffwatch.com already does fixtures, live scores and per-market broadcast
+ * listings properly, and a thin second copy here would be worse than a signpost.
+ * The redirect is 302 rather than 301 on purpose: a permanent redirect is cached
+ * by browsers more or less forever, so choosing to serve sports here later would
+ * mean every existing reader still bouncing away.
+ */
+for (const [name, target] of Object.entries(EXTERNAL_CATEGORIES)) {
+  app.get(`/${name}`, (c) => c.redirect(target, 302));
+  app.get(`/categories/${name}`, (c) => c.redirect(target, 302));
+}
+
+/** Every genre we carry, grouped by the medium it belongs to. */
+app.get('/genres', async (c) =>
+  cached(c, 'page:genres', 300, async () => {
+    const [categories, genres] = await Promise.all([q.listCategories(), q.listGenres({})]);
+    return render(<GenresIndex user={c.get('user')} categories={categories} genres={genres} />);
   }),
 );
 
-app.get('/sports/:sport', async (c) => {
+app.get('/categories/:name', async (c) => {
   const user = c.get('user');
-  const sport = c.req.param('sport');
-  const leagues = await q.leaguesForSport(sport, user?.id ?? null);
-  if (leagues.length === 0) return c.html(await render(<NotFound user={user} />), 404);
-  return c.html(await render(<SportPage user={user} sport={sport} leagues={leagues} />));
+  const name = c.req.param('name');
+  if (!CATEGORIES.includes(name)) return c.html(await render(<NotFound user={user} />), 404);
+
+  return cached(c, `page:category:${name}`, 300, async () => {
+    const [genres, events] = await Promise.all([
+      q.listGenres({ category: name }),
+      q.scheduleForDay({
+        day: new Date().toISOString().slice(0, 10),
+        category: name,
+        limit: 40,
+      }),
+    ]);
+    return render(<CategoryPage user={user} category={name} genres={genres} events={events} />);
+  });
 });
 
-app.get('/leagues/:slug', async (c) => {
+app.get('/genres/:slug', async (c) => {
   const user = c.get('user');
   const slug = c.req.param('slug');
-  const league = await q.getLeagueBySlug(slug);
-  if (!league) return c.html(await render(<NotFound user={user} />), 404);
+  const genre = await q.getGenreBySlug(slug);
+  if (!genre) return c.html(await render(<NotFound user={user} />), 404);
 
-  return cached(c, `page:league:${slug}`, config.cache.scheduleTtlSeconds, async () => {
-    const [teams, events, following] = await Promise.all([
-      q.teamsForLeague(league.id, user?.id ?? null),
-      q.upcomingForLeague(league.id, { viewerId: user?.id ?? null }),
-      q.isFollowing({ userId: user?.id, subjectType: 'league', subjectId: league.id }),
+  return cached(c, `page:genre:${slug}`, config.cache.scheduleTtlSeconds, async () => {
+    const [subjects, events, following] = await Promise.all([
+      q.subjectsForGenre(genre.id, { viewerId: user?.id ?? null }),
+      q.upcomingForGenre(genre.id, { viewerId: user?.id ?? null }),
+      q.isFollowing({ userId: user?.id, subjectType: 'genre', subjectId: genre.id }),
     ]);
     return render(
-      <LeaguePage
+      <GenrePage
         user={user}
-        league={league}
-        teams={teams}
+        genre={genre}
+        subjects={subjects}
         events={events}
         following={following}
       />,
@@ -162,16 +186,26 @@ app.get('/leagues/:slug', async (c) => {
   });
 });
 
-app.get('/teams/:slug', async (c) => {
+app.get('/subjects/:slug', async (c) => {
   const user = c.get('user');
-  const team = await q.getTeamBySlug(c.req.param('slug'));
-  if (!team) return c.html(await render(<NotFound user={user} />), 404);
-  const [events, following] = await Promise.all([
-    q.upcomingForTeam(team.id, { viewerId: user?.id ?? null }),
-    q.isFollowing({ userId: user?.id, subjectType: 'team', subjectId: team.id }),
+  const subject = await q.getSubjectBySlug(c.req.param('slug'));
+  if (!subject) return c.html(await render(<NotFound user={user} />), 404);
+
+  const [events, genres, following] = await Promise.all([
+    q.upcomingForSubject(subject.id, { viewerId: user?.id ?? null }),
+    q.genresForSubject(subject.id),
+    q.isFollowing({ userId: user?.id, subjectType: 'subject', subjectId: subject.id }),
   ]);
   return c.html(
-    await render(<TeamPage user={user} team={team} events={events} following={following} />),
+    await render(
+      <SubjectPage
+        user={user}
+        subject={subject}
+        events={events}
+        genres={genres}
+        following={following}
+      />,
+    ),
   );
 });
 
@@ -195,36 +229,29 @@ app.get('/events/:id', async (c) => {
   const user = c.get('user');
   const event = await q.getEvent(Number(c.req.param('id')));
   if (!event) return c.html(await render(<NotFound user={user} />), 404);
-  const [offers, entitlement, plays, comments, followingHome, followingAway, followingLeague] =
-    await Promise.all([
-      pay.offersForEvent(event.id),
-      user ? pay.activeEntitlement({ userId: user.id, eventId: event.id }) : null,
-      q.playsForEvent(event.id, { limit: 60 }),
-      q.commentsForEvent(event.id),
-      q.isFollowing({ userId: user?.id, subjectType: 'team', subjectId: event.home_team_id }),
-      q.isFollowing({ userId: user?.id, subjectType: 'team', subjectId: event.away_team_id }),
-      // A race, a tournament or a fight card has no sides to follow, so the
-      // competition is the only subject there is. Without it those pages offered
-      // nothing at all.
-      q.isFollowing({ userId: user?.id, subjectType: 'league', subjectId: event.league_id }),
-    ]);
 
-  // Per-viewer, and safe only because this page is NOT one of the cached() ones.
-  // If it is ever put behind Redis, this has to move out or one reader's channel
-  // list -- credentials and all -- is served to the next visitor.
+  const [genres, comments, following] = await Promise.all([
+    q.genresForEvent(event.id),
+    q.commentsForEvent(event.id),
+    q.isFollowing({ userId: user?.id, subjectType: 'subject', subjectId: event.subject_id }),
+  ]);
+
+  /*
+   * Per-viewer, and safe only because this page is NOT one of the cached() ones.
+   *
+   * If it is ever put behind Redis, this has to move out or one reader's channel
+   * list -- credentials and all -- is served to the next visitor.
+   */
   const ownChannels = await ownChannelsForEvent({ userId: user?.id, event });
+
   return c.html(
     await render(
       <EventPage
         user={user}
         event={event}
-        offers={offers}
-        entitlement={entitlement}
-        plays={plays}
+        genres={genres}
         comments={comments}
-        followingHome={followingHome}
-        followingAway={followingAway}
-        followingLeague={followingLeague}
+        following={following}
         ownChannels={ownChannels}
       />,
     ),
@@ -232,33 +259,18 @@ app.get('/events/:id', async (c) => {
 });
 
 /**
- * The only gated part of a fixture: watching it.
+ * A reader's own channel list, browsed by the provider's own groups.
  *
- * Everything else about a game -- when it starts, who is playing, where, on what
- * channel, the play log, the comments, the feeds and the whole public API -- is
- * readable without an account and stays that way. This one route is the exception,
- * because access to a stream is bought per event and belongs to one person.
- *
- * Two gates, in order, and both are required. requireUser bounces a signed-out
- * visitor to the login page carrying `next`, so they land back here afterwards
- * rather than on the home page. A signed-in visitor without an entitlement is sent
- * to the event page, which is where the offers are -- a 403 would be technically
- * right and useless, since "buy access" is the thing they actually need.
- *
- * NB: provider_ref is deliberately not rendered. The schema calls it an opaque
- * handle that a buyer never sees, and that is the whole security model for the
- * upstream slot -- putting it in the HTML would hand every viewer the credentials
- * to the provider slot the seller is reselling.
+ * This is the m3u's genre index, and it is per-account by construction: every
+ * query is scoped to the signed-in user's rows, nothing is pooled across accounts
+ * and nothing is relayed. What a provider calls "Movies | Horror" stays exactly
+ * that rather than being mapped onto our genres -- a confident wrong mapping is
+ * worse than the raw string the reader already sees in their own player.
  */
-app.get('/events/:id/watch', async (c) => {
+app.get('/my/channels', async (c) => {
   const user = requireUser(c);
-  const event = await q.getEvent(Number(c.req.param('id')));
-  if (!event) return c.html(await render(<NotFound user={user} />), 404);
-
-  const entitlement = await pay.activeEntitlement({ userId: user.id, eventId: event.id });
-  if (!entitlement) return c.redirect(`/events/${event.id}`, 303);
-
-  return c.html(await render(<WatchPage user={user} event={event} entitlement={entitlement} />));
+  const [playlist, groups] = await Promise.all([q.getPlaylist(user.id), q.playlistGroups(user.id)]);
+  return c.html(await render(<Channels user={user} playlist={playlist} groups={groups} />));
 });
 
 /* --------------------------------------------------------- own playlists -- */
@@ -332,13 +344,13 @@ app.get('/events/:id/playlist.m3u', async (c) => {
   const own = await ownChannelsForEvent({ userId: user.id, event });
   if (own.length === 0) return c.redirect(`/events/${event.id}`, 303);
 
-  // The first match, which channelsForFixture has already ranked most-specific
+  // The first match, which channelsForTitle has already ranked most-specific
   // first, unless the reader asked for a particular one by index.
   const wanted = Number(c.req.query('n') ?? 0);
   const pick = own[Number.isInteger(wanted) && own[wanted] ? wanted : 0];
 
   c.header('content-type', 'audio/x-mpegurl; charset=utf-8');
-  c.header('content-disposition', `attachment; filename="${event.short_name ?? 'game'}.m3u"`);
+  c.header('content-disposition', `attachment; filename="${event.short_name ?? 'channel'}.m3u"`);
   c.header('cache-control', 'no-store, private');
   return c.body(oneChannelM3u(pick));
 });
@@ -466,7 +478,10 @@ for (const [path, fn] of [
     const body = await c.req.parseBody();
     const subjectType = String(body.subject_type ?? '');
     const subjectId = Number(body.subject_id);
-    if (!['team', 'league'].includes(subjectType) || !Number.isFinite(subjectId)) {
+    // Validated against a fixed set: subject_type reaches a SQL predicate, and the
+    // follows table's own check constraint is the second line of defence, not the
+    // first.
+    if (!['genre', 'subject'].includes(subjectType) || !Number.isFinite(subjectId)) {
       return c.json({ error: 'bad subject' }, 400);
     }
     await fn({ userId: user.id, subjectType, subjectId });
@@ -474,10 +489,10 @@ for (const [path, fn] of [
   });
 }
 
-app.get('/api/teams/search', async (c) => {
+app.get('/api/subjects/search', async (c) => {
   const term = (c.req.query('q') ?? '').trim();
   if (term.length < 2) return c.json({ results: [] });
-  return c.json({ results: await q.searchTeams(term) });
+  return c.json({ results: await q.searchSubjects(term) });
 });
 
 /* ------------------------------------------------------------------- prefs -- */
@@ -491,6 +506,12 @@ app.post('/api/prefs', async (c) => {
     offsetsMinutes: arr(body.offsets)
       .map(Number)
       .filter((n) => Number.isFinite(n) && n > 0),
+    // Zero is valid here and not above: "the moment it is out" is a real choice
+    // for a dated release, and meaningless for something that already carries a
+    // one-minute offset.
+    dateOffsetsMinutes: arr(body.date_offsets)
+      .map(Number)
+      .filter((n) => Number.isFinite(n) && n >= 0),
     channels: arr(body.channels)
       .map(String)
       .filter((s) => ['webpush', 'email'].includes(s)),
@@ -603,40 +624,6 @@ app.post('/api/push/unsubscribe', async (c) => {
   return c.json({ ok: true });
 });
 
-/* ---------------------------------------------------------------- payments -- */
-
-app.post('/api/events/:id/buy', async (c) => {
-  const user = requireUser(c);
-  const event = await q.getEvent(Number(c.req.param('id')));
-  if (!event) return c.json({ error: 'no such event' }, 404);
-
-  const body = await c.req.parseBody();
-  const [offer] = (await pay.offersForEvent(event.id)).filter(
-    (o) => o.id === Number(body.offer_id),
-  );
-  if (!offer) return c.json({ error: 'offer unavailable' }, 409);
-
-  const checkoutUrl = await pay.createCheckout({ user, event, offer });
-  return respond(c, { json: { checkoutUrl }, redirectTo: checkoutUrl });
-});
-
-/**
- * CoinPay webhook. Signature is over the RAW bytes, so the body is read as text
- * before anything parses it -- re-serialising the JSON changes the bytes and the
- * signature stops matching.
- */
-app.post('/api/webhooks/coinpay', async (c) => {
-  const raw = await c.req.text();
-  const ok = pay.verifyWebhook({
-    rawBody: raw,
-    signatureHeader: c.req.header('coinpay-signature') ?? c.req.header('x-coinpay-signature'),
-  });
-  if (!ok) return c.json({ error: 'bad signature' }, 401);
-
-  const result = await pay.grantFromWebhook(JSON.parse(raw));
-  return c.json(result);
-});
-
 /* -------------------------------------------------------------- public API -- */
 
 /**
@@ -655,38 +642,40 @@ app.get('/api/v1', async (c) => {
     license: 'Free to use, no key required. Be reasonable.',
     catalogue: stats,
     endpoints: {
-      'GET /api/v1/sports': 'Every sport, with league counts.',
-      'GET /api/v1/leagues?sport=soccer': 'Leagues, optionally filtered by sport.',
-      'GET /api/v1/events?league=soccer-eng-1&sport=soccer&limit=100':
-        'Upcoming fixtures. Both filters optional; limit caps at 200.',
+      'GET /api/v1/categories': 'Every category, with genre and upcoming counts.',
+      'GET /api/v1/genres?category=tv': 'Genres, optionally filtered by category.',
+      'GET /api/v1/events?genre=drama-tv&category=tv&limit=100':
+        'Upcoming events. Both filters optional; limit caps at 200.',
     },
+    note:
+      'Every event carries time_known and precision. A false time_known means the ' +
+      'date is real and the clock time is not -- do not render it as a time.',
   });
 });
 
-app.get('/api/v1/sports', async (c) => {
+app.get('/api/v1/categories', async (c) => {
   c.header('cache-control', 'public, max-age=300');
-  return c.json({ sports: await q.listSports() });
+  return c.json({ categories: await q.listCategories() });
 });
 
-app.get('/api/v1/leagues', async (c) => {
-  const leagues = await q.listLeagues({ sport: c.req.query('sport') ?? null, limit: 1000 });
+app.get('/api/v1/genres', async (c) => {
+  const genres = await q.listGenres({ category: c.req.query('category') ?? null, limit: 1000 });
   c.header('cache-control', 'public, max-age=300');
   return c.json({
-    leagues: leagues.map((l) => ({
-      slug: l.slug,
-      name: l.name,
-      sport: l.sport,
-      abbreviation: l.abbreviation,
-      logo: l.logo_url,
+    genres: genres.map((g) => ({
+      slug: g.slug,
+      name: g.name,
+      category: g.category,
+      upcoming: g.upcoming,
     })),
   });
 });
 
 app.get('/api/v1/events', async (c) => {
   const events = await q.publicEvents({
-    leagueSlug: c.req.query('league') ?? null,
-    sport: c.req.query('sport') ?? null,
-    limit: c.req.query('limit') ?? 100,
+    genreSlug: c.req.query('genre') ?? null,
+    category: c.req.query('category') ?? null,
+    limit: Math.min(Number(c.req.query('limit') ?? 100) || 100, 200),
   });
   c.header('cache-control', 'public, max-age=60');
   return c.json({ count: events.length, events });
@@ -760,21 +749,23 @@ app.get('/calendar/me/:file', async (c) => {
   c.header('content-type', 'text/calendar; charset=utf-8');
   c.header('cache-control', 'private, max-age=300');
   c.header('content-disposition', 'inline; filename="genrewatch.ics"');
-  return c.body(buildCalendar(events, { name: 'GenreWatch — my games', siteUrl: config.siteUrl }));
+  return c.body(
+    buildCalendar(events, { name: 'GenreWatch - my calendar', siteUrl: config.siteUrl }),
+  );
 });
 
-/** A whole league's fixtures, public and shareable. */
-app.get('/calendar/league/:file', async (c) => {
+/** A whole genre's calendar, public and shareable. */
+app.get('/calendar/genre/:file', async (c) => {
   const m = /^([a-z0-9._-]+)\.ics$/i.exec(c.req.param('file'));
   if (!m) return c.notFound();
-  const league = await q.getLeagueBySlug(m[1]);
-  if (!league) return c.notFound();
+  const genre = await q.getGenreBySlug(m[1]);
+  if (!genre) return c.notFound();
 
-  const events = await q.upcomingForLeague(league.id, { limit: 200 });
+  const events = await q.upcomingForGenre(genre.id, { limit: 200 });
   c.header('content-type', 'text/calendar; charset=utf-8');
   c.header('cache-control', 'public, max-age=900');
   return c.body(
-    buildCalendar(events, { name: `GenreWatch — ${league.name}`, siteUrl: config.siteUrl }),
+    buildCalendar(events, { name: `GenreWatch - ${genre.name}`, siteUrl: config.siteUrl }),
   );
 });
 
@@ -797,8 +788,8 @@ app.get('/feeds/all.xml', async (c) => {
   feedHeaders(c, 300);
   return c.body(
     buildFeed(events, {
-      title: 'GenreWatch — every sport',
-      description: 'Upcoming fixtures across 354 leagues and 17 sports.',
+      title: 'GenreWatch - everything',
+      description: 'Every release, premiere, airing and launch we track, soonest first.',
       feedUrl: `${config.siteUrl}/feeds/all.xml`,
       siteUrl: config.siteUrl,
     }),
@@ -806,49 +797,60 @@ app.get('/feeds/all.xml', async (c) => {
 });
 
 /**
- * One route for sport, league and team feeds.
+ * One route for category, genre and subject feeds.
  *
  * Separate routes would be three near-identical handlers; the scope is validated
- * against a fixed set so the path cannot select an arbitrary column.
+ * against a fixed set so the path cannot select an arbitrary column, and each
+ * scope is resolved to an id before it reaches a query.
  */
 app.get('/feeds/:scope/:file', async (c) => {
   const scope = c.req.param('scope');
   const m = /^([a-z0-9._-]+)\.xml$/i.exec(c.req.param('file'));
-  if (!m || !['sport', 'league', 'team'].includes(scope)) return c.notFound();
+  if (!m || !['category', 'genre', 'subject'].includes(scope)) return c.notFound();
   const key = m[1];
 
-  const events = await q.feedEvents({
-    sport: scope === 'sport' ? key : null,
-    leagueSlug: scope === 'league' ? key : null,
-    teamSlug: scope === 'team' ? key : null,
-    limit: 150,
-  });
+  let label = key.replace(/-/g, ' ');
+  let link = config.siteUrl;
+  const filter = { limit: 150 };
+
+  if (scope === 'genre') {
+    const genre = await q.getGenreBySlug(key);
+    if (!genre) return c.notFound();
+    filter.genreId = genre.id;
+    label = genre.name;
+    link = `${config.siteUrl}/genres/${key}`;
+  } else if (scope === 'subject') {
+    const subject = await q.getSubjectBySlug(key);
+    if (!subject) return c.notFound();
+    filter.subjectId = subject.id;
+    label = subject.display_name;
+    link = `${config.siteUrl}/subjects/${key}`;
+  } else {
+    if (!CATEGORIES.includes(key)) return c.notFound();
+    filter.category = key;
+    link = `${config.siteUrl}/categories/${key}`;
+  }
+
+  const events = await q.feedEvents(filter);
   // An empty feed for a name nobody publishes is a 404, not a valid empty channel.
   if (events.length === 0) return c.notFound();
-
-  const label =
-    scope === 'league'
-      ? (events[0].league_name ?? key)
-      : scope === 'team'
-        ? key.replace(/-/g, ' ')
-        : key.replace(/-/g, ' ');
 
   feedHeaders(c, 300);
   return c.body(
     buildFeed(events, {
-      title: `GenreWatch — ${label}`,
-      description: `Upcoming fixtures for ${label}.`,
+      title: `GenreWatch - ${label}`,
+      description: `What is coming up in ${label}.`,
       feedUrl: `${config.siteUrl}/feeds/${scope}/${key}.xml`,
       siteUrl: config.siteUrl,
-      link: scope === 'league' ? `${config.siteUrl}/leagues/${key}` : config.siteUrl,
+      link,
     }),
   );
 });
 
 app.get('/feeds', async (c) =>
   cached(c, 'page:feeds', 900, async () => {
-    const [sports, leagues] = await Promise.all([q.listSports(), q.leaguesWithUpcoming(120)]);
-    return render(<Feeds user={c.get('user')} sports={sports} leagues={leagues} />);
+    const [categories, genres] = await Promise.all([q.listCategories(), q.genresWithUpcoming(120)]);
+    return render(<Feeds user={c.get('user')} categories={categories} genres={genres} />);
   }),
 );
 
@@ -869,12 +871,13 @@ app.get('/sitemap.xml', async (c) => {
   const months = await q.eventMonths();
   const urls = [
     `<sitemap><loc>${config.siteUrl}/sitemaps/static.xml</loc></sitemap>`,
-    `<sitemap><loc>${config.siteUrl}/sitemaps/leagues.xml</loc></sitemap>`,
+    `<sitemap><loc>${config.siteUrl}/sitemaps/genres.xml</loc></sitemap>`,
+    `<sitemap><loc>${config.siteUrl}/sitemaps/subjects.xml</loc></sitemap>`,
     `<sitemap><loc>${config.siteUrl}/sitemaps/feeds.xml</loc></sitemap>`,
     ...months.map(
       (m) =>
         `<sitemap><loc>${config.siteUrl}/sitemaps/events-${m.month}.xml</loc>` +
-        (m.lastmod ? `<lastmod>${iso(m.lastmod)}</lastmod>` : '') +
+        (m.updated_at ? `<lastmod>${iso(m.updated_at)}</lastmod>` : '') +
         '</sitemap>',
     ),
   ];
@@ -885,7 +888,15 @@ app.get('/sitemap.xml', async (c) => {
 });
 
 app.get('/sitemaps/static.xml', (c) => {
-  const paths = ['/', '/sports', '/about', '/login', '/signup'];
+  const paths = [
+    '/',
+    '/genres',
+    '/feeds',
+    '/about',
+    '/login',
+    '/signup',
+    ...CATEGORIES.map((name) => `/categories/${name}`),
+  ];
   c.header('content-type', 'application/xml');
   return c.body(
     `${xmlHeader}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${paths
@@ -902,12 +913,12 @@ app.get('/sitemaps/static.xml', (c) => {
  * rather than stumble on them.
  */
 app.get('/sitemaps/feeds.xml', async (c) => {
-  const [sports, leagues] = await Promise.all([q.listSports(), q.leaguesWithUpcoming(400)]);
+  const genres = await q.genresWithUpcoming(400);
   const urls = [
     '/feeds',
     '/feeds/all.xml',
-    ...sports.map((s) => `/feeds/sport/${s.sport}.xml`),
-    ...leagues.map((l) => `/feeds/league/${l.slug}.xml`),
+    ...CATEGORIES.map((name) => `/feeds/category/${name}.xml`),
+    ...genres.map((g) => `/feeds/genre/${g.slug}.xml`),
   ];
   c.header('content-type', 'application/xml');
   return c.body(
@@ -917,14 +928,29 @@ app.get('/sitemaps/feeds.xml', async (c) => {
   );
 });
 
-app.get('/sitemaps/leagues.xml', async (c) => {
-  const leagues = await q.listLeagues({ limit: 1000 });
+app.get('/sitemaps/genres.xml', async (c) => {
+  const genres = await q.listGenres({ limit: 1000 });
   c.header('content-type', 'application/xml');
   return c.body(
-    `${xmlHeader}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${leagues
+    `${xmlHeader}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${genres
       .map(
-        (l) =>
-          `<url><loc>${config.siteUrl}/leagues/${l.slug}</loc><changefreq>daily</changefreq></url>`,
+        (g) =>
+          `<url><loc>${config.siteUrl}/genres/${g.slug}</loc><changefreq>daily</changefreq></url>`,
+      )
+      .join('')}</urlset>`,
+  );
+});
+
+app.get('/sitemaps/subjects.xml', async (c) => {
+  const subjects = await q.subjectsWithUpcoming(5000);
+  c.header('content-type', 'application/xml');
+  return c.body(
+    `${xmlHeader}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${subjects
+      .map(
+        (x) =>
+          `<url><loc>${config.siteUrl}/subjects/${x.slug}</loc>` +
+          (x.updated_at ? `<lastmod>${iso(x.updated_at)}</lastmod>` : '') +
+          '</url>',
       )
       .join('')}</urlset>`,
   );

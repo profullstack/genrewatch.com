@@ -134,55 +134,40 @@ export const config = {
     },
   },
 
-  coinpay: {
-    /** Must be a MERCHANT api key (cp_live_/cp_test_ + 32 hex). An OAuth client id
-     *  (cp_ + 24 hex) authenticates but cannot create payments -- it fails only at
-     *  checkout, which is why this is asserted at boot rather than trusted. */
-    /* Read on use rather than snapshotted at import. These three are only ever
-       touched inside a request, and snapshotting them made the value depend on which
-       module imported config first -- which turned the webhook signature tests into a
-       coin flip decided by the rest of the suite. */
-    get apiKey() {
-      return opt('COINPAY_API_KEY');
-    },
-    get businessId() {
-      return opt('COINPAY_BUSINESS_ID');
-    },
-    get webhookSecret() {
-      return opt('COINPAY_WEBHOOK_SECRET');
-    },
-    baseUrl: opt('COINPAY_BASE_URL', 'https://coinpayportal.com'),
-    get enabled() {
-      return Boolean(this.apiKey && this.businessId && this.webhookSecret);
-    },
-  },
-
   reminders: {
-    /** Minutes before kickoff. The product promises 60 and 1. */
+    /** Minutes before a timed event. The product promises 60 and 1. */
     defaultOffsets: opt('REMINDER_OFFSETS', '60,1')
       .split(',')
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isFinite(n) && n > 0),
+    /*
+     * Minutes before an event that only has a DATE.
+     *
+     * A separate list because the sensible answers differ by two orders of
+     * magnitude: an hour before a launch, the morning of an album. 1440 is the
+     * day before and 0 is on the day, both measured against the noon-UTC anchor
+     * the adapters store for an undated release -- noon rather than midnight so
+     * the date lands inside the right calendar day for every reader rather than
+     * the previous evening for the Americas.
+     *
+     * Zero is allowed here and rejected above: "at the moment it is out" is a
+     * real choice for a release and a meaningless one for a timed event, which
+     * already has its own 1-minute offset.
+     */
+    dateOffsets: opt('REMINDER_DATE_OFFSETS', '1440,0')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n >= 0),
     /** Subscribers pulled per fan-out page. Queue depth stays proportional to
      *  batches, not to followers -- see packages/queue. */
     batchSize: num('REMINDER_BATCH_SIZE', 500),
     /** A reminder later than this past its due moment is dropped, not sent late.
-     *  Telling someone a game starts in an hour 40 minutes after kickoff is worse
+     *  Telling someone something starts in an hour, 40 minutes after it did, is worse
      *  than saying nothing. */
     maxLatenessSeconds: num('REMINDER_MAX_LATENESS_SECONDS', 300),
   },
 
   sync: {
-    /**
-     * Hours before the FULL fixture sweep counts as overdue at boot.
-     *
-     * 24, matching its repeatable. It was 6 when the sweep itself ran every 6
-     * hours; the near-window pass now carries the freshness that cadence was
-     * buying, at a fifth of the requests, so the sweep only has to cover what
-     * genuinely moves on a slower clock -- rosters, display names, and fixtures
-     * further out than the day after tomorrow.
-     */
-    staleHours: num('SYNC_STALE_HOURS', 24),
     /**
      * Sweep on the next boot whatever the clock says.
      *
@@ -207,16 +192,3 @@ export const config = {
     ttlDays: num('SESSION_TTL_DAYS', 90),
   },
 };
-
-/** Asserted at boot by whichever process is about to depend on it. */
-export function assertCoinpayMerchantKey() {
-  const k = config.coinpay.apiKey;
-  if (!k) return;
-  const merchant = /^cp_(live|test)_[0-9a-f]{32}$/.test(k);
-  if (!merchant) {
-    throw new Error(
-      'COINPAY_API_KEY is not a merchant API key. Expected cp_live_/cp_test_ + 32 hex. ' +
-        'An OAuth client id (cp_ + 24 hex) grants identity only and cannot create payments.',
-    );
-  }
-}

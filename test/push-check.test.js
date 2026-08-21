@@ -21,7 +21,9 @@ describe('notification self-check page', () => {
 
     // Every other page must stay clear of it: a support tool that ships on all
     // routes is just weight on every page load.
-    const plain = await render(About({ user: null, stats: { events: 0, teams: 0 } }));
+    const plain = await render(
+      About({ user: null, stats: { genres: 0, subjects: 0, upcoming: 0 } }),
+    );
     expect(plain).not.toContain('push-check.js');
   });
 

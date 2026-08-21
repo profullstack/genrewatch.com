@@ -44,7 +44,7 @@ function localiseTimes(root = document) {
   for (const el of document.querySelectorAll('[data-tz-label]')) el.textContent = zone;
 
   // Two forms, because they read in different places. Prose wants the full IANA
-  // name ("America/Los_Angeles"); a scoreboard wants the abbreviation people
+  // name ("America/Los_Angeles"); a schedule row wants the abbreviation people
   // actually say ("PDT"), which is short enough to sit under the time.
   const abbr = shortZone(zone, inZone);
   for (const el of root.querySelectorAll('[data-tz-abbr]')) el.textContent = abbr;
@@ -269,13 +269,11 @@ async function initPush() {
 
     btn.hidden = false;
     if (sub) {
-      if (label)
-        label.textContent = 'Notifications are on — an hour before kickoff, and a minute out.';
+      if (label) label.textContent = 'Notifications are on — before anything you follow is out.';
       btn.textContent = 'Turn off notifications';
       btn.className = 'ghost';
     } else {
-      if (label)
-        label.textContent = 'Get a notification an hour before kickoff, and one minute out.';
+      if (label) label.textContent = 'Get told before something you follow is out.';
       btn.textContent = 'Turn on notifications';
       btn.className = 'cta';
     }
@@ -610,7 +608,6 @@ function initNavigation() {
       if (push) history.pushState({}, '', url);
       window.scrollTo(0, 0);
       localiseTimes();
-      initMarketTabs();
       initPush();
       initPasskeys();
     } catch {
@@ -645,106 +642,8 @@ function initNavigation() {
 
 localiseTimes();
 reportTimezone();
-initMarketTabs();
 initPush();
 initPasskeys();
 initFollowForms();
 initCopyButtons();
 initNavigation();
-
-/* -------------------------------------------------------- where to watch -- */
-
-/**
- * The reader's country, as the name TheSportsDB would use for it.
- *
- * `navigator.language` carries a region subtag ("en-AU") far more often than any
- * other signal a static page has, and Intl turns that code into the same English
- * display name the listings are stored under -- "AU" becomes "Australia", "GB"
- * becomes "United Kingdom". That is why there is no country lookup table here:
- * maintaining one would mean shipping a second copy of ICU and getting it wrong.
- *
- * Returns null when the locale carries no region ("en", "fr"), which is common and
- * simply means we do not know -- the caller falls back to the widest market rather
- * than guessing.
- */
-function readerCountry() {
-  const tags = [navigator.language, ...(navigator.languages || [])].filter(Boolean);
-  for (const tag of tags) {
-    let region = null;
-    try {
-      region = new Intl.Locale(tag).region;
-    } catch {
-      region = tag.split('-')[1] || null;
-    }
-    if (!region) continue;
-    try {
-      const name = new Intl.DisplayNames(['en'], { type: 'region' }).of(region);
-      if (name && name !== region) return name;
-    } catch {
-      /* No Intl.DisplayNames: fall through and let the caller use the default. */
-    }
-  }
-  return null;
-}
-
-/**
- * Turn the full "where to watch" list into a tab strip.
- *
- * The server renders every market because it cannot know who is reading -- event
- * pages are cached and served byte-identical, the same constraint that makes
- * kickoff times UTC on the wire. This collapses the list once the browser can say
- * which country to open on, and does nothing at all if there is one market or the
- * markup is absent.
- */
-function initMarketTabs(root = document) {
-  for (const section of root.querySelectorAll('[data-markets]')) {
-    if (section.dataset.tabbed) continue;
-    const items = [...section.querySelectorAll('.market')];
-    if (items.length < 2) continue;
-
-    const mine = readerCountry();
-    // The server already ordered these widest-first, so index 0 is the sensible
-    // answer for a reader whose own country is not carried.
-    let active = items.findIndex((li) => li.dataset.country === mine);
-    if (active < 0) active = 0;
-
-    const tabs = document.createElement('div');
-    tabs.className = 'market-tabs';
-    tabs.setAttribute('role', 'tablist');
-
-    const select = (i) => {
-      items.forEach((li, n) => {
-        li.hidden = n !== i;
-      });
-      [...tabs.children].forEach((b, n) => {
-        b.setAttribute('aria-selected', String(n === i));
-        // Only the selected tab is in the tab order; arrow keys move between them,
-        // which is what a tablist is supposed to do.
-        b.tabIndex = n === i ? 0 : -1;
-      });
-    };
-
-    items.forEach((li, i) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'market-tab';
-      b.setAttribute('role', 'tab');
-      b.textContent = li.dataset.country;
-      b.addEventListener('click', () => select(i));
-      b.addEventListener('keydown', (e) => {
-        const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
-        if (!step) return;
-        e.preventDefault();
-        const next = (i + step + items.length) % items.length;
-        select(next);
-        tabs.children[next].focus();
-      });
-      tabs.appendChild(b);
-    });
-
-    section.querySelector('.market-list').before(tabs);
-    section.classList.add('is-tabbed');
-    section.dataset.tabbed = '1';
-    select(active);
-  }
-}

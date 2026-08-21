@@ -17,28 +17,33 @@ function esc(value) {
 
 const rfc822 = (d) => new Date(d).toUTCString();
 
-function title(event) {
-  const match =
-    event.away_name && event.home_name ? `${event.away_name} at ${event.home_name}` : event.name;
-  if (event.state === 'in') return `${match} — live, ${event.status_detail ?? 'in progress'}`;
-  if (event.state === 'post' && event.home_score !== null) {
-    return `${match} — final, ${event.away_score}–${event.home_score}`;
-  }
-  return match;
-}
+const title = (event) => event.name;
 
 function description(event, siteUrl) {
   const parts = [
-    event.league_name,
-    event.venue ? `at ${[event.venue, event.venue_city].filter(Boolean).join(', ')}` : null,
-    // Named market for the same reason the event page names it: a listing is only
-    // true somewhere, and a feed item is read far from wherever we rendered it.
-    event.broadcast
-      ? `on ${event.broadcast}${event.broadcast_country ? ` (${event.broadcast_country})` : ''}`
-      : null,
+    event.subject_name,
+    event.venue ? `on ${[event.venue, event.venue_region].filter(Boolean).join(', ')}` : null,
   ].filter(Boolean);
-  const when = new Date(event.starts_at).toUTCString();
-  return `${parts.join(' · ')}. Starts ${when}. ${siteUrl}/events/${event.id}`;
+
+  /*
+   * Never say "starts" about a date we padded.
+   *
+   * A feed item is read in a reader that has no idea what time_known means, so
+   * this is the last place the distinction can be made. Printing a UTC timestamp
+   * for a film that only has a release date states an hour nobody announced, and
+   * it is the kind of wrong that gets quoted back as fact.
+   */
+  const when = event.time_known
+    ? `Starts ${new Date(event.starts_at).toUTCString()}`
+    : `Out ${new Date(event.starts_at).toLocaleDateString('en-US', {
+        timeZone: 'UTC',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })}`;
+
+  return `${parts.join(' · ')}. ${when}. ${siteUrl}/events/${event.id}`;
 }
 
 /**
@@ -55,11 +60,11 @@ export function buildFeed(
         '    <item>',
         `      <title>${esc(title(e))}</title>`,
         `      <link>${esc(`${siteUrl}/events/${e.id}`)}</link>`,
-        // Permanent and stable: a reader must not re-show a fixture because its
-        // score changed.
+        // Permanent and stable: a reader must not re-show an event because a
+        // detail on it changed.
         `      <guid isPermaLink="false">genrewatch-event-${e.id}</guid>`,
         `      <pubDate>${rfc822(e.starts_at)}</pubDate>`,
-        `      <category>${esc(e.league_name)}</category>`,
+        `      <category>${esc(e.category)}</category>`,
         `      <description>${esc(description(e, siteUrl))}</description>`,
         '    </item>',
       ].join('\n'),

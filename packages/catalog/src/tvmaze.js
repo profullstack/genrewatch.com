@@ -98,6 +98,7 @@ export async function fetchAll({ from = new Date(), horizonDays = 60 } = {}) {
   if (!Array.isArray(rows)) return { genres: [], subjects: [], events: [] };
 
   const cutoff = new Date(from.getTime() + horizonDays * 86_400_000);
+  const floor = new Date(from.getTime() - 86_400_000);
   const genres = new Map();
   const subjects = new Map();
   const events = [];
@@ -108,10 +109,17 @@ export async function fetchAll({ from = new Date(), horizonDays = 60 } = {}) {
 
     const startsAt = new Date(ep.airstamp);
     if (Number.isNaN(startsAt.getTime())) continue;
-    // The feed reaches a few days into the past for shows that have just aired.
-    // Those are not reminders, and storing them would put yesterday at the top of
-    // every genre page.
-    if (startsAt > cutoff) continue;
+    /*
+     * Bounded at BOTH ends.
+     *
+     * `/schedule/full` is not a forward-only feed -- it reaches several days into
+     * the past for shows that have just aired. Filtering only the far end let
+     * those through, and because every list on this site is ordered by start
+     * time ascending, last Tuesday's episode sorted to the TOP of every genre
+     * page. A day of grace keeps something that aired this morning visible
+     * without turning the calendar into an archive.
+     */
+    if (startsAt < floor || startsAt > cutoff) continue;
 
     /*
      * An empty `airtime` is TVmaze saying it does not know the slot.
