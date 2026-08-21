@@ -985,8 +985,8 @@ app.get('/sitemaps/:file', async (c) => {
 app.get('/manifest.webmanifest', (c) =>
   c.json({
     name: 'GenreWatch',
-    short_name: 'Tipoff',
-    description: 'Follow any team in the world and get told before they play.',
+    short_name: 'GenreWatch',
+    description: 'Follow a genre or a name and get told before it drops.',
     start_url: '/following',
     display: 'standalone',
     orientation: 'portrait-primary',

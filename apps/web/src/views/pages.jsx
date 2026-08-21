@@ -47,7 +47,7 @@ const CategoryNav = ({ current }) => (
 );
 
 export const Landing = ({ user, today, vapidKey }) => (
-  <Layout title="GenreWatch — know before it drops" user={user} vapidKey={vapidKey}>
+  <Layout title="Know before it drops" user={user} vapidKey={vapidKey}>
     <section class="hero">
       <h1>Know before it drops.</h1>
       <p class="lede">
