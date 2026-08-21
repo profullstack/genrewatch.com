@@ -12,9 +12,8 @@ COPY packages/auth/package.json packages/auth/
 COPY packages/config/package.json packages/config/
 COPY packages/db/package.json packages/db/
 COPY packages/notify/package.json packages/notify/
-COPY packages/payments/package.json packages/payments/
 COPY packages/queue/package.json packages/queue/
-COPY packages/sports/package.json packages/sports/
+COPY packages/catalog/package.json packages/catalog/
 RUN bun install --frozen-lockfile || bun install
 
 FROM base AS runtime

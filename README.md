@@ -1,97 +1,99 @@
 # genrewatch.com
 
-Sports calendar and reminder PWA. Follow any team in the world; get a web
-notification and an email an hour before kickoff, and again one minute out.
-Free for users.
+A release calendar for every genre. Follow a genre or a name — a show, a film, an
+artist, a rocket — and get told before it is out.
 
-## Stack
+Sibling to [tipoffwatch.com](https://tipoffwatch.com), which does the same thing for
+sport. `/sports` here redirects there rather than being reimplemented thinly.
 
-One Bun process, one Railway service, two managed datastores.
+## The one idea that shapes everything
 
-| Layer | Choice | Why |
-|---|---|---|
-| Runtime | Bun 1.3 | Web and workers share one runtime, so one container runs both |
-| Web | Hono + `hono/jsx` SSR | Server-rendered; every control is a plain form and works with JS off |
-| Data | Postgres | Write-heavy at viral scale: follows, fan-out claims, delivery receipts |
-| Queue | BullMQ on Redis | Reminder fan-out, fixture sync, retries and backoff |
-| Auth | Magic link + passkey | No passwords, so nothing to reset, rotate or leak |
-| Fixtures | ESPN public JSON | 354 leagues / 17 sports, free and keyless |
+A sports fixture always has a kickoff. **A release very often has a date and no
+time.** TMDB says a film opens on 16 December; MusicBrainz says an album is out in
+2026 and nothing finer; The Space Devs says outright that a launch date is accurate
+only to the month.
 
-## Running locally
+So every row carries `time_known` and `precision`, and that flag travels all the way
+through:
+
+| Layer | What it does with it |
+|---|---|
+| Adapters | Store an undated release at **noon UTC**, never midnight — midnight is the previous evening for the Americas |
+| Scheduler | Two reminder classes: minute offsets (60, 1) for timed events, date offsets (1440, 0) for dated ones |
+| Pages | Never print a clock for a time nobody announced; an undated row is visibly different |
+| ICS | Emits an **all-day** `DTSTART;VALUE=DATE` entry, alarmed 09:00 on the day rather than 60 minutes before a noon anchor |
+| RSS + API | Say "Out Friday 4 September", not "Starts 12:00:00 GMT" |
+
+`precision` of `month` or `year` is browsable but **never remindable** — a
+representative day is not a promise.
+
+## The catalogue
+
+`category → genre → subject → event`. A subject belongs to many genres (a show is
+Drama *and* Sci-Fi *and* Thriller), so that edge is a join table, not a column.
+
+| Category | Source | Key? | Notes |
+|---|---|---|---|
+| tv | TVmaze | no | `/schedule/full` returns the **entire** forward schedule in one request |
+| anime | AniList | no | Real per-episode airing timestamps; 30–90 req/min |
+| film | TMDB | free | The only key. Without it, film is skipped rather than broken |
+| music | MusicBrainz | no | 1 req/sec, hard. See below |
+| space | The Space Devs | no | **15 requests per hour**, for the whole deployment |
+| sports | — | — | Redirects to tipoffwatch.com |
+
+Cadence is per adapter and enforced against the **last completed sync** recorded in
+the database (`genres.synced_at`), never against a job timer — a repeatable's timer
+resets on every deploy, so on a busy day a timer-based sweep can be pushed forward
+forever and never run.
+
+### Music is thin, and that is honest
+
+Measured against the live API on 2026-08-21, over a four-month forward window:
+
+- MusicBrainz knows about **2,228** official releases.
+- **11%** carry a day. The rest are "2026" or "2026-09".
+- Of the artists behind those, **25%** have any genre tag.
+
+The alternatives were measured too and are worse: Wikidata has 46 forward music
+releases in *six* months, iTunes Search does not expose pre-orders at all, and
+Deezer's genre-to-artist mapping files Bad Bunny under Rock. There is no free source
+with volume, dates and genres together. Artist genres are resolved incrementally
+(`MUSIC_LOOKUP_BUDGET` per pass) and cached — **including the negatives**, which is
+what stops each pass re-asking about the same untagged artists.
+
+## Your own channel list
+
+Optional, private, per account. Add the M3U your provider already gave you and the
+site tells you which of *your* channels is carrying something you follow, and shows
+your provider's own `group-title` values as your own genre index at `/my/channels`.
+
+Nothing is pooled, relayed or resold. The playlist URL carries your credentials, so
+it is encrypted at rest and the hand-off is a one-channel file your own player
+opens — nothing streams through GenreWatch.
+
+## Running it
 
 ```sh
-cp .env.example .env      # fill in what you need; nothing is required to boot
-docker compose up         # app + postgres + redis
-bun run sync              # seed the catalogue and the first fortnight of fixtures
+bun install
+cp .env.example .env          # only DATABASE_URL is required
+bun run migrate
+bun run sync                  # seed the catalogue; --force ignores intervals
+bun run dev
 ```
 
-Without Docker, point `DATABASE_URL` and `REDIS_URL` at any Postgres and Redis
-and run `bun run dev`.
+`bun test` runs the migrations and the scale-critical queries against a real
+Postgres 18 in-process (PGlite) — no server, no Docker.
 
-## Layout
+## Deployment
 
-```
-apps/web        Hono server, JSX views, PWA assets. Also boots the workers.
-apps/worker     Same workers, standalone, for when one instance stops being enough.
-packages/config Reads the environment. Nothing else touches process.env.
-packages/db     Schema, forward-only migrations, and every query the app runs.
-packages/sports Provider adapters. ESPN today; the interface takes others.
-packages/queue  BullMQ queues, schedules and the fan-out workers.
-packages/notify Web push (VAPID) and email (Resend).
-packages/auth   Magic link, passkeys, sessions.
-packages/payments CoinPay checkout, webhook verification, entitlements.
-```
+One container runs both roles; `ROLES=web,worker` picks which. Lives in the shared
+"Profullstack, Inc." Railway project as service `genrewatch.com`, with its own
+`Postgres-iVtY` and `Redis-wSsW`.
 
-## How reminders scale
+**`PORT` must match the domain's target port** (8080 here). With the app on 3000 and
+the domain targeting 8080, every request 404s while the container reports healthy.
 
-This is the part built for going viral, so it is worth stating plainly.
-
-A naive implementation enqueues one job per follower when a game approaches. A
-World Cup final with two million followers would enqueue two million jobs at
-once and the queue becomes the outage.
-
-Instead there are three tiers:
-
-1. **Scan** (every 30s) finds events crossing a reminder threshold and enqueues
-   one job per `(event, offset)` — job id `fo:<event>:<offset>`, so a scan that
-   runs twice produces the same job rather than a second fan-out.
-2. **Fan-out** pages that event's followers with a keyset cursor on `user_id`
-   and enqueues one job per *page* of 500. Two million followers become four
-   thousand jobs, and paging cost stays flat instead of degrading with `OFFSET`.
-3. **Batch** claims and sends. The claim is an insert into `reminder_deliveries`
-   whose primary key is `(event, user, offset, channel)`; a retried or duplicated
-   job gets an empty set back and sends nothing.
-
-Claiming happens **before** sending, so the worst case is a dropped notification
-rather than a duplicate one — the right way round for something that buzzes a
-phone at midnight. Reminders more than `REMINDER_MAX_LATENESS_SECONDS` past due
-are dropped rather than delivered late.
-
-## Fixture ingestion
-
-ESPN publishes an unauthenticated JSON API. It is undocumented and carries no
-SLA, which is exactly why every response is normalised and persisted immediately:
-the calendar serves from our own tables, so an upstream outage degrades freshness
-instead of blanking the site.
-
-A whole date range comes back in one request, so a 14-day horizon costs one call
-per league — a full sweep of 354 leagues is ~354 requests. That is why this runs
-free where a live-scores vendor would charge $129/mo: schedules are cheap, live
-scores are what you pay for.
-
-Responses cap at ~100 events, so `fetchSchedule` splits the window and re-fetches
-when it hits the cap — a truncated response is otherwise indistinguishable from a
-quiet fortnight and would silently drop half a busy league's season.
-
-## Deploying
-
-One Railway service from the Dockerfile, plus managed Postgres and Redis.
-`ROLES` decides what an instance runs (`web`, `worker`, or both — the default).
-Migrations apply themselves on boot behind an advisory lock, so a deploy needs no
-manual step.
-
-Never hardcode a port: Railway injects `PORT`, and a fixed `-p` leaves the edge
-proxy forwarding to a closed socket while the container reports healthy.
-
-Secrets belong on the service and in the logicsrc vault, not in a committed
-`.env`.
+**`SITE_URL` is what every generated URL is built from** — canonicals, og:image, RSS
+self-links, calendar feed URLs, notification click targets, every link in a reminder
+email, and the passkey `rpID`. Changing it invalidates every passkey already
+registered.
