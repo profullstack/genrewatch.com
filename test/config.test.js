@@ -67,3 +67,31 @@ describe('reminder offsets', () => {
     }
   });
 });
+
+describe('the sync sequence', () => {
+  /*
+   * The sync walks providers one at a time, so ordering is a real scheduling
+   * decision rather than cosmetics. Spaceflight gets FIFTEEN requests an hour for
+   * the whole deployment and its pass is two of them; music is one request per
+   * second against an upstream that times out. On the first production sync music
+   * held the queue long enough that spaceflight had still not run twenty minutes
+   * later, and it only gets one chance an hour.
+   */
+  test('the cheap, hourly-budgeted provider runs before the slow one', async () => {
+    const src = await Bun.file(
+      new URL('../packages/catalog/src/index.js', import.meta.url).pathname,
+    ).text();
+    expect(src.indexOf("name: 'spacedevs'")).toBeLessThan(src.indexOf("name: 'musicbrainz'"));
+  });
+
+  test('music carries a wall-clock ceiling so it cannot monopolise a pass', async () => {
+    const src = await Bun.file(
+      new URL('../packages/catalog/src/musicbrainz.js', import.meta.url).pathname,
+    ).text();
+    expect(src).toContain('const outOfTime =');
+    // Enforced in BOTH loops. Checking only the pager would leave the artist
+    // backfill free to spend sixty seconds past the deadline, one second at a time.
+    expect(src).toContain('if (outOfTime()) break;');
+    expect(src).toContain('!outOfTime()');
+  });
+});

@@ -73,7 +73,12 @@ export async function fetchAll({
   maxPages = 12,
   genreCache = new Map(),
   lookupBudget = 60,
+  deadlineMs = 180_000,
 } = {}) {
+  // Whatever has been collected when this expires is written; the rest arrives on
+  // the next pass. See the note in the orchestrator.
+  const deadline = Date.now() + deadlineMs;
+  const outOfTime = () => Date.now() > deadline;
   const to = new Date(from.getTime() + horizonDays * 86_400_000);
   const query = encodeURIComponent(`date:[${ymd(from)} TO ${ymd(to)}] AND status:official`);
 
@@ -82,6 +87,7 @@ export async function fetchAll({
   const subjects = new Map();
 
   for (let page = 0; page < maxPages; page++) {
+    if (outOfTime()) break;
     const url = `${BASE}/release?query=${query}&fmt=json&limit=${PAGE}&offset=${page * PAGE}`;
     const res = await getJson(url, { minGapMs: MIN_GAP_MS, timeoutMs: 45_000 });
     const releases = res?.releases ?? [];
@@ -133,7 +139,7 @@ export async function fetchAll({
     const cached = genreCache.get(subject.providerKey);
     let names = cached;
 
-    if (names === undefined && spent < lookupBudget) {
+    if (names === undefined && spent < lookupBudget && !outOfTime()) {
       spent++;
       try {
         const a = await getJson(`${BASE}/artist/${subject._mbid}?inc=genres&fmt=json`, {

@@ -95,6 +95,16 @@ export const config = {
      * does not have tags for most of these artists yet.
      */
     musicLookupBudget: num('MUSIC_LOOKUP_BUDGET', 60),
+
+    /**
+     * Wall-clock ceiling on one music pass, in milliseconds.
+     *
+     * MusicBrainz is one request per second with unreliable response times, and
+     * the sync walks providers in sequence -- so without a ceiling a bad
+     * afternoon there delays every provider behind it. Three minutes is comfortably
+     * more than a healthy pass needs and far less than a degraded one will take.
+     */
+    musicDeadlineMs: num('MUSIC_DEADLINE_MS', 180_000),
   },
 
   /**

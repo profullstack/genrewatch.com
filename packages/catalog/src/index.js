@@ -53,14 +53,6 @@ const REGISTRY = [
     minIntervalMinutes: 720,
   },
   {
-    name: 'musicbrainz',
-    category: 'music',
-    module: musicbrainz,
-    // One request per second, and the artist-genre backfill is the slow part.
-    // Running this often does not make it finish sooner; it just re-reads.
-    minIntervalMinutes: 720,
-  },
-  {
     name: 'spacedevs',
     category: 'space',
     module: spacedevs,
@@ -70,8 +62,22 @@ const REGISTRY = [
      * Fifteen requests per hour is the entire anonymous budget for the whole
      * deployment. Two pages per pass leaves headroom for a retry; a second pass
      * inside the hour does not.
+     *
+     * Ordered BEFORE music deliberately. This pass is two requests and five
+     * seconds; music is one request per second with a slow upstream, and on the
+     * first production sync it held the queue long enough that spaceflight --
+     * which only gets one chance an hour -- had still not run twenty minutes
+     * later. The cheap, tightly-budgeted provider goes first.
      */
     minIntervalMinutes: 60,
+  },
+  {
+    name: 'musicbrainz',
+    category: 'music',
+    module: musicbrainz,
+    // One request per second, and the artist-genre backfill is the slow part.
+    // Running this often does not make it finish sooner; it just re-reads.
+    minIntervalMinutes: 720,
   },
 ];
 
@@ -134,6 +140,17 @@ export async function syncOne(entry, { log = console.log, force = false } = {}) 
   if (category === 'music') {
     extra.genreCache = await q.knownSubjectGenres(category);
     extra.lookupBudget = config.catalog.musicLookupBudget;
+    /*
+     * And a wall-clock ceiling.
+     *
+     * MusicBrainz is rate limited to one request a second and its response times
+     * are not reliable -- probing it from a dev box produced read timeouts more
+     * than once. With retries on top, a bad afternoon turns twelve pages into
+     * twenty minutes, and because the pass is sequential every provider after it
+     * waits. The budget is a floor on progress rather than a target: whatever has
+     * been collected when it expires is written, and the rest arrives next pass.
+     */
+    extra.deadlineMs = config.catalog.musicDeadlineMs;
   }
 
   const result = await module.fetchAll({
