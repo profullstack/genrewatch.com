@@ -1834,3 +1834,69 @@ ul.factlist li > span:first-child {
     aspect-ratio: 16 / 9;
   }
 }
+
+/* ==================================================================== search ==
+   The one page that is not a calendar: past and future together, so the year is
+   what tells a 1999 film from one out next month. */
+
+.searchbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin: 1rem 0 1.5rem;
+}
+.searchbar .field {
+  flex: 1 1 18rem;
+  margin: 0;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+ul.results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+li.result {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--line);
+}
+li.result img {
+  border-radius: 6px;
+  flex: none;
+  object-fit: cover;
+  background: var(--panel);
+}
+.result-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.result-main a {
+  font-family: var(--disp);
+  font-size: 1.2rem;
+}
+.result-blurb {
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin: 0.3rem 0 0;
+  /* Two lines: enough to tell two films apart, not enough to bury the next one. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.badge.owned {
+  background: var(--ok);
+  color: oklch(0.16 0.02 155);
+  flex: none;
+}

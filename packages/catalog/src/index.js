@@ -331,3 +331,136 @@ export async function syncDetail({ log = console.log, limit = 120 } = {}) {
 function brandProviders() {
   return config.catalog.providers;
 }
+
+/**
+ * Search locally, then ask TMDB for whatever we do not hold.
+ *
+ * The local catalogue is a few thousand titles; TMDB has about a million. Bulk
+ * ingesting the rest is neither possible nor useful, so anything not found here
+ * is looked up live and written down on the way past -- which means the second
+ * person to search for a film gets a local hit, and the catalogue grows towards
+ * what people actually ask for rather than towards what an ingest script guessed.
+ *
+ * The fallthrough only runs when the local answer is thin. A search that already
+ * has good matches should not pay a network round trip to append worse ones.
+ */
+export async function searchWithFallthrough(term, { limit = 30, category = null } = {}) {
+  const local = await q.searchCatalogue(term, { limit, category });
+  const strong = local.filter((r) => Number(r.score) >= 0.35 || r.upcoming > 0);
+  if (strong.length >= 5 || !config.catalog.tmdbKey) return local;
+  if (category && category !== 'film') return local;
+
+  let found = [];
+  try {
+    found = await tmdb.searchTitles(term, { apiKey: config.catalog.tmdbKey });
+  } catch {
+    // A search box must not fail because an upstream did.
+    return local;
+  }
+  if (found.length === 0) return local;
+
+  const ingested = await ingestSearchResults(found);
+  // Local rows first: they are the ones we know something about.
+  const seen = new Set(local.map((r) => r.id));
+  return [...local, ...ingested.filter((r) => !seen.has(r.id))].slice(0, limit);
+}
+
+/**
+ * Write live search results into the catalogue.
+ *
+ * Same shape the back-catalogue pass produces, so a title arrived at by searching
+ * is indistinguishable from one that was ingested in bulk -- it has genres, a
+ * poster, a release event, and it can be followed.
+ */
+async function ingestSearchResults(results) {
+  const rows = tmdb.fromSearchResults(results);
+  if (rows.subjects.length === 0) return [];
+
+  const genreIds = await q.upsertGenres(rows.genres);
+  const subjectIds = await q.upsertSubjects(rows.subjects);
+  await q.replaceSubjectGenres(
+    rows.subjects
+      .map((s) => ({
+        subjectId: subjectIds.get(s.providerKey),
+        genreIds: (s.genreKeys ?? []).map((k) => genreIds.get(k)).filter(Boolean),
+      }))
+      .filter((r) => r.subjectId),
+  );
+
+  const events = rows.events
+    .map((e) => ({ ...e, subjectId: subjectIds.get(e.subjectKey) }))
+    .filter((e) => e.subjectId);
+  const eventIds = await q.upsertEvents(events);
+  await q.replaceEventGenres(
+    events
+      .map((e) => ({
+        eventId: eventIds.get(e.providerKey),
+        genreIds: (rows.subjects.find((s) => s.providerKey === e.subjectKey)?.genreKeys ?? [])
+          .map((k) => genreIds.get(k))
+          .filter(Boolean),
+      }))
+      .filter((r) => r.eventId && r.genreIds.length),
+  );
+
+  return rows.subjects
+    .map((s) => ({
+      id: subjectIds.get(s.providerKey),
+      slug: s.slug,
+      display_name: s.displayName,
+      category: s.category,
+      kind: s.kind,
+      image_url: s.imageUrl,
+      backdrop_url: s.backdropUrl,
+      description: s.description,
+      popularity: s.popularity,
+      upcoming: 0,
+    }))
+    .filter((r) => r.id);
+}
+
+/**
+ * Fill in the back catalogue, a slice at a time.
+ *
+ * Popularity-ordered and paged, so each pass takes the next slice and the whole
+ * thing arrives over a few hours rather than in one enormous burst. It only ever
+ * needs doing once -- what was released in 1999 does not change -- so the cursor
+ * stops when it reaches the end and the pass becomes a no-op.
+ *
+ * Everything here is stored with state 'out', which is what keeps a few thousand
+ * old films off the calendar pages: those filter on it.
+ */
+export async function syncBackCatalogue({ log = console.log, pages = 25 } = {}) {
+  if (!config.catalog.providers.includes('tmdb') || !config.catalog.tmdbKey) {
+    return { skipped: 'tmdb not enabled' };
+  }
+
+  const done = await q.backCataloguePagesDone();
+  if (done >= config.catalog.backCataloguePages) return { done: true, pages: done };
+
+  const startPage = done + 1;
+  const result = await tmdb.fetchBackCatalogue({
+    apiKey: config.catalog.tmdbKey,
+    pages,
+    startPage,
+  });
+  if (result.skipped) return result;
+
+  const genreIds = await q.upsertGenres(result.genres);
+  const subjectIds = await q.upsertSubjects(result.subjects);
+  await q.replaceSubjectGenres(
+    result.subjects
+      .map((s) => ({
+        subjectId: subjectIds.get(s.providerKey),
+        genreIds: (s.genreKeys ?? []).map((k) => genreIds.get(k)).filter(Boolean),
+      }))
+      .filter((r) => r.subjectId),
+  );
+  const events = result.events
+    .map((e) => ({ ...e, subjectId: subjectIds.get(e.subjectKey) }))
+    .filter((e) => e.subjectId);
+  await q.upsertEvents(events);
+  await q.setBackCataloguePagesDone(startPage + pages - 1);
+
+  log(`[sync] back catalogue: pages ${startPage}-${startPage + pages - 1}, ${events.length} films`);
+  return { pages: startPage + pages - 1, films: events.length };
+}

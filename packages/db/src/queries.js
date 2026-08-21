@@ -310,6 +310,10 @@ export async function upsertSubjects(subjects) {
       description: s.description ?? null,
       image_url: s.imageUrl ?? null,
       backdrop_url: s.backdropUrl ?? null,
+      popularity: s.popularity ?? null,
+      // Lowercased once here rather than per query: a trigram index cannot be
+      // built over an expression, and matching has to be case-insensitive.
+      search_text: String(s.displayName ?? s.name ?? '').toLowerCase(),
       url: s.url ?? null,
     }));
     return sql`
@@ -323,6 +327,8 @@ export async function upsertSubjects(subjects) {
         description = coalesce(excluded.description, subjects.description),
         image_url = coalesce(excluded.image_url, subjects.image_url),
         backdrop_url = coalesce(excluded.backdrop_url, subjects.backdrop_url),
+        popularity = coalesce(excluded.popularity, subjects.popularity),
+        search_text = excluded.search_text,
         url = coalesce(excluded.url, subjects.url)
       returning id, provider_key
     `;
@@ -546,6 +552,32 @@ export async function markDetailAttempted(eventIds) {
   `;
 }
 
+/*
+ * How far the back-catalogue walk has got.
+ *
+ * Kept in a one-row table rather than derived from the data, because "how many
+ * pages have I fetched" is not answerable from the rows: pages overlap as
+ * popularity shifts, and counting films would drift further from the truth on
+ * every pass.
+ */
+export async function backCataloguePagesDone() {
+  const [row] = await sql`
+    select coalesce(max(pages_done), 0)::int as n from catalogue_progress
+    where provider = 'tmdb'
+  `;
+  return row?.n ?? 0;
+}
+
+export async function setBackCataloguePagesDone(pages) {
+  await sql`
+    insert into catalogue_progress (provider, pages_done, updated_at)
+    values ('tmdb', ${pages}, now())
+    on conflict (provider) do update set
+      pages_done = greatest(catalogue_progress.pages_done, excluded.pages_done),
+      updated_at = now()
+  `;
+}
+
 /* --------------------------------------------------------- catalogue reads -- */
 
 /** Categories that actually have something in them, with counts. */
@@ -717,6 +749,58 @@ export async function genresForEvent(eventId) {
     where eg.event_id = ${eventId} and g.active
     order by g.name
   `;
+}
+
+/**
+ * Search the whole catalogue, past and future.
+ *
+ * Deliberately unbounded by date. Every other read on this site filters to what
+ * has not happened yet, which is right for a calendar and wrong here -- the
+ * question behind a search box is "do you have this", and a film from 1999 is a
+ * perfectly good answer.
+ *
+ * Ranked by similarity first and popularity second. Similarity alone puts an
+ * exact match on an obscure title above a near match on a famous one, which is
+ * wrong for the way people type; popularity alone ignores what was asked. The
+ * band is the compromise: close matches together, then the ones people mean.
+ */
+export async function searchCatalogue(term, { limit = 30, category = null } = {}) {
+  const q = String(term ?? '')
+    .trim()
+    .toLowerCase();
+  if (q.length < 2) return [];
+
+  return sql`
+    select s.id, s.slug, s.display_name, s.category, s.kind, s.image_url,
+           s.backdrop_url, s.description, s.popularity,
+           similarity(s.search_text, ${q}) as score,
+           (select e.id from events e where e.subject_id = s.id
+             order by e.starts_at desc limit 1) as event_id,
+           (select e.starts_at from events e where e.subject_id = s.id
+             order by e.starts_at desc limit 1) as starts_at,
+           (select count(*) from events e
+             where e.subject_id = s.id and e.starts_at > now())::int as upcoming
+    from subjects s
+    where (${category}::text is null or s.category = ${category})
+      and (s.search_text % ${q} or s.search_text like ${`%${q}%`})
+    order by
+      -- A prefix match is what someone typing a title means, every time.
+      (s.search_text like ${`${q}%`}) desc,
+      similarity(s.search_text, ${q}) desc,
+      s.popularity desc nulls last
+    limit ${limit}
+  `;
+}
+
+/** Does this catalogue already hold that provider key? Used before ingesting a
+ *  live search result, so a repeated search does not write the same row twice. */
+export async function subjectsByProviderKeys(keys) {
+  if (!keys?.length) return new Map();
+  const rows = await sql`
+    select provider_key, id, slug from subjects
+    where provider_key = any(${pgArray(keys)}::text[])
+  `;
+  return new Map(rows.map((r) => [r.provider_key, r]));
 }
 
 /** Powers the follow picker's search box. */

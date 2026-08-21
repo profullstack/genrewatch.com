@@ -1,5 +1,11 @@
 import * as auth from '@genre/auth';
-import { CATEGORIES, EXTERNAL_CATEGORIES, oneChannelM3u } from '@genre/catalog';
+import {
+  CATEGORIES,
+  EXTERNAL_CATEGORIES,
+  channelsForTitle,
+  oneChannelM3u,
+  searchWithFallthrough,
+} from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendLoginLink } from '@genre/notify';
@@ -22,6 +28,7 @@ import {
   Landing,
   NotFound,
   PushCheck,
+  SearchPage,
   Settings,
   SignIn,
   SubjectPage,
@@ -30,6 +37,30 @@ import {
 export const app = new Hono();
 
 /* ----------------------------------------------------------------- helpers -- */
+
+/**
+ * Which of these titles are already in the reader's own channel list.
+ *
+ * Matched by name against their own entries, and only ever for the account that
+ * supplied them. Returns a Set of subject ids so a template can ask cheaply.
+ */
+async function ownedTitles({ userId, results }) {
+  const none = new Set();
+  if (!userId || !results?.length || !config.playlists.enabled) return none;
+
+  const rows = await q.playlistChannels(userId);
+  if (rows.length === 0) return none;
+
+  const channels = rows.map((r) => ({ title: r.title, url: r.stream_url, kind: r.kind }));
+  const owned = new Set();
+  for (const r of results) {
+    const hit = channelsForTitle(channels, { title: r.display_name });
+    if (hit.length > 0) owned.add(r.id);
+  }
+  return owned;
+}
+
+
 
 /**
  * Answer the caller in its own language.
@@ -207,6 +238,59 @@ app.get('/subjects/:slug', async (c) => {
       />,
     ),
   );
+});
+
+/**
+ * Search, across everything -- including what already came out.
+ *
+ * Every other read here filters to the future, which is right for a calendar and
+ * useless for someone with a subscription asking "do you have this". So this one
+ * has no date filter at all, and falls through to the provider for the roughly
+ * one million films the local catalogue does not hold.
+ *
+ * Not cached: it is per-query, and for a signed-in reader it also carries whether
+ * each result is in their own channel list, which must never be served to anyone
+ * else.
+ */
+app.get('/search', async (c) => {
+  const user = c.get('user');
+  const term = (c.req.query('q') ?? '').trim();
+  const category = CATEGORIES.includes(c.req.query('category')) ? c.req.query('category') : null;
+
+  const results = term.length >= 2 ? await searchWithFallthrough(term, { category }) : [];
+  // Whether the reader already has each of these, which is the whole point of
+  // searching a back catalogue.
+  const owned = await ownedTitles({ userId: user?.id, results });
+
+  return c.html(
+    await render(
+      <SearchPage user={user} term={term} category={category} results={results} owned={owned} />,
+    ),
+  );
+});
+
+app.get('/api/v1/search', async (c) => {
+  const term = (c.req.query('q') ?? '').trim();
+  if (term.length < 2) return c.json({ error: 'q must be at least 2 characters' }, 400);
+  const category = CATEGORIES.includes(c.req.query('category')) ? c.req.query('category') : null;
+  const limit = Math.min(Number(c.req.query('limit') ?? 20) || 20, 50);
+
+  const results = (await searchWithFallthrough(term, { category, limit })).slice(0, limit);
+  c.header('cache-control', 'public, max-age=60');
+  return c.json({
+    query: term,
+    count: results.length,
+    results: results.map((r) => ({
+      slug: r.slug,
+      name: r.display_name,
+      category: r.category,
+      kind: r.kind,
+      image: r.image_url,
+      released: r.starts_at ?? null,
+      upcoming: r.upcoming > 0,
+      url: `${config.siteUrl}/subjects/${r.slug}`,
+    })),
+  });
 });
 
 app.get('/following', async (c) => {

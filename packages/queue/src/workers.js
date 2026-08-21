@@ -1,4 +1,4 @@
-import { syncAll, syncDetail } from '@genre/catalog';
+import { syncAll, syncBackCatalogue, syncDetail } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendEmail, sendPush } from '@genre/notify';
@@ -258,8 +258,11 @@ export function startWorkers({ concurrency = {} } = {}) {
         const results = await syncAll({ force: Boolean(job.data?.force) });
         // After the catalogue, top up the per-title detail within its budget.
         const detail = await syncDetail({ log });
+        // A slice of the back catalogue each pass, so it arrives over hours
+        // rather than in one burst. Becomes a no-op once the walk is done.
+        const back = await syncBackCatalogue({ log });
         await dropPageCache(results);
-        return { results, detail };
+        return { results, detail, back };
       },
       { connection, concurrency: 1 },
     ),

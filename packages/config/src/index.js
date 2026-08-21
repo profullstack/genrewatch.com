@@ -105,6 +105,17 @@ export const config = {
      * more than a healthy pass needs and far less than a degraded one will take.
      */
     musicDeadlineMs: num('MUSIC_DEADLINE_MS', 180_000),
+
+    /**
+     * How deep to walk TMDB's back catalogue, in pages of twenty.
+     *
+     * 200 pages is 4,000 films and reaches well past anything a reader would
+     * name -- page 20 of this ordering is The Empire Strikes Back and page 250 is
+     * already titles nobody searches for. The remaining million are reachable by
+     * search falling through to the provider live, so this number is about what
+     * is worth holding, not about coverage.
+     */
+    backCataloguePages: num('BACK_CATALOGUE_PAGES', 200),
   },
 
   /**

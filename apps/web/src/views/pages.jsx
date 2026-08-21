@@ -580,6 +580,80 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
   );
 };
 
+/**
+ * Search results, past and future together.
+ *
+ * The one page here that is not a calendar. A film from 1999 and one out next
+ * month are equally good answers to "do you have this", so nothing is filtered by
+ * date and the year is shown instead -- which is what tells them apart.
+ */
+export const SearchPage = ({ user, term, category, results, owned }) => (
+  <Layout title={term ? `${term} — search` : 'Search'} user={user}>
+    <h1>Search</h1>
+
+    <form method="get" action="/search" class="searchbar">
+      <label class="field">
+        <span class="visually-hidden">Search</span>
+        <input
+          type="search"
+          name="q"
+          value={term ?? ''}
+          placeholder="A show, a film, an artist, a rocket"
+          autocomplete="off"
+          autofocus
+        />
+      </label>
+      <select name="category">
+        <option value="">Everything</option>
+        {Object.entries(CATEGORY_LABEL).map(([slug, meta]) => (
+          <option value={slug} selected={slug === category}>
+            {meta.name}
+          </option>
+        ))}
+      </select>
+      <button class="cta" type="submit">
+        Search
+      </button>
+    </form>
+
+    {!term ? (
+      <p class="muted">
+        Everything we know about, whether it is out yet or not. If you have added a channel list,
+        results say which ones you already have.
+      </p>
+    ) : results.length === 0 ? (
+      <p class="empty">Nothing matched “{term}”.</p>
+    ) : (
+      <ul class="results">
+        {results.map((r) => (
+          <li class="result">
+            {r.image_url ? (
+              <img src={r.image_url} alt="" loading="lazy" width="60" height="90" />
+            ) : (
+              <span class="subject-blank" />
+            )}
+            <div class="result-main">
+              <a href={`/subjects/${r.slug}`}>{r.display_name}</a>
+              <span class="meta">
+                {CATEGORY_LABEL[r.category]?.name ?? r.category}
+                {r.starts_at ? ` · ${new Date(r.starts_at).getUTCFullYear()}` : ''}
+                {r.upcoming > 0 ? ' · coming up' : ''}
+              </span>
+              {r.description ? <p class="result-blurb">{r.description}</p> : null}
+            </div>
+            {/* The answer to the question that brought them here. */}
+            {owned?.has?.(r.id) ? (
+              <span class="badge owned" title="Found in your channel list">
+                In your list
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    )}
+  </Layout>
+);
+
 export const Following = ({ user, events, follows, vapidKey, calendarUrl }) => (
   <Layout title="Your calendar" user={user} vapidKey={vapidKey}>
     <h1>Your calendar</h1>
