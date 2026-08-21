@@ -500,7 +500,7 @@ export async function eventsNeedingDetail({ provider, limit = 120 }) {
       /*
        * Recently out, not just still to come.
        *
-       * `starts_at > now()` looked obviously right and quietly excluded anything
+       * A bare "starts_at > now()" looked obviously right and quietly excluded any
        * released today: a film stored at the noon anchor is in the past by the
        * afternoon, so its page could never be enriched no matter how many passes
        * ran. Every list on this site shows things from a few hours back, so the

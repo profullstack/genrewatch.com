@@ -75,3 +75,42 @@ describe('the detail enrichment window', () => {
     expect(body).not.toMatch(/starts_at > now\(\)\s*$/m);
   });
 });
+
+describe('SQL comments inside tagged templates', () => {
+  /*
+   * A backtick inside a SQL comment in a sql`` template does not raise a syntax
+   * error. It ends the template early, and Bun then SEGFAULTS on the wreckage --
+   * `bun test` dumps core with no file, no line and no message worth reading.
+   *
+   * It cost a confusing few minutes here, and the only reason it was diagnosed at
+   * all is that it had happened before. A grep is cheaper than rediscovering it.
+   */
+  test('no backtick appears inside a SQL comment', async () => {
+    const src = await readFile(QUERIES, 'utf8');
+
+    /*
+     * Only inside a sql`` region. A backtick in a JSDoc comment above a function
+     * is ordinary prose and perfectly safe -- it is only fatal between the
+     * backticks that open and close a tagged template, which is why this walks
+     * the file rather than grepping it.
+     */
+    const offenders = [];
+    let inSql = false;
+    for (const raw of src.split('\n')) {
+      const line = raw.trim();
+      if (!inSql) {
+        if (/\bsql`/.test(raw) && !/\bsql`.*`/.test(raw)) inSql = true;
+        continue;
+      }
+      // A lone closing backtick ends the template.
+      if (/^`;?\s*$/.test(line)) {
+        inSql = false;
+        continue;
+      }
+      if ((line.startsWith('--') || line.startsWith('*')) && line.includes('`')) {
+        offenders.push(line.slice(0, 80));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
