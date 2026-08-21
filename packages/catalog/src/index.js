@@ -402,19 +402,28 @@ async function ingestSearchResults(results) {
       .filter((r) => r.eventId && r.genreIds.length),
   );
 
+  // Carry the release date back with each row. Without it a freshly searched
+  // title has no year in the results, which is the one thing that tells two
+  // films of the same name apart.
+  const dateByKey = new Map(rows.events.map((e) => [e.subjectKey, e]));
+
   return rows.subjects
-    .map((s) => ({
-      id: subjectIds.get(s.providerKey),
-      slug: s.slug,
-      display_name: s.displayName,
-      category: s.category,
-      kind: s.kind,
-      image_url: s.imageUrl,
-      backdrop_url: s.backdropUrl,
-      description: s.description,
-      popularity: s.popularity,
-      upcoming: 0,
-    }))
+    .map((s) => {
+      const ev = dateByKey.get(s.providerKey);
+      return {
+        id: subjectIds.get(s.providerKey),
+        slug: s.slug,
+        display_name: s.displayName,
+        category: s.category,
+        kind: s.kind,
+        image_url: s.imageUrl,
+        backdrop_url: s.backdropUrl,
+        description: s.description,
+        popularity: s.popularity,
+        starts_at: ev?.startsAt ?? null,
+        upcoming: ev && ev.state === 'upcoming' ? 1 : 0,
+      };
+    })
     .filter((r) => r.id);
 }
 
