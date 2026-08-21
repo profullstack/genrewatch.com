@@ -108,3 +108,34 @@ describe('static asset references', () => {
     expect(layout).not.toContain('<span>GenreWatch</span>');
   });
 });
+
+describe('a deploy must not serve yesterday markup', () => {
+  /*
+   * Pages are cached in Redis for 60-900 seconds and served byte-identical to
+   * every signed-out visitor, so a deploy that changes markup keeps serving the
+   * old markup until each key expires. A new header coming back as the old one on
+   * the feeds page for a quarter of an hour is indistinguishable from the deploy
+   * not having worked -- which is exactly how it read.
+   */
+  test('the web role clears the page cache before it listens', async () => {
+    const main = await readFile(
+      new URL('../apps/web/src/main.js', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(main).toContain('dropPageCache');
+    const web = main.slice(main.indexOf("config.roles.includes('web')"));
+    // Before Bun.serve, or the first requests still get the stale copy.
+    expect(web.indexOf('dropPageCache()')).toBeLessThan(web.indexOf('Bun.serve'));
+  });
+
+  test('it scans rather than blocking Redis, and cannot fail the boot', async () => {
+    const main = await readFile(
+      new URL('../apps/web/src/main.js', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(main).toContain("'MATCH', 'page:*'");
+    expect(main).not.toMatch(/connection\.keys\(/);
+    const fn = main.slice(main.indexOf('async function dropPageCache'));
+    expect(fn.slice(0, fn.indexOf('\n}\n'))).toContain('catch');
+  });
+});
