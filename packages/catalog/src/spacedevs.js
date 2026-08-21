@@ -115,7 +115,16 @@ export async function fetchAll({ from = new Date(), horizonDays = 180, maxPages 
           name: lsp.name,
           displayName: lsp.name,
           description: lsp.type?.name ? `${lsp.type.name} launch provider` : null,
-          imageUrl: null,
+          /*
+           * A launch photo, because the agency has no logo here.
+           *
+           * The list endpoint returns the provider as a stub -- id, name, abbrev,
+           * type -- with no artwork, and fetching each agency's detail page would
+           * spend the fifteen-requests-an-hour budget on decoration. A picture of
+           * one of its rockets is both free and more interesting than a logo.
+           */
+          imageUrl: l.image?.thumbnail_url ?? l.image?.image_url ?? null,
+          backdropUrl: l.image?.image_url ?? null,
           url: null,
           genreKeys: [],
         });

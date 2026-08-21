@@ -57,6 +57,31 @@ function titleCase(s) {
 }
 
 /**
+ * Artist artwork, from fanart.tv.
+ *
+ * MusicBrainz holds no images at all, which left every artist on this site as a
+ * grey square. fanart.tv is keyed by MusicBrainz ID -- the exact identifier
+ * already stored as this subject's provider key -- so no matching or searching is
+ * involved, and a wrong picture is not a failure mode here.
+ *
+ * Budgeted like the genre lookups and for the same reason: it is one request per
+ * artist. A 404 means nobody has uploaded art, which is the common case and is
+ * cached as "none" by the caller rather than retried forever.
+ */
+async function fetchArtistArt(mbid, apiKey) {
+  if (!apiKey) return null;
+  const d = await getJson(`https://webservice.fanart.tv/v3/music/${mbid}?api_key=${apiKey}`, {
+    minGapMs: 250,
+    timeoutMs: 20_000,
+    retries: 1,
+  });
+  if (!d) return null;
+  const thumb = d.artistthumb?.[0]?.url ?? null;
+  const back = d.artistbackground?.[0]?.url ?? null;
+  return thumb || back ? { imageUrl: thumb ?? back, backdropUrl: back ?? null } : null;
+}
+
+/**
  * Every official release with a real date in the window.
  *
  * @param {object} [opts]
@@ -74,6 +99,8 @@ export async function fetchAll({
   genreCache = new Map(),
   lookupBudget = 60,
   deadlineMs = 180_000,
+  fanartKey = process.env.FANART_TV_API_KEY,
+  artBudget = 40,
 } = {}) {
   // Whatever has been collected when this expires is written; the rest arrives on
   // the next pass. See the note in the orchestrator.
@@ -208,6 +235,28 @@ export async function fetchAll({
       number: null,
       runtimeMin: null,
     });
+  }
+
+  /*
+   * Artwork, after the genres and within what is left of the clock.
+   *
+   * Deliberately last: a genre decides which pages an artist appears on, and a
+   * picture only decides how that page looks. If the pass runs out of time, the
+   * catalogue is still correct and merely plain.
+   */
+  let artSpent = 0;
+  for (const subject of subjects.values()) {
+    if (subject.imageUrl || artSpent >= artBudget || outOfTime()) continue;
+    artSpent++;
+    try {
+      const art = await fetchArtistArt(subject._mbid, fanartKey);
+      if (art) {
+        subject.imageUrl = art.imageUrl;
+        subject.backdropUrl = art.backdropUrl;
+      }
+    } catch {
+      // Artwork is decoration; never fail a catalogue pass over it.
+    }
   }
 
   for (const s of subjects.values()) s._mbid = undefined;
