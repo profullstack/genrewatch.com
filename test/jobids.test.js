@@ -104,3 +104,45 @@ describe('cache eviction after a sync', () => {
     expect(fn.slice(0, fn.indexOf('\n}\n'))).toContain('catch');
   });
 });
+
+describe('enrichment has its own schedule', () => {
+  /*
+   * It used to run only at the tail of a catalogue pass, which meant it
+   * inherited that pass's cadence AND its fragility: a repeatable fires one
+   * interval from NOW, so a day of frequent deploys pushes the hourly tick
+   * forever into the future and the detail pass never happens at all.
+   *
+   * That is the trap this queue already warns about, reached through a job that
+   * was bolted onto the end of another one. Observed for real: a page sat
+   * unenriched through twenty-four checks while the sweep it was waiting on kept
+   * being pushed back by deploys.
+   */
+  test('detail is its own repeatable, not a tail-call of the sweep', async () => {
+    const src = await readFile(
+      new URL('../packages/queue/src/index.js', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(src).toMatch(/add\(\s*'detail'[\s\S]{0,120}repeat/);
+  });
+
+  test('and it runs on every boot, because making it conditional is what broke it', async () => {
+    const src = await readFile(
+      new URL('../packages/queue/src/index.js', import.meta.url).pathname,
+      'utf8',
+    );
+    const boot = src.slice(0, src.indexOf('if (stale || empty'));
+    // Enqueued before the staleness branch, so no condition can skip it.
+    expect(boot).toContain("'detail'");
+  });
+
+  test('a detail tick does not drag the whole sweep along', async () => {
+    const src = await readFile(
+      new URL('../packages/queue/src/workers.js', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(src).toContain("job.data?.kind === 'detail'");
+    // It must return before syncAll, or the cheap job costs the expensive one.
+    const handler = src.slice(src.indexOf("kind === 'detail'"));
+    expect(handler.indexOf('return')).toBeLessThan(handler.indexOf('syncAll'));
+  });
+});

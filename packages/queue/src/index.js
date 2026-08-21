@@ -67,6 +67,22 @@ export async function installSchedules({ log = console.log } = {}) {
   await queues.sync.add('sync-tick', { kind: 'tick' }, { repeat: { every: 3600_000 } });
 
   /*
+   * Enrichment gets its own clock, because it is a different job.
+   *
+   * It used to run only at the tail of a catalogue pass, which meant it
+   * inherited that pass's cadence AND its fragility: a repeatable fires one
+   * interval from now, so a day of frequent deploys pushes the hourly tick
+   * forever into the future and the detail pass simply never happens. That is
+   * the trap this file already warns about, reached through a job that was
+   * bolted onto the end of another one.
+   *
+   * It is also much cheaper -- a bounded number of requests against a provider
+   * that tolerates fifty a second -- so there is no reason for it to wait on a
+   * sweep that is deliberately slow.
+   */
+  await queues.sync.add('detail', { kind: 'detail' }, { repeat: { every: 30 * 60_000 } });
+
+  /*
    * A repeatable first fires one interval from NOW, not immediately.
    *
    * Two problems, one check. A fresh database would serve an empty calendar for
@@ -82,6 +98,19 @@ export async function installSchedules({ log = console.log } = {}) {
    */
   const stale = await anythingStale();
   const empty = (await q.catalogueStats()).upcoming === 0;
+
+  /*
+   * And one on boot, unconditionally.
+   *
+   * Unlike a catalogue sweep this is safe to run every time: it is budgeted, it
+   * stamps what it touches, and it is a no-op once nothing is pending. Making it
+   * conditional is what left it never running at all.
+   */
+  await queues.sync.add(
+    'detail',
+    { kind: 'detail' },
+    { jobId: `detail-${minuteStamp()}`, delay: 25_000 },
+  );
 
   if (stale || empty || config.sync.onBoot) {
     log(`[queue] syncing now (stale: ${stale}, empty: ${empty}, forced: ${config.sync.onBoot})`);

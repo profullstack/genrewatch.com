@@ -255,6 +255,12 @@ export function startWorkers({ concurrency = {} } = {}) {
     new Worker(
       QUEUES.sync,
       async (job) => {
+        /*
+         * Enrichment runs on its own clock now, so a tick that only wants detail
+         * must not drag the whole catalogue sweep along behind it.
+         */
+        if (job.data?.kind === 'detail') return { detail: await syncDetail({ log }) };
+
         const results = await syncAll({ force: Boolean(job.data?.force) });
         // After the catalogue, top up the per-title detail within its budget.
         const detail = await syncDetail({ log });
