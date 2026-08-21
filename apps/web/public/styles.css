@@ -1732,28 +1732,105 @@ ul.follows .meta {
   }
 }
 
-/*
- * Event artwork.
- *
- * Capped by height rather than width so a portrait poster and a landscape launch
- * photo both sit sensibly next to the same stat strip -- a width cap would make
- * the poster enormous and the photo a letterbox. object-fit keeps whatever the
- * provider sent from being stretched.
- */
-.event-art {
-  display: block;
-  max-height: 320px;
-  max-width: 100%;
-  width: auto;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
+/* ============================================================== event detail ==
+   A banner, a poster and the facts. Three pieces rather than one image, because
+   a 16:9 backdrop and a 2:3 poster are different shapes doing different jobs. */
+
+.event-banner {
   margin: 1.25rem 0;
-  object-fit: cover;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--line);
   background: var(--panel);
+  /* Reserve the shape before the bytes land, so the page does not jump. */
+  aspect-ratio: 16 / 7;
+}
+.event-banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
-@media (max-width: 34rem) {
-  .event-art {
-    max-height: 220px;
+.event-detail {
+  display: flex;
+  gap: 1.25rem;
+  align-items: flex-start;
+  margin: 1.5rem 0;
+}
+.event-poster {
+  flex: 0 0 180px;
+  width: 180px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  display: block;
+  background: var(--panel);
+}
+.event-facts {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tagline {
+  font-family: var(--disp);
+  font-size: 1.3rem;
+  color: var(--accent);
+  margin: 0 0 0.6rem;
+}
+
+/* The facts, as a definition list in all but markup: label left, value right,
+   one per line, so scanning for "Runtime" does not mean reading a paragraph. */
+ul.factlist {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0 0;
+}
+ul.factlist li {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.95rem;
+}
+ul.factlist li > span:first-child {
+  flex: 0 0 7.5rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 0.2rem;
+}
+
+.cast,
+.watch {
+  margin: 1rem 0 0;
+  font-size: 0.95rem;
+  color: var(--fg);
+}
+.cast .stat-label,
+.watch .stat-label {
+  margin-bottom: 0.25rem;
+}
+
+@media (max-width: 40rem) {
+  .event-detail {
+    flex-direction: column;
+  }
+  /* The poster stops being a sidebar and becomes a thumbnail: at phone width a
+     180px column leaves the facts in a gutter. */
+  .event-poster {
+    flex: none;
+    width: 128px;
+  }
+  ul.factlist li {
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  ul.factlist li > span:first-child {
+    flex: none;
+  }
+  .event-banner {
+    aspect-ratio: 16 / 9;
   }
 }

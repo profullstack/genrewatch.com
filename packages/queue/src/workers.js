@@ -1,4 +1,4 @@
-import { syncAll } from '@genre/catalog';
+import { syncAll, syncDetail } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendEmail, sendPush } from '@genre/notify';
@@ -256,8 +256,10 @@ export function startWorkers({ concurrency = {} } = {}) {
       QUEUES.sync,
       async (job) => {
         const results = await syncAll({ force: Boolean(job.data?.force) });
+        // After the catalogue, top up the per-title detail within its budget.
+        const detail = await syncDetail({ log });
         await dropPageCache(results);
-        return results;
+        return { results, detail };
       },
       { connection, concurrency: 1 },
     ),

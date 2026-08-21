@@ -43,7 +43,12 @@ const QUERY = `query ($page: Int, $from: Int, $to: Int) {
         description(asHtml: false)
         episodes
         duration
-        coverImage { medium }
+        averageScore
+        # A wide image for the top of a page. AniList supplies one per series and
+        # it is the best banner art of any provider here.
+        bannerImage
+        coverImage { medium large }
+        trailer { id site }
         studios(isMain: true) { nodes { name } }
       }
     }
@@ -139,7 +144,8 @@ export async function fetchAll({ from = new Date(), horizonDays = 60, maxPages =
           name: title,
           displayName: title,
           description: plain(m.description),
-          imageUrl: m.coverImage?.medium ?? null,
+          imageUrl: m.coverImage?.large ?? m.coverImage?.medium ?? null,
+          backdropUrl: m.bannerImage ?? null,
           url: m.siteUrl ?? null,
           genreKeys,
         });
@@ -165,6 +171,18 @@ export async function fetchAll({ from = new Date(), horizonDays = 60, maxPages =
         shortName: episode ? `Episode ${episode}` : null,
         summary: subject.description,
         imageUrl: subject.imageUrl,
+        backdropUrl: m.bannerImage ?? null,
+        // AniList scores out of 100; every other source here is out of 10.
+        rating: Number.isFinite(m.averageScore) ? Number(m.averageScore) / 10 : null,
+        trailerUrl:
+          m.trailer?.site === 'youtube' && m.trailer?.id
+            ? `https://www.youtube.com/watch?v=${m.trailer.id}`
+            : null,
+        detail: {
+          studios: (m.studios?.nodes ?? []).map((n) => n.name).slice(0, 3),
+          format: m.format ?? null,
+          episodes: m.episodes ?? null,
+        },
         url: m.siteUrl ?? null,
         // The studio is the closest thing anime has to a network, and it is the
         // credit fans actually follow.

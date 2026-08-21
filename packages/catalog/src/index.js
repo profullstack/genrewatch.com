@@ -280,3 +280,54 @@ export {
   rankChannelsForTitle,
 } from './m3u.js';
 export { keyFor, normaliseTitle, slugify } from './slug.js';
+
+/**
+ * Fill in the detail that costs a request per title.
+ *
+ * Separate from the catalogue pass because it scales with the number of FILMS
+ * rather than the number of pages: everything else here is a handful of requests
+ * however big the result, and this one is one per title. So it is budgeted, it
+ * takes the soonest events first, and it stamps every attempt -- including the
+ * ones that find nothing -- so a title with no cast listed is not re-fetched
+ * every hour for the rest of its life.
+ *
+ * Only TMDB needs this. The other providers hand over everything they have in the
+ * response we already make.
+ */
+export async function syncDetail({ log = console.log, limit = 120 } = {}) {
+  if (!brandProviders().includes('tmdb')) return { skipped: 'tmdb not enabled' };
+
+  const pending = await q.eventsNeedingDetail({ provider: 'tmdb', limit });
+  if (pending.length === 0) return { enriched: 0 };
+
+  // provider_key is "tmdb:release:<id>"; the id is the last segment.
+  const byId = new Map(pending.map((r) => [String(r.provider_key).split(':').pop(), r.id]));
+  const details = await tmdb.fetchDetail([...byId.keys()], {
+    apiKey: config.catalog.tmdbKey,
+    limit,
+  });
+
+  const rows = details
+    .map((d) => ({ ...d, eventId: byId.get(d.providerId) }))
+    .filter((d) => d.eventId);
+  const saved = await q.saveEventDetail(rows);
+
+  /*
+   * Stamp the ones that came back with nothing too.
+   *
+   * Without this they stay pending forever and the budget is spent re-asking
+   * about the same handful of titles every pass, so the queue never drains and
+   * nothing further along it is ever reached.
+   */
+  const answered = new Set(rows.map((r) => r.eventId));
+  const silent = pending.map((p) => p.id).filter((id) => !answered.has(id));
+  await q.markDetailAttempted(silent);
+
+  log(`[sync] detail: ${saved} enriched, ${silent.length} had nothing`);
+  return { enriched: saved, empty: silent.length };
+}
+
+/** The provider names this deployment has switched on. */
+function brandProviders() {
+  return config.catalog.providers;
+}

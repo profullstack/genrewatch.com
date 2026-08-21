@@ -140,6 +140,16 @@ export async function fetchAll({ from = new Date(), horizonDays = 180, maxPages 
         shortName: l.mission?.name ?? null,
         summary: l.mission?.description ?? null,
         imageUrl: l.image?.thumbnail_url ?? l.image?.image_url ?? null,
+        // The full-size launch photo is landscape and is the best banner this
+        // category has -- the thumbnail is for a row, not for the top of a page.
+        backdropUrl: l.image?.image_url ?? null,
+        detail: {
+          rocket: l.rocket?.configuration?.full_name ?? l.rocket?.configuration?.name ?? null,
+          orbit: l.mission?.orbit?.name ?? null,
+          program: (l.program ?? []).map((p) => p.name).slice(0, 2),
+          provider: lsp.name ?? null,
+          probability: Number.isFinite(l.probability) && l.probability >= 0 ? l.probability : null,
+        },
         url: `https://nextspaceflight.com/launches/details/${l.id}`,
         venue: l.pad?.name ?? null,
         venueRegion: l.pad?.location?.name ?? null,

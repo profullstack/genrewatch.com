@@ -309,6 +309,7 @@ export async function upsertSubjects(subjects) {
       display_name: s.displayName ?? s.name,
       description: s.description ?? null,
       image_url: s.imageUrl ?? null,
+      backdrop_url: s.backdropUrl ?? null,
       url: s.url ?? null,
     }));
     return sql`
@@ -321,6 +322,7 @@ export async function upsertSubjects(subjects) {
         -- particular arrive late and intermittently.
         description = coalesce(excluded.description, subjects.description),
         image_url = coalesce(excluded.image_url, subjects.image_url),
+        backdrop_url = coalesce(excluded.backdrop_url, subjects.backdrop_url),
         url = coalesce(excluded.url, subjects.url)
       returning id, provider_key
     `;
@@ -343,6 +345,12 @@ export async function upsertEvents(events) {
       short_name: e.shortName ?? null,
       summary: e.summary ?? null,
       image_url: e.imageUrl ?? null,
+      backdrop_url: e.backdropUrl ?? null,
+      tagline: e.tagline ?? null,
+      rating: e.rating ?? null,
+      rating_count: e.ratingCount ?? null,
+      trailer_url: e.trailerUrl ?? null,
+      detail: e.detail ? JSON.stringify(e.detail) : null,
       url: e.url ?? null,
       venue: e.venue ?? null,
       venue_region: e.venueRegion ?? null,
@@ -364,6 +372,14 @@ export async function upsertEvents(events) {
         short_name = excluded.short_name,
         summary = coalesce(excluded.summary, events.summary),
         image_url = coalesce(excluded.image_url, events.image_url),
+        backdrop_url = coalesce(excluded.backdrop_url, events.backdrop_url),
+        tagline = coalesce(excluded.tagline, events.tagline),
+        rating = coalesce(excluded.rating, events.rating),
+        rating_count = coalesce(excluded.rating_count, events.rating_count),
+        trailer_url = coalesce(excluded.trailer_url, events.trailer_url),
+        -- coalesce, so a cheap pass that carries no detail cannot wipe what an
+        -- expensive one already found.
+        detail = coalesce(excluded.detail, events.detail),
         url = coalesce(excluded.url, events.url),
         venue = coalesce(excluded.venue, events.venue),
         venue_region = coalesce(excluded.venue_region, events.venue_region),
@@ -470,6 +486,58 @@ export async function knownSubjectGenres(category) {
   return new Map(rows.map((r) => [r.provider_key, r.names ?? []]));
 }
 
+/**
+ * Events that have never had a detail lookup, soonest first.
+ *
+ * Soonest first because that is what a reader is most likely to open. The pass is
+ * budgeted, so the order decides what gets enriched this hour and what waits.
+ */
+export async function eventsNeedingDetail({ provider, limit = 120 }) {
+  return sql`
+    select id, provider_key from events
+    where provider = ${provider}
+      and detail_synced_at is null
+      and state = 'upcoming'
+      and starts_at > now()
+    order by starts_at
+    limit ${limit}
+  `;
+}
+
+/**
+ * Record what a detail lookup found.
+ *
+ * The stamp is set whether or not anything came back, so a title with genuinely
+ * no cast is not re-fetched every hour forever. That is the whole reason the
+ * column is a timestamp rather than a boolean on the data being present.
+ */
+export async function saveEventDetail(rows) {
+  if (!rows?.length) return 0;
+  let n = 0;
+  for (const r of rows) {
+    await sql`
+      update events set
+        runtime_min = coalesce(${r.runtimeMin ?? null}, runtime_min),
+        tagline = coalesce(${r.tagline ?? null}, tagline),
+        trailer_url = coalesce(${r.trailerUrl ?? null}, trailer_url),
+        detail = coalesce(${r.detail ? JSON.stringify(r.detail) : null}::jsonb, detail),
+        detail_synced_at = now()
+      where id = ${r.eventId}
+    `;
+    n++;
+  }
+  return n;
+}
+
+/** Mark an attempt that returned nothing, so it is not retried forever. */
+export async function markDetailAttempted(eventIds) {
+  if (!eventIds?.length) return;
+  await sql`
+    update events set detail_synced_at = now()
+    where id = any(${pgArray(eventIds)}::bigint[])
+  `;
+}
+
 /* --------------------------------------------------------- catalogue reads -- */
 
 /** Categories that actually have something in them, with counts. */
@@ -555,10 +623,11 @@ export async function subjectsForGenre(genreId, { viewerId = null, limit = 200 }
 /** The columns every event list renders. Kept in one place so they cannot drift. */
 const EVENT_COLUMNS = sql`
   e.id, e.category, e.kind, e.starts_at, e.time_known, e.precision, e.state,
-  e.name, e.short_name, e.summary, e.image_url, e.url, e.venue, e.venue_region,
-  e.season, e.number, e.runtime_min,
+  e.name, e.short_name, e.summary, e.image_url, e.backdrop_url, e.url,
+  e.venue, e.venue_region, e.tagline, e.rating, e.rating_count, e.trailer_url,
+  e.detail, e.season, e.number, e.runtime_min,
   s.slug as subject_slug, s.display_name as subject_name, s.kind as subject_kind,
-  s.image_url as subject_image
+  s.image_url as subject_image, s.backdrop_url as subject_backdrop
 `;
 
 export async function upcomingForGenre(genreId, { limit = 200, viewerId = null } = {}) {

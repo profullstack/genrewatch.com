@@ -18,7 +18,10 @@ import { getJson } from './http.js';
 import { keyFor, slugify } from './slug.js';
 
 const BASE = 'https://api.themoviedb.org/3';
-const IMAGE = 'https://image.tmdb.org/t/p/w342';
+const POSTER = 'https://image.tmdb.org/t/p/w342';
+/* Wide art for the top of a page. w780 rather than original: a backdrop is
+   decoration, and originals run to several megabytes. */
+const BACKDROP = 'https://image.tmdb.org/t/p/w780';
 const PROVIDER = 'tmdb';
 export const CATEGORY = 'film';
 
@@ -115,7 +118,15 @@ export async function fetchAll({
 
       const subjectKey = keyFor(PROVIDER, 'movie', String(m.id));
       const summary = m.overview?.trim() || null;
-      const image = m.poster_path ? `${IMAGE}${m.poster_path}` : null;
+      const image = m.poster_path ? `${POSTER}${m.poster_path}` : null;
+      /*
+       * Free. discover already returns these in the response we are making
+       * anyway -- they were being parsed and thrown away, which is why an event
+       * page had a date and a sentence on it and nothing else.
+       */
+      const backdrop = m.backdrop_path ? `${BACKDROP}${m.backdrop_path}` : null;
+      const votes = Number(m.vote_count ?? 0);
+      const rating = votes > 0 ? Number(m.vote_average) : null;
 
       subjects.set(subjectKey, {
         provider: PROVIDER,
@@ -127,6 +138,7 @@ export async function fetchAll({
         displayName: m.title,
         description: summary,
         imageUrl: image,
+        backdropUrl: backdrop,
         url: `https://www.themoviedb.org/movie/${m.id}`,
         genreKeys,
       });
@@ -147,6 +159,12 @@ export async function fetchAll({
         shortName: null,
         summary,
         imageUrl: image,
+        backdropUrl: backdrop,
+        rating,
+        ratingCount: votes || null,
+        // The provider's own id, so a later detail pass can find this row again
+        // without re-deriving it from the URL.
+        providerId: String(m.id),
         url: `https://www.themoviedb.org/movie/${m.id}`,
         venue: 'Cinemas',
         venueRegion: null,
@@ -163,3 +181,74 @@ export async function fetchAll({
 }
 
 export const adapter = { name: PROVIDER, category: CATEGORY, fetchAll };
+
+/**
+ * The detail one further request buys, per film.
+ *
+ * `append_to_response` bundles credits, videos, watch providers and the rest into
+ * the SAME call, so a fully populated film costs one request rather than five.
+ * That still makes it the only pass here that scales with the catalogue instead of
+ * with pages, which is why the caller hands it a budget and a list rather than
+ * letting it walk everything.
+ *
+ * Returns a flat shape the database layer stores as-is. Absent fields are absent
+ * rather than empty, so a renderer can tell "no trailer" from "not looked yet".
+ *
+ * @param {string[]} ids TMDB movie ids that have never been enriched
+ */
+export async function fetchDetail(ids, { apiKey = process.env.TMDB_API_KEY, limit = 120 } = {}) {
+  if (!apiKey || !ids?.length) return [];
+  const out = [];
+
+  for (const id of ids.slice(0, limit)) {
+    const url =
+      `${BASE}/movie/${id}?api_key=${apiKey}` +
+      `&append_to_response=credits,videos,watch/providers`;
+    let d;
+    try {
+      d = await getJson(url, { minGapMs: MIN_GAP_MS });
+    } catch {
+      // One bad title must not end the pass. It stays unenriched and is retried
+      // next time, because nothing is stamped for it.
+      continue;
+    }
+    if (!d) continue;
+
+    const credits = d.credits ?? {};
+    const director = (credits.crew ?? []).find((c) => c.job === 'Director')?.name ?? null;
+    const cast = (credits.cast ?? []).slice(0, 8).map((c) => c.name);
+
+    /*
+     * A trailer, preferring the official one.
+     *
+     * Stored as a full URL rather than a site+key pair so no renderer has to know
+     * that YouTube keys and Vimeo keys are built into different addresses.
+     */
+    const vids = (d.videos?.results ?? []).filter(
+      (v) => v.type === 'Trailer' && v.site === 'YouTube',
+    );
+    const trailer = vids.find((v) => v.official) ?? vids[0];
+
+    // Flat-rate streaming only. Rent and buy are a different question from "is it
+    // included where I already subscribe", and mixing them misleads.
+    const us = d['watch/providers']?.results?.US ?? {};
+    const watch = (us.flatrate ?? []).map((p) => p.provider_name).slice(0, 6);
+
+    out.push({
+      providerId: String(id),
+      runtimeMin: d.runtime || null,
+      tagline: d.tagline?.trim() || null,
+      trailerUrl: trailer ? `https://www.youtube.com/watch?v=${trailer.key}` : null,
+      detail: {
+        cast,
+        director,
+        studios: (d.production_companies ?? []).map((c) => c.name).slice(0, 3),
+        language: d.spoken_languages?.[0]?.english_name ?? null,
+        watch,
+        imdbId: d.imdb_id ?? null,
+      },
+    });
+  }
+
+  return out;
+}

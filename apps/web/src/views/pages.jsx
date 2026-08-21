@@ -262,6 +262,21 @@ export const SubjectPage = ({ user, subject, events, genres, following }) => (
 
 export const EventPage = ({ user, event, genres, comments, following, ownChannels }) => {
   const when = whenLabel(event);
+  /*
+   * The driver hands jsonb back parsed or as a string depending on the column and
+   * the query, so this is the one place that decides -- rather than every field
+   * below guessing separately and one of them getting it wrong.
+   */
+  const detail = (() => {
+    const raw = event.detail;
+    if (!raw) return {};
+    if (typeof raw !== 'string') return raw;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  })();
   return (
     <Layout title={event.name} user={user}>
       <header class="page-head">
@@ -284,53 +299,143 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
       </header>
 
       {/*
-        The artwork, which this page stored and never once showed.
-        Every adapter supplies one -- a poster, a cover, a launch photo -- and the
-        page rendered the title, a date and nothing else, which is why an event
-        page read as empty even when we held plenty about it. The subject's image
-        is the fallback: an episode without a still is still a picture of the show.
+        A banner where there is one, the poster beside the facts where there is
+        not. Two different shapes doing two different jobs: a 16:9 backdrop can
+        run the width of the page, a 2:3 poster cannot without either cropping
+        the faces off or being enormous.
       */}
-      {event.image_url || event.subject_image ? (
-        <img
-          class="event-art"
-          src={event.image_url ?? event.subject_image}
-          alt=""
-          loading="lazy"
-          decoding="async"
-        />
+      {event.backdrop_url || event.subject_backdrop ? (
+        <div class="event-banner">
+          <img
+            src={event.backdrop_url ?? event.subject_backdrop}
+            alt=""
+            loading="lazy"
+            decoding="async"
+          />
+        </div>
       ) : null}
 
-      <section class="stats">
-        <div class="stat">
-          <span class="stat-label">{when.kind === 'time' ? 'Starts' : 'Out'}</span>
-          <StartTime event={event} />
+      <div class="event-detail">
+        {event.image_url || event.subject_image ? (
+          <img
+            class="event-poster"
+            src={event.image_url ?? event.subject_image}
+            alt=""
+            loading="lazy"
+            decoding="async"
+          />
+        ) : null}
+
+        <div class="event-facts">
+          {event.tagline ? <p class="tagline">{event.tagline}</p> : null}
+          {event.summary ? <p class="blurb">{event.summary}</p> : null}
+
+          <ul class="factlist">
+            <li>
+              <span>{when.kind === 'time' ? 'Starts' : 'Out'}</span>
+              <StartTime event={event} />
+            </li>
+            {event.venue ? (
+              <li>
+                <span>{event.category === 'space' ? 'Launch site' : 'Where'}</span>
+                {event.venue}
+                {event.venue_region ? `, ${event.venue_region}` : ''}
+              </li>
+            ) : null}
+            {event.season ? (
+              <li>
+                <span>Episode</span>
+                Season {event.season}, episode {event.number}
+              </li>
+            ) : null}
+            {event.runtime_min ? (
+              <li>
+                <span>Runtime</span>
+                {event.runtime_min} min
+              </li>
+            ) : null}
+            {/* A score resting on a handful of votes is noise, so it is only
+                shown once enough people have voted to mean anything. */}
+            {event.rating && (event.rating_count ?? 0) >= 10 ? (
+              <li>
+                <span>Rating</span>
+                {Number(event.rating).toFixed(1)} / 10
+              </li>
+            ) : null}
+            {detail.director ? (
+              <li>
+                <span>Director</span>
+                {detail.director}
+              </li>
+            ) : null}
+            {detail.rocket ? (
+              <li>
+                <span>Rocket</span>
+                {detail.rocket}
+              </li>
+            ) : null}
+            {detail.orbit ? (
+              <li>
+                <span>Orbit</span>
+                {detail.orbit}
+              </li>
+            ) : null}
+            {detail.probability ? (
+              <li>
+                <span>Odds</span>
+                {detail.probability}% go for launch
+              </li>
+            ) : null}
+            {detail.network ? (
+              <li>
+                <span>Network</span>
+                {detail.network}
+              </li>
+            ) : null}
+            {detail.studios?.length ? (
+              <li>
+                <span>Studio</span>
+                {detail.studios.join(', ')}
+              </li>
+            ) : null}
+            {detail.language ? (
+              <li>
+                <span>Language</span>
+                {detail.language}
+              </li>
+            ) : null}
+          </ul>
+
+          {detail.cast?.length ? (
+            <p class="cast">
+              <span class="stat-label">Cast</span>
+              {detail.cast.join(' · ')}
+            </p>
+          ) : null}
+
+          {/* Where it is included, not where it can be rented -- those are
+              different questions and mixing them misleads. */}
+          {detail.watch?.length ? (
+            <p class="watch">
+              <span class="stat-label">Streaming on</span>
+              {detail.watch.join(' · ')}
+            </p>
+          ) : null}
+
+          <p class="more">
+            {event.trailer_url ? (
+              <a class="cta" href={event.trailer_url} rel="noopener nofollow external">
+                Watch the trailer ↗
+              </a>
+            ) : null}
+            {event.url ? (
+              <a class="link-quiet" href={event.url} rel="noopener nofollow external">
+                Full details ↗
+              </a>
+            ) : null}
+          </p>
         </div>
-        {event.venue ? (
-          <div class="stat">
-            <span class="stat-label">
-              {event.category === 'space' ? 'Launch site' : 'Where to watch'}
-            </span>
-            <span class="stat-value">
-              {event.venue}
-              {event.venue_region ? `, ${event.venue_region}` : ''}
-            </span>
-          </div>
-        ) : null}
-        {event.season ? (
-          <div class="stat">
-            <span class="stat-label">Episode</span>
-            <span class="stat-value">
-              Season {event.season}, episode {event.number}
-            </span>
-          </div>
-        ) : null}
-        {event.runtime_min ? (
-          <div class="stat">
-            <span class="stat-label">Runtime</span>
-            <span class="stat-value">{event.runtime_min} min</span>
-          </div>
-        ) : null}
-      </section>
+      </div>
 
       {/*
         Said out loud rather than implied by a missing clock.
@@ -346,16 +451,7 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
         </p>
       ) : null}
 
-      {event.summary ? <p class="blurb">{event.summary}</p> : null}
       <GenreChips genres={genres} />
-
-      {event.url ? (
-        <p class="more">
-          <a href={event.url} rel="noopener nofollow external">
-            Full details ↗
-          </a>
-        </p>
-      ) : null}
 
       {/*
         A reader's own channels, matched against their own list.

@@ -178,7 +178,7 @@ export async function fetchAll({ from = new Date(), horizonDays = 60 } = {}) {
         name: show.name,
         displayName: show.name,
         description: plain(show.summary),
-        imageUrl: show.image?.medium ?? null,
+        imageUrl: show.image?.original ?? show.image?.medium ?? null,
         url: show.url ?? null,
         genreKeys: showGenres,
         // Not stored on the subject; carried so the event mapper below does not
@@ -207,6 +207,21 @@ export async function fetchAll({ from = new Date(), horizonDays = 60 } = {}) {
       shortName: ep.name || null,
       summary: plain(ep.summary) ?? subject.description,
       imageUrl: ep.image?.medium ?? subject.imageUrl,
+      /*
+       * The episode still, as the wide image.
+       *
+       * TVmaze has no backdrop as such, but an episode image IS landscape -- it is
+       * a screencap -- where the show image is a portrait poster. So the two
+       * shapes this page wants happen to be exactly the two images it gives us.
+       */
+      backdropUrl: ep.image?.original ?? null,
+      rating: Number.isFinite(show.rating?.average) ? Number(show.rating.average) : null,
+      detail: {
+        network: show.network?.name ?? show.webChannel?.name ?? null,
+        language: show.language ?? null,
+        status: show.status ?? null,
+        officialSite: show.officialSite ?? null,
+      },
       url: ep.url ?? null,
       venue: subject._venue,
       venueRegion: subject._venueRegion,
