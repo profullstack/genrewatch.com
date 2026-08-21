@@ -283,6 +283,23 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
         />
       </header>
 
+      {/*
+        The artwork, which this page stored and never once showed.
+        Every adapter supplies one -- a poster, a cover, a launch photo -- and the
+        page rendered the title, a date and nothing else, which is why an event
+        page read as empty even when we held plenty about it. The subject's image
+        is the fallback: an episode without a still is still a picture of the show.
+      */}
+      {event.image_url || event.subject_image ? (
+        <img
+          class="event-art"
+          src={event.image_url ?? event.subject_image}
+          alt=""
+          loading="lazy"
+          decoding="async"
+        />
+      ) : null}
+
       <section class="stats">
         <div class="stat">
           <span class="stat-label">{when.kind === 'time' ? 'Starts' : 'Out'}</span>
@@ -353,7 +370,29 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
       */}
       {ownChannels?.hasList ? (
         <section>
-          <h2>In your channel list</h2>
+          <h2>In your list</h2>
+
+          {/* On demand first: it is there whenever they want it, where a channel
+              is a claim about right now. */}
+          {ownChannels.onDemand?.length > 0 ? (
+            <>
+              <h3>Available on demand</h3>
+              <ul class="channels">
+                {ownChannels.onDemand.map((ch, i) => (
+                  <li>
+                    <span>{ch.title}</span>
+                    <a
+                      class="ghost small-btn"
+                      href={`/events/${event.id}/playlist.m3u?tier=vod&n=${i}`}
+                    >
+                      Open
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+
           {ownChannels.matches.length > 0 ? (
             <>
               <p class="muted small">
@@ -371,11 +410,11 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
                 ))}
               </ul>
             </>
-          ) : (
+          ) : ownChannels.onDemand?.length > 0 ? null : (
             <p class="empty">
-              None of your {ownChannels.channelCount.toLocaleString('en-US')} channels look like
-              they carry this. Provider names vary a lot, so it may still be in there under a name
-              we did not recognise.
+              None of your {ownChannels.channelCount.toLocaleString('en-US')} entries look like they
+              carry this. Provider names vary a lot, so it may still be in there under a name we did
+              not recognise.
             </p>
           )}
 

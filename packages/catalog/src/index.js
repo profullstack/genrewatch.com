@@ -271,6 +271,7 @@ export async function anythingStale() {
 
 export {
   channelsForTitle,
+  entryKind,
   groupsOf,
   isPlaceholder,
   MAX_CHANNELS,

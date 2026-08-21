@@ -1731,3 +1731,29 @@ ul.follows .meta {
     min-width: 7rem;
   }
 }
+
+/*
+ * Event artwork.
+ *
+ * Capped by height rather than width so a portrait poster and a landscape launch
+ * photo both sit sensibly next to the same stat strip -- a width cap would make
+ * the poster enormous and the photo a letterbox. object-fit keeps whatever the
+ * provider sent from being stretched.
+ */
+.event-art {
+  display: block;
+  max-height: 320px;
+  max-width: 100%;
+  width: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  margin: 1.25rem 0;
+  object-fit: cover;
+  background: var(--panel);
+}
+
+@media (max-width: 34rem) {
+  .event-art {
+    max-height: 220px;
+  }
+}

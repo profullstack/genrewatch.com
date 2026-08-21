@@ -350,7 +350,13 @@ app.get('/events/:id/playlist.m3u', async (c) => {
    * carries the genre" -- and they are indexed separately on the page, so the
    * link has to say which one it means or ?n=0 hands back the wrong channel.
    */
-  const list = c.req.query('tier') === 'genre' ? (own.genre ?? []) : (own.matches ?? []);
+  const tier = c.req.query('tier');
+  const list =
+    tier === 'genre'
+      ? (own.genre ?? [])
+      : tier === 'vod'
+        ? (own.onDemand ?? [])
+        : (own.matches ?? []);
   if (list.length === 0) return c.redirect(`/events/${event.id}`, 303);
 
   // The first entry, which rankChannelsForTitle has already ordered most-specific

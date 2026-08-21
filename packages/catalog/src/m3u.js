@@ -102,11 +102,8 @@ export function parseM3u(text) {
     const name = title || attrs['tvg-name'] || '';
     if (!name) continue;
 
-    out.push({
-      title: name,
-      group: attrs['group-title'] || currentGroup || null,
-      url,
-    });
+    const group = attrs['group-title'] || currentGroup || null;
+    out.push({ title: name, group, url, kind: entryKind({ url, group }) });
   }
 
   return out;
@@ -244,6 +241,33 @@ const SEQUELS = new Set([
 ]);
 
 /**
+ * Is this entry a live channel or something on demand?
+ *
+ * One playlist carries both. A provider panel encodes the difference in the URL
+ * path -- `/live/` and a `.ts`/`.m3u8` stream, versus `/movie/` or `/series/` and
+ * a `.mkv`/`.mp4` file -- and that is far more reliable than the title, which is
+ * free text the reseller types.
+ *
+ * It matters because the two are DIFFERENT ANSWERS to "where can I watch this".
+ * A live channel might be showing it now; an on-demand copy of the exact title is
+ * there whenever the reader wants it, which is the better answer and should rank
+ * above a channel rather than beside it.
+ */
+export function entryKind({ url, group } = {}) {
+  const u = String(url ?? '').toLowerCase();
+  if (/\/series\//.test(u)) return 'series';
+  if (/\/(movie|movies|vod)\//.test(u)) return 'vod';
+  if (/\.(mkv|mp4|avi|m4v)(\?|$)/.test(u)) return 'vod';
+  if (/\/live\//.test(u) || /\.(ts|m3u8)(\?|$)/.test(u)) return 'live';
+
+  // Nothing in the URL says. Fall back to the group, which usually does.
+  const g = String(group ?? '').toLowerCase();
+  if (/\b(vod|on ?demand|movies?|films?)\b/.test(g)) return 'vod';
+  if (/\b(series|shows?|tv ?shows?)\b/.test(g)) return 'series';
+  return 'live';
+}
+
+/**
  * Does this channel appear to be carrying this event?
  *
  * The sports version could require BOTH team names, which made the separator
@@ -306,6 +330,7 @@ function contradicts(words, name, matched) {
  * @param {Array<{title:string,url:string}>} channels
  */
 export function rankChannelsForTitle(channels, { title, genreName, categoryName } = {}) {
+  const onDemand = [];
   const certain = [];
   const likely = [];
   const genre = [];
@@ -320,20 +345,33 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
     if (isPlaceholder(c.title)) continue;
 
     const words = new Set(norm.split(' '));
+    // Entries parsed before this existed have no kind; treat them as live, which
+    // is what they were assumed to be.
+    const kind = c.kind ?? entryKind(c);
+    const isFile = kind === 'vod' || kind === 'series';
 
     if (title) {
       if (channelMatchesTitle(c.title, title)) {
-        certain.push({ ...c, score: 100 + tokens(title).length });
+        /*
+         * An on-demand copy of the exact title is the best answer there is, so it
+         * gets its own tier above the channels. A live channel that happens to
+         * carry the same name is a claim about right now; a file is a claim about
+         * whenever the reader wants it, and conflating the two puts a maybe above
+         * a certainty.
+         */
+        (isFile ? onDemand : certain).push({ ...c, score: 100 + tokens(title).length });
         continue;
       }
       const found = tokens(title).filter((t) => words.has(t));
       if (found.length && !contradicts(words, title, found)) {
-        likely.push({ ...c, score: found.length });
+        (isFile ? onDemand : likely).push({ ...c, score: found.length });
         continue;
       }
     }
 
-    if (genreTokens.size && [...genreTokens].some((t) => words.has(t))) {
+    // A genre channel is a live thing by nature: a VOD folder named "Horror" is
+    // not carrying anything, it IS the folder, so only live entries qualify.
+    if (!isFile && genreTokens.size && [...genreTokens].some((t) => words.has(t))) {
       genre.push({ ...c, score: 1 });
     }
   }
@@ -346,7 +384,12 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
       .sort((x, y) => y.score - x.score || x.title.length - y.title.length)
       .map(({ score, ...c }) => c);
 
-  return { certain: rank(certain), likely: rank(likely), genre: rank(genre) };
+  return {
+    onDemand: rank(onDemand),
+    certain: rank(certain),
+    likely: rank(likely),
+    genre: rank(genre),
+  };
 }
 
 /**
@@ -358,8 +401,9 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
  * @param {Array<{title: string, url: string}>} channels
  */
 export function channelsForTitle(channels, fixture) {
-  const { certain, likely } = rankChannelsForTitle(channels, fixture);
-  return [...certain, ...likely];
+  const { onDemand, certain, likely } = rankChannelsForTitle(channels, fixture);
+  // On demand first: it is available whenever, where a channel is a maybe.
+  return [...onDemand, ...certain, ...likely];
 }
 
 /**

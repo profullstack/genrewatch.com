@@ -101,7 +101,7 @@ export async function refreshPlaylist(userId) {
  * URLs, so the caller must already have established that the requester owns them.
  */
 export async function ownChannelsForEvent({ userId, event }) {
-  const none = { hasList: false, channelCount: 0, matches: [], genre: [] };
+  const none = { hasList: false, channelCount: 0, onDemand: [], matches: [], genre: [] };
   if (!config.playlists.enabled || !userId) return none;
 
   const rows = await q.playlistChannels(userId);
@@ -137,6 +137,9 @@ export async function ownChannelsForEvent({ userId, event }) {
   return {
     hasList: true,
     channelCount: rows.length,
+    // A file the reader already has access to, whenever they want it -- a
+    // different and better answer than a channel that might be showing it.
+    onDemand: unseal(ranked.onDemand),
     matches: unseal([...ranked.certain, ...ranked.likely]),
     // Channels for the GENRE rather than this event -- a 24/7 "Horror HD" carries
     // whatever horror is on. Shown separately so the page never claims more than
