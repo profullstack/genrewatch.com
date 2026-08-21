@@ -197,6 +197,46 @@ async function runBatch(job) {
   return { sent, failed };
 }
 
+/* --------------------------------------------------------- cache eviction -- */
+
+/**
+ * Throw away the rendered pages a sync just invalidated.
+ *
+ * Read pages are cached in Redis for 60-900 seconds and served byte-identical to
+ * every signed-out visitor. That is fine while the catalogue is steady and wrong
+ * immediately after a sync: the pass that first seeded this site wrote 2,276
+ * events and the genre index went on serving "0 genres across 0 categories" --
+ * rendered seconds earlier against an empty database -- until its TTL ran out.
+ * A first-time visitor in that window sees an empty site.
+ *
+ * SCAN rather than KEYS: KEYS blocks the server for the length of the keyspace,
+ * and this Redis is shared with the queues, so a stall here stalls delivery.
+ * Failing is harmless -- the TTL is still there as a backstop -- so a Redis blip
+ * must not fail the sync job that has already done its real work.
+ */
+async function dropPageCache(results) {
+  const wrote = (results ?? []).some((r) => (r?.events ?? 0) > 0);
+  if (!wrote) return 0;
+
+  let cursor = '0';
+  let dropped = 0;
+  try {
+    do {
+      const [next, keys] = await connection.scan(cursor, 'MATCH', 'page:*', 'COUNT', 200);
+      cursor = next;
+      if (keys.length > 0) {
+        await connection.del(...keys);
+        dropped += keys.length;
+      }
+    } while (cursor !== '0');
+  } catch (err) {
+    log(`cache eviction skipped: ${err.message}`);
+    return dropped;
+  }
+  if (dropped) log(`evicted ${dropped} cached page(s) after sync`);
+  return dropped;
+}
+
 /* ------------------------------------------------------------------- boot --- */
 
 export function startWorkers({ concurrency = {} } = {}) {
@@ -212,10 +252,15 @@ export function startWorkers({ concurrency = {} } = {}) {
      * hour across the whole deployment, so two overlapping passes exhaust the
      * budget and both fail.
      */
-    new Worker(QUEUES.sync, (job) => syncAll({ force: Boolean(job.data?.force) }), {
-      connection,
-      concurrency: 1,
-    }),
+    new Worker(
+      QUEUES.sync,
+      async (job) => {
+        const results = await syncAll({ force: Boolean(job.data?.force) });
+        await dropPageCache(results);
+        return results;
+      },
+      { connection, concurrency: 1 },
+    ),
 
     new Worker(QUEUES.fanout, runFanout, {
       connection,

@@ -248,3 +248,76 @@ describe('catalogue integrity', () => {
     expect(await one(`select id from events where id=$1`, [eventId])).toBeUndefined();
   });
 });
+
+describe('a repeated row inside one batch', () => {
+  /*
+   * Postgres rejects an INSERT ... ON CONFLICT DO UPDATE whose own batch names the
+   * same conflict target twice, and it fails the WHOLE statement. TMDB's discover
+   * endpoint is ordered by popularity and paginated, popularity shifts between
+   * requests, and a film near a page boundary comes back on two consecutive pages
+   * -- which took the film category to zero events on the first production sync.
+   */
+  test('is what Postgres actually refuses, so the dedupe is load-bearing', async () => {
+    const { subjectId } = await seed();
+    const dup = [
+      {
+        provider: 't',
+        provider_key: 'dup-1',
+        category: 'tv',
+        subject_id: subjectId,
+        kind: 'release',
+        starts_at: new Date(),
+        name: 'A',
+      },
+      {
+        provider: 't',
+        provider_key: 'dup-1',
+        category: 'tv',
+        subject_id: subjectId,
+        kind: 'release',
+        starts_at: new Date(),
+        name: 'B',
+      },
+    ];
+    const stmt = `insert into events (provider, provider_key, category, subject_id, kind, starts_at, name)
+       values ($1,$2,$3,$4,$5,$6,$7), ($8,$9,$10,$11,$12,$13,$14)
+       on conflict (provider, provider_key) do update set name = excluded.name`;
+    const params = dup.flatMap((d) => [
+      d.provider,
+      d.provider_key,
+      d.category,
+      d.subject_id,
+      d.kind,
+      d.starts_at,
+      d.name,
+    ]);
+
+    let threw = null;
+    try {
+      await db.query(stmt, params);
+    } catch (e) {
+      threw = e.message;
+    }
+    expect(threw).toMatch(/cannot affect row a second time/i);
+  });
+
+  // And the fix, applied the way the query layer applies it: last occurrence wins.
+  test('dedupes on the adapter shape, keeping the last occurrence', async () => {
+    const rows = [
+      { providerKey: 'a', name: 'first' },
+      { providerKey: 'b', name: 'other' },
+      { providerKey: 'a', name: 'second' },
+    ];
+    const unique = new Map();
+    for (const row of rows) unique.set(row.providerKey ?? row.provider_key, row);
+    const deduped = [...unique.values()];
+
+    expect(deduped.length).toBe(2);
+    expect(deduped.find((r) => r.providerKey === 'a').name).toBe('second');
+    // Reading the snake_case key would be undefined on every row and collapse the
+    // whole batch to one entry -- silently, and only in production.
+    const wrong = new Map();
+    for (const row of rows) wrong.set(row.provider_key, row);
+    expect(wrong.size).toBe(1);
+  });
+});

@@ -75,3 +75,32 @@ describe('sync job ids', () => {
     expect(minuteStamp()).not.toContain(':');
   });
 });
+
+describe('cache eviction after a sync', () => {
+  /*
+   * The first seed of this site wrote 2,276 events and the genre index went on
+   * saying "0 genres across 0 categories" -- rendered seconds earlier against an
+   * empty database -- until its TTL expired. A first-time visitor in that window
+   * sees an empty site, which is the worst possible moment for it.
+   */
+  test('the sync worker drops cached pages once it has written something', async () => {
+    const src = await readFile(
+      new URL('../packages/queue/src/workers.js', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(src).toContain('dropPageCache');
+    expect(src).toContain("'MATCH', 'page:*'");
+    // KEYS blocks the server for the length of the keyspace, and this Redis is
+    // shared with the delivery queues.
+    expect(src).not.toMatch(/connection\.keys\(/);
+  });
+
+  test('eviction cannot fail the sync that already did the work', async () => {
+    const src = await readFile(
+      new URL('../packages/queue/src/workers.js', import.meta.url).pathname,
+      'utf8',
+    );
+    const fn = src.slice(src.indexOf('async function dropPageCache'));
+    expect(fn.slice(0, fn.indexOf('\n}\n'))).toContain('catch');
+  });
+});

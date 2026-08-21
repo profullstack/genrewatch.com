@@ -134,11 +134,42 @@ export async function touchPasskey(credentialId, counter) {
  */
 async function upsertReturningMap(rows, run) {
   if (!rows || rows.length === 0) return new Map();
+
+  /*
+   * Deduplicate by provider key before inserting anything.
+   *
+   * Postgres rejects an INSERT ... ON CONFLICT DO UPDATE whose own batch names
+   * the same conflict target twice -- "ON CONFLICT DO UPDATE command cannot
+   * affect row a second time" -- and it fails the WHOLE statement, so one
+   * repeated row loses the entire pass.
+   *
+   * This is not hypothetical and not one adapter's problem. TMDB's discover
+   * endpoint is ordered by popularity and paginated, and popularity shifts
+   * between the requests, so a film near a page boundary is returned on two
+   * consecutive pages. It took the film category from 2,276 events to zero on
+   * the first production sync. Any paginated provider whose ordering is not
+   * stable can do the same, which is why this lives here rather than in the
+   * adapter that happened to expose it.
+   *
+   * The LAST occurrence wins, matching the upsert's own semantics: within one
+   * pass, later data is fresher.
+   */
+  const unique = new Map();
+  for (const row of rows) {
+    // These are the ADAPTER's rows, not the mapped ones -- each caller maps to
+    // snake_case inside run(). Reading provider_key here would be undefined for
+    // every row and collapse the whole batch to a single entry.
+    const key = row.providerKey ?? row.provider_key;
+    if (!key) continue;
+    unique.set(key, row);
+  }
+  const deduped = [...unique.values()];
+
   const out = new Map();
   // Chunked because a single statement has a parameter ceiling and TV alone would
   // blow through it. 500 keeps each statement comfortably inside the limit.
-  for (let i = 0; i < rows.length; i += 500) {
-    const returned = await run(rows.slice(i, i + 500));
+  for (let i = 0; i < deduped.length; i += 500) {
+    const returned = await run(deduped.slice(i, i + 500));
     for (const r of returned) out.set(r.provider_key, r.id);
   }
   return out;
