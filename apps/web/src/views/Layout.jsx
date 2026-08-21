@@ -180,6 +180,17 @@ export const Layout = (props) => (
       {props.vapidKey ? html`<script>window.__VAPID = "${props.vapidKey}";</script>` : null}
       {/* One page needs a script of its own; the rest must not carry it. */}
       {props.script ? <script src={props.script} defer /> : null}
+
+      {/*
+        The ad runtime, once, and only where a unit can exist.
+
+        A plain deferred script -- there is no <Script> component here, this is
+        not Next, and the generated patch that assumed otherwise would have
+        failed the build. Deferred rather than async because ad.js scans the DOM
+        once at DOMContentLoaded and does not observe later mutations: it has to
+        run after the document is parsed or it finds nothing to fill.
+      */}
+      {config.ads.enabled ? <script src="https://crawlproof.com/ad.js" defer /> : null}
     </body>
   </html>
 );

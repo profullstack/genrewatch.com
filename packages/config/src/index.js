@@ -242,6 +242,23 @@ export const config = {
     },
   },
 
+  /**
+   * Network ads, if this deployment sells any.
+   *
+   * No default, for the reason the analytics id above has none: a hardcoded slot
+   * travels with a clone and the wrong site starts earning -- or worse, serving
+   * -- against someone else's inventory. Absent means no ad script is loaded at
+   * all, not an empty box.
+   */
+  ads: {
+    get slot() {
+      return opt('CRAWLPROOF_AD_SLOT');
+    },
+    get enabled() {
+      return Boolean(this.slot);
+    },
+  },
+
   cache: {
     /** Schedule pages are identical for every visitor, so they are rendered once and
      *  served from Redis. Personalisation is layered client-side. */

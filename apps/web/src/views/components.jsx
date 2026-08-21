@@ -1,3 +1,5 @@
+import { config } from '@genre/config';
+
 /** Shared bits of markup. Kept small and dumb on purpose. */
 
 /**
@@ -259,3 +261,36 @@ export const GenreChips = ({ genres }) =>
       ))}
     </p>
   );
+
+/**
+ * One network ad unit.
+ *
+ * Two rules, both learned from reading ad.js rather than from taste.
+ *
+ * FIRST: an impression is billed the moment the unit is FILLED, at the single
+ * DOMContentLoaded scan -- ad.js calls /api/ads/serve there and then. It has no
+ * IntersectionObserver, so nothing waits for the unit to be seen. A unit hidden
+ * with CSS, or pushed off-screen, or clipped because it is wider than the
+ * viewport, is billed exactly like one somebody read. That makes "render all
+ * four sizes and show the right one" not a layout choice but a metering lie, and
+ * it is why this component exists instead of a bare div at each call site.
+ *
+ * SECOND: only two of the four formats survive every width. text_link is
+ * rendered at 100% width by ad.js, and the 300x250 rectangle fits inside the
+ * narrowest phone. The 728x90 leaderboard and the 320x50 mobile banner both
+ * need a viewport test to place honestly, and ad.js offers no way to make one --
+ * no matchMedia, no resize handler, no auto format -- so they are not used.
+ *
+ * The consequence worth stating: at most ONE unit renders per page.
+ */
+export const Ad = ({ format = 'banner_300x250', label = 'Advertisement' }) => {
+  if (!config.ads.enabled) return null;
+  return (
+    <aside class={`ad ad-${format}`} aria-label={label}>
+      {/* Named for a screen reader and marked as an aside, so it is skippable
+          and is not read as part of the page's own content. */}
+      <span class="ad-label">{label}</span>
+      <div data-cp-ad="" data-slot={config.ads.slot} data-format={format} />
+    </aside>
+  );
+};

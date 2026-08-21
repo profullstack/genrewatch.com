@@ -1,5 +1,6 @@
 import { assetUrl } from '../lib/asset-version.js';
 import {
+  Ad,
   EventList,
   FollowButton,
   GenreChips,
@@ -159,6 +160,8 @@ export const CategoryPage = ({ user, category, genres, events }) => {
           <a href={`/feeds/category/${category}.xml`}>RSS</a>
         </p>
       </section>
+
+      <Ad />
     </Layout>
   );
 };
@@ -187,6 +190,12 @@ export const GenrePage = ({ user, genre, subjects, events, following }) => (
       <h2>Coming up</h2>
       <EventList events={events} emptyText="Nothing scheduled in this genre yet." />
     </section>
+
+    {/* Between the two lists: a real seam in the page, where a reader has
+        finished one thing and not started the next. Not floated beside the
+        content, and not at the very bottom where it would be billed without
+        ever being looked at. */}
+    <Ad />
 
     <section>
       <h2>Names in {genre.name}</h2>
@@ -541,6 +550,8 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
         </section>
       ) : null}
 
+      <Ad />
+
       <section id="comments">
         <h2>Comments</h2>
         {comments.length === 0 ? (
@@ -651,6 +662,11 @@ export const SearchPage = ({ user, term, category, results, owned }) => (
         ))}
       </ul>
     )}
+
+    {/* Only once there is something to sit under. An ad above an empty result
+        set is the only thing on the page, which is both worse to read and
+        billed identically. */}
+    {term && results.length > 0 ? <Ad format="text_link" /> : null}
   </Layout>
 );
 

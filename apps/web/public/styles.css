@@ -1900,3 +1900,56 @@ li.result img {
   color: oklch(0.16 0.02 155);
   flex: none;
 }
+
+/* ======================================================================= ads ==
+   Network units. Marked, spaced and never dressed up as content.
+
+   The label is not decoration and not a legal box-tick: an unlabelled ad in the
+   middle of a genre page reads as an editorial recommendation, which is exactly
+   the confusion that makes people stop trusting a listing site. It costs one
+   line of 11px text. */
+
+.ad {
+  display: block;
+  margin: 2rem 0;
+  padding: 0.75rem 0;
+  /* Hairlines above and below rather than a filled card: it separates without
+     competing with the real cards on the same page. */
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: center;
+}
+.ad-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+/*
+ * Reserve the box before the creative lands.
+ *
+ * ad.js fills the unit after DOMContentLoaded, so without a reserved height the
+ * page reflows and whatever the reader was looking at jumps. The height matches
+ * the format's own dimensions plus the label, so nothing moves when it fills --
+ * and nothing collapses if the slot is inactive and never fills at all.
+ */
+.ad-banner_300x250 {
+  min-height: calc(250px + 2rem);
+}
+.ad-text_link {
+  min-height: calc(40px + 2rem);
+}
+.ad [data-cp-ad] {
+  display: flex;
+  justify-content: center;
+}
+
+@media (max-width: 34rem) {
+  .ad {
+    margin: 1.5rem 0;
+  }
+}
