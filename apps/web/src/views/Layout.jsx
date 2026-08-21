@@ -96,16 +96,34 @@ export const Layout = (props) => (
         Skip to content
       </a>
       <header class="topbar">
-        {/* The mark carries the name, so the wordmark beside it was saying the
-            same thing twice. alt keeps it for anyone not seeing the image. */}
+        {/*
+          The wordmark where there is room, the square mark where there is not.
+
+          A <picture> rather than two <img>s with CSS display toggling: the browser
+          picks ONE source and downloads only that, where a hidden <img> is still
+          fetched. It also works with no JavaScript and no layout shift, because
+          each source declares its own dimensions -- which matters here since the
+          two shapes have different aspect ratios (3:1 and 1:1).
+
+          Both are generated derivatives. The source art is 436KB and 722KB, which
+          is fine to keep and absurd to put in a header on a phone.
+        */}
         <a class="brand" href="/">
-          <img
-            src="/icons/icon-192x192.png"
-            alt="GenreWatch"
-            width="192"
-            height="192"
-            class="brand-logo"
-          />
+          <picture>
+            <source
+              media="(max-width: 34rem)"
+              srcset={assetUrl('logo-mark.png')}
+              width="96"
+              height="96"
+            />
+            <img
+              src={assetUrl('logo-wide.png')}
+              alt="GenreWatch"
+              width="480"
+              height="160"
+              class="brand-logo"
+            />
+          </picture>
         </a>
         <nav>
           <a href="/genres">Genres</a>

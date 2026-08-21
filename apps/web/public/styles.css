@@ -137,22 +137,29 @@ main {
 /* Big enough to actually read the mark at a glance; it now carries the name on
    its own, with no wordmark beside it. */
 .brand-logo {
-  /* Big, deliberately. The mark is an illustrated badge with "TipOffWatch" spelled
-     inside it, so it is the wordmark -- not an icon sitting next to one. Sized to
-     be read, not to fit a conventional header. Four goes at this: 44, 33, 48 and 72
-     were all too small because I was sizing the box instead of looking at the art. */
-  width: 112px;
-  height: 112px;
-  border-radius: 12px;
+  /*
+   * Sized by HEIGHT, with the width left to the image.
+   *
+   * Two shapes come through this one element -- a 3:1 wordmark on a wide screen
+   * and a 1:1 mark on a narrow one -- so pinning both dimensions would squash one
+   * of them. Height plus `width: auto` renders each at its own ratio, and the
+   * width/height attributes on the markup still reserve the right box before the
+   * bytes arrive.
+   */
+  height: 56px;
+  width: auto;
   display: block;
-  object-fit: contain;
 }
-@media (max-width: 40rem) {
+
+@media (max-width: 34rem) {
   .brand-logo {
-    width: 76px;
-    height: 76px;
+    /* The square mark at this height, which is where the swap pays: a wordmark
+       shrunk to fit a phone header is unreadable long before it is small. */
+    height: 40px;
+    border-radius: 10px;
   }
 }
+
 .topbar nav {
   display: flex;
   gap: 1.4rem;

@@ -1081,6 +1081,10 @@ const STATIC_FILES = [
   ['/vendor-webauthn.js', 'vendor-webauthn.js', 'text/javascript'],
   ['/sw.js', 'sw.js', 'text/javascript'],
   ['/logo.png', 'logo.png', 'image/png'],
+  // Header logo, in two shapes. The originals are 436KB and 722KB -- fine as
+  // source art, absurd in a header -- so these are the web-sized derivatives.
+  ['/logo-wide.png', 'logo-wide.png', 'image/png'],
+  ['/logo-mark.png', 'logo-mark.png', 'image/png'],
 ];
 
 // Hashed once at boot so pages can link /styles.css?v=<hash>. See lib/asset-version.js.

@@ -60,18 +60,46 @@ describe('static asset references', () => {
     }
   });
 
-  test('the header loads a sized icon, never the 1.4MB source image', async () => {
+  test('the header never links the source art, at either size', async () => {
     const layout = await readFile(SOURCES[0], 'utf8');
-    // logo.png and favicon.png are the same 1254x1254 source; linking either from
-    // the header would download 1.4MB on every page to draw a 44px mark.
+    // logo.png is 436KB and favicon.png is 722KB. They are fine as source art and
+    // absurd in a header -- linking either would download most of a megabyte on
+    // every page load to draw a 40px mark.
+    expect(layout).not.toContain("'logo.png'");
+    expect(layout).not.toContain("'favicon.png'");
     expect(layout).not.toContain('"/logo.png"');
     expect(layout).not.toContain('"/favicon.png"');
     expect(layout).toContain('class="brand-logo"');
+  });
 
-    const headerIcon = /src="(\/icons\/[\w.-]+)"/.exec(layout);
-    expect(headerIcon).toBeTruthy();
-    const { size } = await Bun.file(PUBLIC + headerIcon[1].replace(/^\//, '')).stat();
-    expect(size).toBeLessThan(100_000);
+  test('every image the header does link is small enough to be in a header', async () => {
+    const layout = await readFile(SOURCES[0], 'utf8');
+    const files = [
+      ...layout.matchAll(/assetUrl\('([\w.-]+\.(?:png|svg|webp))'\)/g),
+      ...layout.matchAll(/src="\/([\w./-]+\.(?:png|svg|webp))"/g),
+    ].map((m) => m[1]);
+
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) {
+      const { size } = await Bun.file(PUBLIC + f).stat();
+      // A generous ceiling. The point is to catch the source art, not to police
+      // a few KB either way.
+      expect({ file: f, kb: Math.round(size / 1024) }).toMatchObject({ file: f });
+      expect(size).toBeLessThan(100_000);
+    }
+  });
+
+  test('the mark and the wordmark are both offered, so a phone gets the mark', async () => {
+    const layout = await readFile(SOURCES[0], 'utf8');
+    /*
+     * A <picture> rather than two <img>s toggled with CSS: a hidden <img> is still
+     * downloaded, so display:none would cost the reader both files. The media
+     * query is what makes the swap free.
+     */
+    expect(layout).toContain('<picture>');
+    expect(layout).toContain('logo-mark.png');
+    expect(layout).toContain('logo-wide.png');
+    expect(layout).toMatch(/media="\(max-width:/);
   });
 
   test('the wordmark is gone but the name survives for screen readers', async () => {
