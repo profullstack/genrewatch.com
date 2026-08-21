@@ -497,8 +497,16 @@ export async function eventsNeedingDetail({ provider, limit = 120 }) {
     select id, provider_key from events
     where provider = ${provider}
       and detail_synced_at is null
-      and state = 'upcoming'
-      and starts_at > now()
+      /*
+       * Recently out, not just still to come.
+       *
+       * `starts_at > now()` looked obviously right and quietly excluded anything
+       * released today: a film stored at the noon anchor is in the past by the
+       * afternoon, so its page could never be enriched no matter how many passes
+       * ran. Every list on this site shows things from a few hours back, so the
+       * enrichment window has to reach back at least as far as the pages do.
+       */
+      and starts_at > now() - interval '7 days'
     order by starts_at
     limit ${limit}
   `;

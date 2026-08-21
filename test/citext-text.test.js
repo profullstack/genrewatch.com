@@ -59,3 +59,19 @@ describe('citext never leaves the query layer as citext', () => {
     expect(src).toContain('citext columns are cast to text');
   });
 });
+
+describe('the detail enrichment window', () => {
+  /*
+   * `starts_at > now()` excluded anything released today. A dated release is
+   * stored at the noon anchor, so by the afternoon it is in the past and its page
+   * could never be enriched however many passes ran -- which is exactly the page
+   * that gets opened, because it is the one that just came out.
+   */
+  test('reaches back, so something out today can still be enriched', async () => {
+    const src = await readFile(QUERIES, 'utf8');
+    const fn = src.slice(src.indexOf('export async function eventsNeedingDetail'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toContain("now() - interval '7 days'");
+    expect(body).not.toMatch(/starts_at > now\(\)\s*$/m);
+  });
+});
