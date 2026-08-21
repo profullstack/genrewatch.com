@@ -139,3 +139,56 @@ describe('a deploy must not serve yesterday markup', () => {
     expect(fn.slice(0, fn.indexOf('\n}\n'))).toContain('catch');
   });
 });
+
+describe('traffic counting', () => {
+  const load = async (id) => {
+    const saved = process.env.CRAWLPROOF_SITE_ID;
+    if (id === undefined) delete process.env.CRAWLPROOF_SITE_ID;
+    else process.env.CRAWLPROOF_SITE_ID = id;
+    try {
+      const { Layout } = await import(`../apps/web/src/views/Layout.jsx?a=${id}&t=${Date.now()}`);
+      return (await Layout({ user: null, title: 'T', children: 'x' }).toString()).toString();
+    } finally {
+      if (saved === undefined) delete process.env.CRAWLPROOF_SITE_ID;
+      else process.env.CRAWLPROOF_SITE_ID = saved;
+    }
+  };
+
+  /*
+   * No hardcoded id, ever.
+   *
+   * One baked into the source would mean every fork, staging copy and sibling
+   * brand silently reporting its traffic into the same dashboard -- and the
+   * numbers would be wrong in a way nobody would think to check, because
+   * nothing looks broken.
+   */
+  test('no site id appears in the source', async () => {
+    const layout = await readFile(SOURCES[0], 'utf8');
+    expect(layout).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+  });
+
+  test('nothing is loaded when no id is configured', async () => {
+    expect(await load(undefined)).not.toContain('crawlproof');
+  });
+
+  test('the script carries the id as data-site, which is how it finds itself', async () => {
+    const out = await load('test-site-id');
+    expect(out).toContain('https://crawlproof.com/stats.js');
+    // The script reads document.currentScript.dataset.site; any other attribute
+    // name loads it and counts nothing.
+    expect(out).toMatch(/data-site="test-site-id"/);
+  });
+
+  /*
+   * async in the head, not deferred at the end of the body: a view should be
+   * counted even if the reader leaves before the document finishes, and async
+   * means it still never delays first paint.
+   */
+  test('it is async, so it counts early without blocking paint', async () => {
+    const out = await load('test-site-id');
+    const tag = out.match(/<script[^>]*crawlproof[^>]*>/)?.[0] ?? '';
+    expect(tag).toContain('async');
+    // In the head, where it can fire before a quick bounce.
+    expect(out.indexOf('crawlproof')).toBeLessThan(out.indexOf('</head>'));
+  });
+});

@@ -217,6 +217,31 @@ export const config = {
     onBoot: bool('SYNC_ON_BOOT', false),
   },
 
+  /**
+   * Analytics, if this deployment has any.
+   *
+   * No default on purpose. A hardcoded site id would mean every deployment of
+   * this codebase -- a fork, a staging copy, a sibling brand -- silently
+   * reporting its traffic into someone else's dashboard, and the numbers would
+   * be wrong in a way nobody would think to check.
+   *
+   * The id is not a secret; it is served in the HTML to every visitor. It lives
+   * in configuration because it identifies the DEPLOYMENT, not because it needs
+   * hiding.
+   */
+  analytics: {
+    /* Read on use rather than snapshotted at import, like the playlist secret
+       above and for the same reason: a value frozen when the module first loads
+       cannot be changed by anything afterwards, which makes it untestable and
+       makes the order modules happen to import in part of the behaviour. */
+    get crawlproofSite() {
+      return opt('CRAWLPROOF_SITE_ID');
+    },
+    get enabled() {
+      return Boolean(this.crawlproofSite);
+    },
+  },
+
   cache: {
     /** Schedule pages are identical for every visitor, so they are rendered once and
      *  served from Redis. Personalisation is layered client-side. */

@@ -1,8 +1,8 @@
 import * as auth from '@genre/auth';
 import {
   CATEGORIES,
-  EXTERNAL_CATEGORIES,
   channelsForTitle,
+  EXTERNAL_CATEGORIES,
   oneChannelM3u,
   searchWithFallthrough,
 } from '@genre/catalog';
@@ -59,8 +59,6 @@ async function ownedTitles({ userId, results }) {
   }
   return owned;
 }
-
-
 
 /**
  * Answer the caller in its own language.
