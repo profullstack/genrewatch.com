@@ -24,6 +24,22 @@ export function pgArray(values) {
   return `{${items.join(',')}}`;
 }
 
+/*
+ * citext columns are cast to text on the way out.
+ *
+ * citext is an EXTENSION type, so its OID is assigned by the database when the
+ * extension is installed rather than being one of Postgres' built-ins. A driver
+ * can only decode it by recognising that OID, and when it does not, the value
+ * arrives as something that is not a string -- which renders as "[object Object]"
+ * the moment a page prints it, and compares unequal to every string it is checked
+ * against.
+ *
+ * Casting here costs nothing and does not depend on the driver, the extension's
+ * OID, or which database this happens to be pointed at. Case-insensitivity is a
+ * property of the COLUMN and its unique index, so nothing is lost by handing the
+ * application a plain string.
+ */
+
 /* ---------------------------------------------------------------- accounts -- */
 
 /**
@@ -34,7 +50,7 @@ export async function findOrCreateUser(email) {
   const [row] = await sql`
     insert into users ${sql({ email })}
     on conflict (email) do update set last_seen_at = now()
-    returning *
+    returning *, email::text as email
   `;
   return row;
 }
@@ -69,7 +85,8 @@ export async function startSession({ userId, ttlDays, userAgent }) {
 
 export async function getSessionUser(sessionId) {
   const [row] = await sql`
-    select u.* from sessions s
+    select u.*, u.email::text as email, u.handle::text as handle
+    from sessions s
     join users u on u.id = s.user_id
     where s.id = ${sessionId}::uuid and s.expires_at > now()
   `;
@@ -191,7 +208,7 @@ export async function updateProfile({ userId, handle, displayName, bio, profileP
         bio = ${bio ?? null},
         profile_public = ${profilePublic}
       where id = ${userId}
-      returning id, handle, display_name, bio, profile_public
+      returning id, handle::text as handle, display_name, bio, profile_public
     `;
     return { ok: true, user: row };
   } catch (err) {
@@ -799,7 +816,7 @@ export async function followersOfEventPage({
 export async function deliveryTargets(userIds) {
   if (userIds.length === 0) return [];
   return sql`
-    select u.id as user_id, u.email, u.timezone,
+    select u.id as user_id, u.email::text as email, u.timezone,
            coalesce(p.channels, '{webpush,email}') as channels,
            coalesce(p.offsets_minutes, '{60,1}') as offsets_minutes,
            coalesce(p.date_offsets_minutes, '{1440,0}') as date_offsets_minutes,
@@ -906,7 +923,10 @@ export async function savePrefs({ userId, offsetsMinutes, dateOffsetsMinutes, ch
 /* --------------------------------------------------------------- calendar -- */
 
 export async function userByCalendarToken(token) {
-  const [row] = await sql`select * from users where calendar_token = ${token}::uuid`;
+  const [row] = await sql`
+    select u.*, u.email::text as email, u.handle::text as handle
+    from users u where u.calendar_token = ${token}::uuid
+  `;
   return row ?? null;
 }
 
@@ -1028,7 +1048,7 @@ export async function publicEvents({
 export async function commentsForEvent(eventId, { limit = 200 } = {}) {
   return sql`
     select c.id, c.body, c.created_at, c.user_id,
-           u.email, u.handle, u.display_name, u.profile_public
+           u.email::text as email, u.handle::text as handle, u.display_name, u.profile_public
     from comments c join users u on u.id = c.user_id
     where c.event_id = ${eventId} and c.deleted_at is null
     order by c.created_at
