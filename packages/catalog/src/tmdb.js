@@ -1,0 +1,165 @@
+/**
+ * Film, from TMDB.
+ *
+ * The only adapter here that needs a key, and it is free for this use. It earns
+ * the exception because there is no keyless source with both a full forward
+ * release calendar and a genre taxonomy -- Wikidata has the dates but needs
+ * SPARQL and no genres worth the name, and OMDb wants a key too.
+ *
+ * The important difference from television: a film release date is a DATE. TMDB
+ * returns "2026-12-16" and nothing finer, because a wide release does not have a
+ * minute. Every row from here is therefore time_known = false, and the scheduler
+ * reminds on the date offsets rather than the minute ones. Padding those to
+ * midnight and reminding someone "in 60 minutes" at 11pm the night before is the
+ * exact bug that flag exists to prevent.
+ */
+
+import { getJson } from './http.js';
+import { keyFor, slugify } from './slug.js';
+
+const BASE = 'https://api.themoviedb.org/3';
+const IMAGE = 'https://image.tmdb.org/t/p/w342';
+const PROVIDER = 'tmdb';
+export const CATEGORY = 'film';
+
+/** TMDB tolerates ~50/s. 100ms is well inside it and costs nothing here. */
+const MIN_GAP_MS = 100;
+
+/** Genres TMDB carries that this site files elsewhere. */
+const REROUTED = new Set(['tv movie']);
+
+const ymd = (d) => d.toISOString().slice(0, 10);
+
+/**
+ * Noon UTC, not midnight.
+ *
+ * A date-only event has to be stored as SOME instant, and midnight UTC is the
+ * worst available choice: it is the previous evening for all of the Americas, so
+ * a film "released on the 16th" shows up on the 15th for a third of readers and a
+ * day-before reminder fires two days early. Noon is inside the correct calendar
+ * day for every timezone from UTC-11 to UTC+12.
+ */
+function noonUtc(dateStr) {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** The genre id -> name table, fetched once per sync. */
+async function fetchGenres(key) {
+  const res = await getJson(`${BASE}/genre/movie/list?api_key=${key}`, { minGapMs: MIN_GAP_MS });
+  const out = new Map();
+  for (const g of res?.genres ?? []) {
+    if (REROUTED.has(g.name.toLowerCase())) continue;
+    out.set(g.id, {
+      provider: PROVIDER,
+      providerKey: keyFor(PROVIDER, 'genre', g.name),
+      category: CATEGORY,
+      slug: slugify(`${g.name}-film`),
+      name: g.name,
+      priority: 50,
+    });
+  }
+  return out;
+}
+
+/**
+ * Films releasing in the window, most popular first.
+ *
+ * Popularity order rather than date order is deliberate. TMDB's forward calendar
+ * has a long tail of festival entries and regional re-releases that nobody is
+ * waiting for, and taking the first N by date would fill the page with them while
+ * missing the film everybody actually wants a reminder about.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.apiKey] falls back to TMDB_API_KEY
+ * @param {number} [opts.maxPages] 20 titles per page
+ */
+export async function fetchAll({
+  from = new Date(),
+  horizonDays = 180,
+  apiKey = process.env.TMDB_API_KEY,
+  maxPages = 15,
+} = {}) {
+  if (!apiKey) return { genres: [], subjects: [], events: [], skipped: 'no TMDB_API_KEY' };
+
+  const genreById = await fetchGenres(apiKey);
+  const to = new Date(from.getTime() + horizonDays * 86_400_000);
+
+  const genres = new Map();
+  const subjects = new Map();
+  const events = [];
+
+  for (let page = 1; page <= maxPages; page++) {
+    const url =
+      `${BASE}/discover/movie?api_key=${apiKey}` +
+      `&primary_release_date.gte=${ymd(from)}` +
+      `&primary_release_date.lte=${ymd(to)}` +
+      `&sort_by=popularity.desc&include_adult=false&page=${page}`;
+    const res = await getJson(url, { minGapMs: MIN_GAP_MS });
+    const results = res?.results ?? [];
+    if (results.length === 0) break;
+
+    for (const m of results) {
+      if (!m?.id || !m.release_date) continue;
+      const startsAt = noonUtc(m.release_date);
+      if (!startsAt || startsAt > to) continue;
+
+      const genreKeys = [];
+      for (const gid of m.genre_ids ?? []) {
+        const g = genreById.get(gid);
+        if (!g) continue;
+        genres.set(g.providerKey, g);
+        genreKeys.push(g.providerKey);
+      }
+      if (genreKeys.length === 0) continue;
+
+      const subjectKey = keyFor(PROVIDER, 'movie', String(m.id));
+      const summary = m.overview?.trim() || null;
+      const image = m.poster_path ? `${IMAGE}${m.poster_path}` : null;
+
+      subjects.set(subjectKey, {
+        provider: PROVIDER,
+        providerKey: subjectKey,
+        category: CATEGORY,
+        kind: 'film',
+        slug: slugify(m.title, String(m.id)),
+        name: m.title,
+        displayName: m.title,
+        description: summary,
+        imageUrl: image,
+        url: `https://www.themoviedb.org/movie/${m.id}`,
+        genreKeys,
+      });
+
+      events.push({
+        provider: PROVIDER,
+        // The film and its release are one row each, keyed apart so a future
+        // second event for the same film (a streaming date) does not collide.
+        providerKey: keyFor(PROVIDER, 'release', String(m.id)),
+        category: CATEGORY,
+        subjectKey,
+        kind: 'release',
+        startsAt,
+        timeKnown: false,
+        precision: 'day',
+        state: 'upcoming',
+        name: m.title,
+        shortName: null,
+        summary,
+        imageUrl: image,
+        url: `https://www.themoviedb.org/movie/${m.id}`,
+        venue: 'Cinemas',
+        venueRegion: null,
+        season: null,
+        number: null,
+        runtimeMin: null,
+      });
+    }
+
+    if (res.page >= (res.total_pages ?? 1)) break;
+  }
+
+  return { genres: [...genres.values()], subjects: [...subjects.values()], events };
+}
+
+export const adapter = { name: PROVIDER, category: CATEGORY, fetchAll };

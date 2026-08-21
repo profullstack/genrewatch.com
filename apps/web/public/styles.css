@@ -1,0 +1,1803 @@
+/* GenreWatch — broadcast dark.
+   The visual language sports fans already read fluently: near-black ground, one hot
+   accent, condensed display type for anything numeric, and live state carried by
+   colour rather than a label. Written to be legible at a glance on a phone held at
+   arm's length, which is when people actually check whether a game has started. */
+
+@import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap");
+
+:root {
+  --ground: oklch(0.15 0.012 260);
+  --panel: oklch(0.205 0.014 260);
+  --panel2: oklch(0.245 0.015 260);
+  --line: oklch(0.3 0.016 260);
+  --fg: oklch(0.96 0.004 260);
+  --muted: oklch(0.68 0.012 260);
+  /* Two accents, same lightness and chroma, hue apart: attention vs urgency. */
+  --accent: oklch(0.72 0.19 45);
+  --live: oklch(0.72 0.19 25);
+  --ok: oklch(0.78 0.16 155);
+  --radius: 11px;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --disp: "Barlow Condensed", var(--sans);
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: oklch(0.8 0.16 45);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--disp);
+  text-transform: uppercase;
+  letter-spacing: 0.005em;
+  margin: 0 0 0.5rem;
+}
+h1 {
+  font-size: clamp(2rem, 5vw, 2.75rem);
+}
+h2 {
+  font-size: 1.6rem;
+  margin-top: 2rem;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 0.875rem;
+}
+.num {
+  font-family: var(--disp);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+main {
+  max-width: 74rem;
+  margin: 0 auto;
+  /* Side insets matter in landscape, where viewport-fit=cover puts the notch
+     beside the content rather than above it. */
+  padding: 1.5rem max(1.15rem, env(safe-area-inset-right, 0px)) 4rem
+    max(1.15rem, env(safe-area-inset-left, 0px));
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+}
+.skip:focus {
+  left: 1rem;
+  top: 1rem;
+  background: var(--panel);
+  padding: 0.5rem;
+  z-index: 10;
+}
+
+/* ---------------------------------------------------------------- chrome -- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  /* Tight vertical padding: the logo sets the bar's height now, and stacking the
+     old padding on top of it made the header taller than it needed to be. */
+  /* The safe-area insets are not cosmetic here. The document declares
+     viewport-fit=cover and black-translucent, so an installed home-screen app
+     starts painting at y=0 -- underneath the status bar and the Dynamic Island.
+     iOS claims that strip for itself and swallows every tap inside it, which put
+     the nav links (y 29-71) in a band where nothing could be pressed while the
+     taller logo poked out below and still worked. Padding the bar down by the
+     inset moves the links out from under the system chrome. */
+  padding: calc(0.35rem + env(safe-area-inset-top, 0px))
+    max(1.15rem, env(safe-area-inset-right, 0px)) 0.35rem
+    max(1.15rem, env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(oklch(0.19 0.014 260), var(--ground));
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--disp);
+  font-weight: 700;
+  font-size: 1.35rem;
+  text-transform: uppercase;
+  color: var(--fg);
+}
+/* Big enough to actually read the mark at a glance; it now carries the name on
+   its own, with no wordmark beside it. */
+.brand-logo {
+  /* Big, deliberately. The mark is an illustrated badge with "TipOffWatch" spelled
+     inside it, so it is the wordmark -- not an icon sitting next to one. Sized to
+     be read, not to fit a conventional header. Four goes at this: 44, 33, 48 and 72
+     were all too small because I was sizing the box instead of looking at the art. */
+  width: 112px;
+  height: 112px;
+  border-radius: 12px;
+  display: block;
+  object-fit: contain;
+}
+@media (max-width: 40rem) {
+  .brand-logo {
+    width: 76px;
+    height: 76px;
+  }
+}
+.topbar nav {
+  display: flex;
+  gap: 1.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.topbar nav a {
+  color: var(--muted);
+  font-size: 0.95rem;
+  /* A 23px-tall link is under every tap-target minimum going. Grown with
+     min-height rather than padding so the nav's gap keeps setting the horizontal
+     rhythm, and so the bar itself does not get taller -- the 76px logo is still
+     what sets its height. */
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+.topbar nav a:hover,
+.topbar nav a[aria-current] {
+  color: var(--fg);
+}
+
+.cta,
+.ghost {
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  display: inline-block;
+  border: 1px solid transparent;
+}
+.cta {
+  background: var(--accent);
+  color: oklch(0.16 0.02 45);
+  border-color: var(--accent);
+}
+.cta:hover {
+  background: oklch(0.78 0.17 45);
+}
+.cta:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ghost {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--line);
+}
+.ghost:hover {
+  border-color: var(--muted);
+}
+.small-btn {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+/* ------------------------------------------------------------------ hero -- */
+
+.hero {
+  padding: 2.25rem 0 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+.hero p {
+  max-width: 44rem;
+  color: var(--muted);
+}
+.hero-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 1.25rem 0 0.5rem;
+}
+
+.eyebrow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin: 2rem 0 1rem;
+}
+.eyebrow h2 {
+  margin: 0;
+}
+.eyebrow span {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------------- fixtures -- */
+
+ul.events {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+li.event {
+  display: grid;
+  grid-template-columns: 5.6rem 1fr auto;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  margin-bottom: 0.5rem;
+}
+li.event.in {
+  border-color: oklch(0.72 0.19 25 / 0.55);
+  background: linear-gradient(90deg, oklch(0.72 0.19 25 / 0.1), var(--panel) 42%);
+}
+
+/* Every rendered time stacks by default.
+   There is no whitespace between the spans inside <time> -- there cannot be, or
+   a flex container turns it into stray anonymous items -- so anywhere this rule
+   does NOT reach, the parts run together as "4:30 PMWed, Aug 19PDT". That is
+   what happened on the event page, which had no rule of its own: the layout was
+   opted into per context, so every new context started out broken. */
+time[data-local] {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+li.event time {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.05;
+}
+li.event time .t {
+  font-family: var(--disp);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.7rem;
+}
+li.event time .d {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 0.3rem;
+}
+
+.matchup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.matchup a {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 1.08rem;
+  letter-spacing: -0.01em;
+}
+.matchup a:hover {
+  color: var(--accent);
+}
+.matchup .meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.score {
+  font-family: var(--disp);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.7rem;
+}
+
+.badge {
+  margin-left: 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.badge.live {
+  color: var(--live);
+}
+.badge.live::before {
+  content: "●";
+  margin-right: 0.3rem;
+}
+.badge.done {
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------ navigation -- */
+
+ol.crumbs {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0;
+  margin: 0 0 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+ol.crumbs li + li::before {
+  content: "›";
+  margin-right: 0.45rem;
+}
+ol.crumbs a {
+  color: var(--muted);
+}
+ol.crumbs a:hover {
+  color: var(--fg);
+}
+ol.crumbs [aria-current="page"] {
+  color: var(--fg);
+}
+
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.page-head h1 {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0;
+}
+.page-head h1 img {
+  border-radius: 8px;
+}
+
+.stat {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2rem;
+  margin: 1rem 0 1.5rem;
+}
+.stat li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.stat strong {
+  font-family: var(--disp);
+  font-size: 1.7rem;
+  font-variant-numeric: tabular-nums;
+}
+.stat span {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+ul.sports {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 0.5rem;
+}
+ul.sports a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--fg);
+}
+ul.sports a:hover {
+  border-color: var(--accent);
+}
+ul.sports strong {
+  font-family: var(--disp);
+  text-transform: uppercase;
+  font-size: 1.15rem;
+}
+ul.sports .muted {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+ul.leagues {
+  list-style: none;
+  padding: 0;
+}
+ul.leagues li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.7rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  margin-bottom: 0.4rem;
+}
+ul.leagues a {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* ----------------------------------------------------------------- teams -- */
+
+ul.teams {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  /* Wide enough that a long club name sits on one line next to the follow
+     control; below this the name wrapped on nearly every card. */
+  grid-template-columns: repeat(auto-fill, minmax(19.5rem, 1fr));
+  gap: 0.5rem;
+}
+li.team {
+  display: grid;
+  grid-template-columns: 30px 1fr auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+li.team img {
+  border-radius: 6px;
+  object-fit: contain;
+}
+.team-blank {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+}
+.team-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.team-name a {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 0.95rem;
+  /* Long names shorten rather than reflow the card. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-name .meta {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+button.following {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: oklch(0.72 0.19 45 / 0.12);
+}
+
+.chips {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0;
+}
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.3rem 0.8rem;
+  font-size: 0.88rem;
+}
+/* The unfollow x inside a chip.
+   Scoped through .inline deliberately: the button sits in a <form class="inline">,
+   and `.inline button` further down the file matches it at the same specificity, so
+   with a plain `.chip button` whichever rule came last won -- which is how the x
+   ended up wearing a bordered box. This is (0,2,1), so order stops mattering. */
+.chip .inline button,
+.chip button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 0 0 0 0.15rem;
+  border-radius: 0;
+}
+.chip .inline button:hover,
+.chip button:hover {
+  border-color: transparent;
+  color: var(--live);
+}
+
+/* ------------------------------------------------------------------ misc -- */
+
+.auth {
+  max-width: 26rem;
+  margin: 3rem auto;
+}
+.auth label {
+  display: block;
+  margin: 1rem 0 0.25rem;
+  font-size: 0.9rem;
+}
+.auth input[type="email"],
+select {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+}
+select {
+  width: auto;
+  margin-top: 0.25rem;
+}
+.auth .cta {
+  width: 100%;
+  margin-top: 1rem;
+}
+.or {
+  text-align: center;
+  color: var(--muted);
+  margin: 1.25rem 0;
+  font-size: 0.85rem;
+}
+#passkey-signin {
+  width: 100%;
+}
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 0 0 1rem;
+  background: var(--panel);
+}
+legend {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+label.check {
+  display: block;
+  padding: 0.2rem 0;
+}
+
+ul.passkeys {
+  list-style: none;
+  padding: 0;
+}
+ul.passkeys li {
+  display: flex;
+  flex-direction: column;
+  padding: 0.6rem 0.85rem;
+  margin-bottom: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+ul.passkeys .muted {
+  font-size: 0.78rem;
+}
+
+.notice {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.feedback {
+  margin-top: 0.6rem;
+  font-size: 0.9rem;
+}
+.feedback.ok {
+  color: var(--ok);
+}
+.feedback.error {
+  color: var(--live);
+}
+.feedback.info {
+  color: var(--muted);
+}
+.ok {
+  color: var(--ok);
+}
+.empty {
+  color: var(--muted);
+  padding: 1.25rem 0;
+}
+
+footer {
+  border-top: 1px solid var(--line);
+  /* The bottom inset clears the home indicator, which otherwise sits over the
+     footer links for the same reason the status bar sat over the nav. */
+  padding: 1.5rem max(1.15rem, env(safe-area-inset-right, 0px))
+    calc(1.5rem + env(safe-area-inset-bottom, 0px)) max(1.15rem, env(safe-area-inset-left, 0px));
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.inline {
+  display: inline;
+}
+
+/* Buttons ordered least-specific first so nothing later is overridden by
+   something weaker above it. */
+.inline button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 0.35rem 0.75rem;
+  font: inherit;
+  font-size: 0.82rem;
+}
+.inline button:hover {
+  border-color: var(--muted);
+}
+
+/* A follow that has been sent but not yet confirmed. Feedback beats a spinner. */
+[data-pending] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+@media (max-width: 40rem) {
+  li.event {
+    grid-template-columns: 4.4rem 1fr;
+    row-gap: 0.5rem;
+  }
+  li.event .score {
+    grid-column: 2;
+    justify-self: end;
+  }
+  .topbar {
+    padding: calc(0.75rem + env(safe-area-inset-top, 0px))
+      max(0.9rem, env(safe-area-inset-right, 0px)) 0.75rem
+      max(0.9rem, env(safe-area-inset-left, 0px));
+  }
+  .topbar nav {
+    gap: 0.9rem;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  li.event,
+  li.team {
+    transition:
+      border-color 0.15s ease,
+      background-color 0.15s ease;
+  }
+  .cta,
+  .ghost,
+  .inline button {
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease;
+  }
+}
+
+/* A navigation in flight. Deliberately a thin top rule rather than a spinner or a
+   blanked page: most of these resolve in well under a second, and a spinner that
+   appears and vanishes reads as a glitch. */
+body[data-loading]::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 2px;
+  z-index: 20;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: sweep 900ms ease-in-out infinite;
+}
+@keyframes sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  body[data-loading]::before {
+    animation: none;
+    background: var(--accent);
+  }
+}
+
+/* A score that is still moving. */
+.score.live {
+  color: var(--live);
+}
+
+/* A live game's clock replaces its kickoff time in the row. Sized down from the
+   time it replaces: "Bot 6th" is wider than "19:00" and must not reflow the row. */
+li.event time .t.live-clock {
+  font-size: 1.15rem;
+  color: var(--live);
+  letter-spacing: 0.01em;
+}
+
+/* Action log */
+ul.plays {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 1rem;
+}
+ul.plays li {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+ul.plays.scoring li {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 0.35rem;
+}
+ul.plays li.scored .play-text {
+  color: var(--accent);
+}
+.play-when {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+ul.plays.scoring .play-when {
+  font-family: var(--disp);
+  font-size: 1.05rem;
+  color: var(--fg);
+  letter-spacing: 0;
+}
+.play-text .meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+/* Comments.
+   A panel like every other section on the page. The first version was three bare
+   lines on the background with no container and no affordance -- it read as
+   unfinished, because it was. */
+/* Two follow buttons, one per team. They carry full team names, so on a narrow
+   screen they have to be allowed to wrap onto separate lines -- side by side they
+   ran off the edge of a phone. */
+.follow-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.follow-pair .inline {
+  display: inline-flex;
+  min-width: 0;
+}
+.follow-pair button {
+  max-width: 100%;
+}
+
+/* Comments read as one more section of the page, not a widget dropped onto it.
+   Follow, Live action and Watch are all borderless with a plain heading; boxing
+   this one put a panel inside a panel -- the composer already has a border, so
+   the outer frame was a second edge around the first for no reason. */
+.comments-panel {
+  margin-top: 2rem;
+}
+.comments-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+/* Sized and spaced by the base h2 rule, so it lines up with its siblings. */
+.comments-head h2 {
+  margin: 0;
+}
+.comments-head .count {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+/* A round initial stands in for an avatar: enough to tell two people apart in a
+   thread without asking anyone to upload anything. */
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-family: var(--disp);
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.composer {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  margin-top: 0.9rem;
+}
+.composer-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.composer textarea {
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+  min-height: 4.5rem;
+}
+.composer textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+/* Signed out there is no textarea, so the prompt and the button belong on one
+   line. Stacked, they left a tall box mostly full of nothing. */
+.composer.signed-out {
+  align-items: center;
+}
+.composer.signed-out .composer-body {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.composer-prompt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+@media (max-width: 30rem) {
+  .composer.signed-out .composer-body {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.7rem;
+  }
+}
+
+ul.comments {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0 0;
+}
+ul.comments li {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--line);
+}
+.comment-main {
+  flex: 1;
+  min-width: 0;
+}
+.comment-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.comment-head strong {
+  color: var(--fg);
+  font-size: 0.9rem;
+}
+.comment-head time {
+  flex-direction: row;
+  gap: 0.35rem;
+}
+.comment-head time .d {
+  margin-top: 0;
+}
+/* The form is the flex item, so it carries the push -- margin-left on the button
+   inside it moved nothing, leaving the delete control jammed against the
+   timestamp as if it belonged to it. */
+.comment-head .inline {
+  margin-left: auto;
+}
+.comments-panel .inline button {
+  border: 0;
+  padding: 0 0.25rem;
+  color: var(--muted);
+  font-size: 1rem;
+}
+.comments-panel .inline button:hover {
+  color: var(--live);
+}
+.comment-body {
+  margin: 0.3rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+/* A fixture the signed-in viewer follows. The star sits inside the link so it
+   wraps with the team names rather than stranding itself on its own line, and the
+   left border gives the row a scannable edge in a long schedule. */
+.event.followed {
+  border-left: 2px solid var(--accent);
+}
+
+.followed-star {
+  color: var(--accent);
+  margin-right: 0.35rem;
+  font-size: 0.85em;
+  line-height: 1;
+}
+
+/* A URL meant to be copied: readable at a glance, selectable, and never wider than
+   its column -- an ICS feed URL carries a token and would otherwise blow out the
+   layout on a phone. */
+.copy-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+/* flex-basis 0, not the input's own width: a 100%-wide field plus a button is
+   wider than the row, and the overflow pushed the whole page sideways on a phone. */
+.copy-row input {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.copy-row button {
+  flex: 0 0 auto;
+}
+
+/* ---------------------------------------------------------- event hero -- */
+/* The scoreboard had no styling at all, so it rendered as a stack of bare
+   elements: the two spans inside <time> ran together as "10:00 PMFri, Aug 21"
+   because only `li.event time` was ever laid out as a column. */
+.scoreboard {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 1rem;
+  margin: 1.25rem 0 0.5rem;
+  padding: 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+/* A race, a tournament or a fight card is one event with a field rather than two
+   named sides, so there is no matchup to lay out. Two columns, not three: the name
+   takes the room the opponent would have had, and the status badge keeps its place
+   on the right instead of floating in a gap where a crest used to be. */
+.scoreboard.solo {
+  grid-template-columns: 1fr auto;
+}
+.solo-name strong {
+  font-family: var(--disp);
+  font-size: 1.35rem;
+  line-height: 1.15;
+}
+
+/* Away on the left reading inward, home on the right reading outward, and both
+   scores pushed to the inner edge so they sit either side of the middle column
+   the way a scoreboard is actually read. */
+.side {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.scoreboard .side:last-child {
+  flex-direction: row-reverse;
+  text-align: right;
+}
+.scoreboard .side:last-child .side-name {
+  align-items: flex-end;
+}
+/* In a row-reverse container this pushes the score the other way, which is the
+   inner edge in both cases. */
+.side-score {
+  margin-left: auto;
+}
+
+.side img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  flex: none;
+}
+.team-blank.big {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  background: var(--panel2);
+  display: block;
+  flex: none;
+}
+
+.side-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.15rem;
+}
+/* The team names are the point of the block, so they carry the weight -- at the
+   previous size they read as secondary to the logo beside them. */
+.side-name a,
+.side-name span {
+  font-family: var(--disp);
+  font-size: 1.3rem;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.side-name .meta {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.side-score {
+  font-family: var(--disp);
+  font-size: 2.2rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  padding: 0 0.35rem;
+}
+
+.middle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  text-align: center;
+}
+.middle time {
+  align-items: center;
+  gap: 0.15rem;
+}
+.middle time .t {
+  font-family: var(--disp);
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+.middle time .d,
+.middle time .z {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.middle .vs {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+@media (max-width: 34rem) {
+  .scoreboard {
+    gap: 0.6rem;
+    padding: 0.9rem;
+  }
+  .side img,
+  .team-blank.big {
+    width: 40px;
+    height: 40px;
+  }
+  .side-name a,
+  .side-name span {
+    font-size: 0.9rem;
+  }
+  .side-score {
+    font-size: 1.6rem;
+  }
+}
+
+/* The notification self-check: a list of steps, each either done, failed or still
+   waiting. The state is in the words too, so colour never carries it alone. */
+.check-steps {
+  margin: 1rem 0 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.4rem;
+}
+.check-step span {
+  color: var(--muted);
+}
+.check-step strong::after {
+  content: ": ";
+  color: var(--muted);
+}
+.check-step.ok strong {
+  color: #34d399;
+}
+.check-step.bad strong {
+  color: #f87171;
+}
+.check-step.wait strong {
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------------- cards -- */
+
+/* A surface with a header, a body and an optional footer, at one consistent
+   rhythm. The page had .notice doing this job with whatever margins each block
+   happened to bring, which is why two stacked panels never lined up. */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin: 0 0 1.25rem;
+  display: grid;
+  gap: 1.25rem;
+}
+.card-head {
+  display: grid;
+  gap: 0.35rem;
+}
+/* Quieter than a page heading on purpose: a card title is a label for a control,
+   not a section of the site, and the condensed display face shouts at that size. */
+.card-title {
+  font-family: var(--sans);
+  text-transform: none;
+  letter-spacing: -0.01em;
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0;
+}
+.card-desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--line);
+}
+.card-foot p {
+  margin: 0;
+}
+
+/* A labelled control, with its help text kept in the same block so the spacing
+   between a field and its explanation never depends on paragraph margins. */
+.field {
+  display: grid;
+  gap: 0.45rem;
+}
+.field-label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+.input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--ground);
+  color: var(--fg);
+  font: inherit;
+}
+.input.mono {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+/* One focus treatment for everything focusable. Keyboard focus was previously
+   whatever each browser drew, which on a dark ground is often nearly invisible. */
+.input:focus-visible,
+.cta:focus-visible,
+.ghost:focus-visible,
+.link-quiet:focus-visible,
+.chip button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px oklch(0.72 0.19 45 / 0.35);
+}
+
+/* A text action that is not a button: less weight than .ghost, more than a link. */
+.link-quiet {
+  font-size: 0.85rem;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 0.35rem 0.4rem;
+}
+.link-quiet:hover {
+  color: var(--fg);
+}
+
+/* Where to paste the feed URL, one client per line. As a sentence it was three
+   arrows deep and nobody could find their own calendar in it. */
+.hints {
+  list-style: none;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+/* Client names in their own column: as a ragged inline pair the eye cannot find
+   its own calendar without reading all three lines. */
+.hints li {
+  display: grid;
+  grid-template-columns: minmax(7.5rem, max-content) 1fr;
+  gap: 0.9rem;
+}
+.hints span {
+  color: var(--fg);
+  font-weight: 500;
+}
+@media (max-width: 40rem) {
+  .hints li {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
+  /* A phone cannot show the whole URL and a button side by side without one of
+     them shrinking to nothing. */
+  .copy-row {
+    flex-wrap: wrap;
+  }
+  .copy-row .ghost {
+    width: 100%;
+  }
+  .card {
+    padding: 1.15rem;
+  }
+  .card-foot {
+    justify-content: flex-start;
+  }
+}
+/* The kickoff line under the matchup.
+   `display: inline` deliberately overrides the stacking default: this variant
+   carries real "·" separators in the markup, so it must stay on one line -- and
+   it stays readable even if this stylesheet never loads. */
+time.line {
+  display: inline;
+}
+
+.kickoff {
+  margin: 0.35rem 0 0;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.kickoff [data-local-time] {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------- home and away -- */
+
+/* Which side is at home, said outright. The ordering convention differs by sport
+   -- visitor first in North America, host first almost everywhere else -- so a
+   position in a row cannot carry this on its own. */
+.role-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  margin-bottom: 0.25rem;
+}
+.role-tag.home {
+  color: var(--accent);
+  border-color: oklch(0.72 0.19 45 / 0.45);
+}
+
+/* The row version: one letter, because a schedule line has no room for a word.
+   The title carries the full meaning for anyone who needs it. */
+.ha {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.12rem 0.25rem;
+  margin-right: 0.3rem;
+  vertical-align: 0.08em;
+}
+/* Home in the accent on both surfaces, so the same colour means the same thing
+   whether you are reading a schedule row or a scoreboard. */
+.ha.home {
+  color: var(--accent);
+  border-color: oklch(0.72 0.19 45 / 0.45);
+}
+.matchup .join {
+  color: var(--muted);
+  margin: 0 0.4rem;
+  font-size: 0.9em;
+}
+
+/* ------------------------------------------------------------ where to watch -- */
+
+/* A fixture carried in several countries. Without scripting every market is listed
+   in full, which is longer but true; app.js collapses it to a tab strip once it can
+   tell which country the reader is in. Both states are styled here so the upgrade
+   is a class flip rather than a rebuild. */
+.markets {
+  margin: 1.5rem 0;
+}
+.market-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.market-name {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.15rem;
+  font-weight: 400;
+}
+.market-channels {
+  margin: 0;
+  font-family: var(--disp);
+  font-size: 1.4rem;
+  line-height: 1.2;
+}
+
+/* Tabbed: the country headings become the strip, so only the selected market's
+   channels are on screen. */
+.markets.is-tabbed .market-name {
+  display: none;
+}
+.markets.is-tabbed .market[hidden] {
+  display: none;
+}
+.market-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+  border-bottom: 1px solid var(--line);
+}
+.market-tab {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  padding: 0.4rem 0.7rem;
+  margin-bottom: -1px;
+}
+.market-tab:hover {
+  color: var(--fg);
+}
+.market-tab[aria-selected='true'] {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--fg);
+}
+.markets.is-tabbed .market-list {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  margin-top: 0;
+  padding: 0.9rem 1rem;
+}
+
+/* --------------------------------------------------------------- own line -- */
+
+/* A reader's own channels, matched to this fixture. Only ever rendered for the
+   account that added the list. */
+.own-line {
+  margin: 1.5rem 0;
+}
+.own-channels {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.own-channels li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.8rem;
+}
+.own-channel-name {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+/* =============================================================== form system ==
+   One place that decides what a control looks like.
+
+   Before this, styling was scattered and partial: only `.auth input[type=email]`
+   and bare `select` were styled at all, so a url or text input inherited nothing,
+   a textarea inherited nothing, `fieldset` carried a border with no padding, and
+   `legend` sat on top of that border rather than in a gap in it. The settings page
+   showed the result -- a label, a select and a button jammed together on one line
+   with no space between them.
+
+   Everything below is additive and late in the file, so it wins on order without
+   needing !important or ID selectors. */
+
+/* ---- the controls themselves ---- */
+
+input[type="text"],
+input[type="email"],
+input[type="url"],
+input[type="password"],
+input[type="search"],
+input[type="number"],
+input[type="tel"],
+select,
+textarea {
+  width: 100%;
+  max-width: 34rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ground);
+  color: var(--fg);
+  font: inherit;
+  line-height: 1.4;
+}
+
+/* A select is sized by its longest option, so a full-width one looks broken next
+   to a short label. It gets its own width and keeps the shared skin. */
+select {
+  width: auto;
+  min-width: 12rem;
+  margin-top: 0;
+  /* Room for the native arrow, which otherwise overlaps a long zone name. */
+  padding-right: 2rem;
+}
+
+textarea {
+  min-height: 5.5rem;
+  resize: vertical;
+}
+
+::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+/* One focus treatment everywhere, including buttons and links, so tabbing through
+   a form never loses the caret. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled,
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+input[aria-invalid="true"],
+.field.invalid input {
+  border-color: var(--live);
+}
+
+/* ---- labelled fields ---- */
+
+/* Both spellings are in the markup: `.field > span` on the newer forms and
+   `.field-label` on the older ones. Supporting both beats a rename that would
+   touch every view for no visible gain. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.85rem 0;
+  max-width: 34rem;
+}
+.field > span,
+.field-label {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 400;
+}
+.field .hint {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* A control and its button on one line, which is what the time zone form wanted
+   and did not have. Wraps rather than overflowing on a narrow screen, and aligns
+   on the baseline of the controls rather than the top of the label. */
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin: 0.85rem 0;
+}
+.form-row .field {
+  margin: 0;
+}
+
+/* ---- checkboxes and radios ---- */
+
+input[type="checkbox"],
+input[type="radio"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* The gap is the fix: these were `display:block` with no spacing, so the box sat
+   flush against its own text. */
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.3rem 0;
+  cursor: pointer;
+  line-height: 1.3;
+}
+label.check:hover {
+  color: var(--fg);
+}
+
+/* ---- grouping ---- */
+
+fieldset {
+  padding: 0.9rem 1rem 1rem;
+}
+legend {
+  /* Padding on both sides puts the legend INTO a gap in the border rather than on
+     top of it, and the background makes that gap opaque. */
+  padding: 0 0.45rem;
+  margin-left: 0.35rem;
+  background: var(--panel);
+}
+
+/* ---- buttons ---- */
+
+/* Buttons were three different heights on one page because only some carried a
+   size class. This gives every button the same vertical rhythm as an input, so a
+   button next to a select lines up with it. */
+button,
+.cta,
+.ghost {
+  font: inherit;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.form-row button,
+.form-row .cta,
+.form-row .ghost {
+  padding: 0.55rem 0.9rem;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.85rem 0;
+}
+
+.small-btn.danger {
+  color: var(--live);
+  border-color: oklch(0.72 0.19 25 / 0.45);
+}
+
+/* ---- feedback ---- */
+
+.feedback.error {
+  color: var(--live);
+}
+.feedback.ok {
+  color: var(--ok);
+}
+
+/* ---- own-line channel rows ---- */
+
+.own-line {
+  margin: 1.5rem 0;
+}
+.own-channels {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.own-channels li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.8rem;
+}
+.own-channel-name {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 34rem) {
+  .own-channels li {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  input[type="text"],
+  input[type="email"],
+  input[type="url"],
+  input[type="password"],
+  select,
+  textarea {
+    max-width: none;
+  }
+}
+
+/* A timestamp inside a card's description line is prose, not a stat block, so it
+   reads across rather than stacking. The gap stands in for the whitespace the
+   markup deliberately omits between the parts -- see the note on time[data-local].
+   Without this, "7,059 channels · updated 3:19 AM Fri, Aug 21" broke onto three
+   lines in the middle of a sentence. */
+.card-desc time[data-local],
+.field .hint time[data-local] {
+  display: inline-flex;
+  flex-direction: row;
+  gap: 0.3rem;
+  vertical-align: baseline;
+}
+
+/* The header's Sign in button rendered muted-orange on orange, near-unreadable.
+   `.topbar nav a` (0,1,2) outranks `.cta` (0,1,0) on specificity, so the nav's
+   muted colour won no matter which came later in the file. Restated at a
+   specificity that can actually reach it. */
+.topbar nav a.cta,
+.topbar nav a.cta:hover {
+  color: oklch(0.16 0.02 45);
+}
+.topbar nav a.ghost {
+  color: var(--fg);
+}

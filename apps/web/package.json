@@ -1,0 +1,22 @@
+{
+  "name": "@genre/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/main.js",
+    "start": "bun src/main.js",
+    "build:client": "bun build-client.js"
+  },
+  "dependencies": {
+    "@genre/auth": "workspace:*",
+    "@genre/config": "workspace:*",
+    "@genre/db": "workspace:*",
+    "@genre/notify": "workspace:*",
+    "@genre/payments": "workspace:*",
+    "@genre/queue": "workspace:*",
+    "@genre/catalog": "workspace:*",
+    "hono": "^4.10.3",
+    "@simplewebauthn/browser": "^13.2.0"
+  }
+}

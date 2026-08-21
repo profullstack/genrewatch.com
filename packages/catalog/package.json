@@ -1,0 +1,13 @@
+{
+  "name": "@genre/catalog",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "dependencies": {
+    "@genre/config": "workspace:*",
+    "@genre/db": "workspace:*"
+  }
+}

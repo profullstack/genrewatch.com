@@ -1,0 +1,16 @@
+{
+  "name": "@genre/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.js"
+  },
+  "dependencies": {
+    "@genre/config": "workspace:*",
+    "@genre/db": "workspace:*",
+    "@genre/notify": "workspace:*",
+    "@genre/queue": "workspace:*",
+    "@genre/catalog": "workspace:*"
+  }
+}
