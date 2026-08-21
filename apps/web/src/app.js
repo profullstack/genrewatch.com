@@ -6,7 +6,7 @@ import { sendLoginLink } from '@genre/notify';
 import { connection } from '@genre/queue';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
-import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
+import { isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { buildCalendar } from './lib/ics.js';
 import { importPlaylist, ownChannelsForEvent, refreshPlaylist } from './lib/playlist.js';
 import { buildFeed } from './lib/rss.js';
