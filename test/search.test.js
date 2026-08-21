@@ -38,11 +38,12 @@ beforeAll(async () => {
 const search = async (q, limit = 10) =>
   (
     await db.query(
-      `select s.display_name, similarity(s.search_text, $1) as score
+      `select s.display_name
        from subjects s
        where s.search_text % $1 or s.search_text like $2
-       order by (s.search_text like $3) desc,
-                similarity(s.search_text, $1) desc,
+       order by ((similarity(s.search_text, $1) * 0.75)
+                 + (least(ln(greatest(coalesce(s.popularity,0),1)) / 7.0, 1.0) * 0.25)
+                 + (case when s.search_text like $3 then 0.15 else 0 end)) desc,
                 s.popularity desc nulls last
        limit $4`,
       [q, `%${q}%`, `${q}%`, limit],
@@ -81,9 +82,42 @@ describe('searching the back catalogue', () => {
     expect(r).toContain('Top Gun: Maverick');
   });
 
-  test('a prefix match leads, because that is what typing a title means', async () => {
-    const r = await search('blair');
-    expect(r[0]).toBe('Blair Witch');
+  /*
+   * The ranking failure this replaced.
+   *
+   * Ordering by similarity and only then by popularity put The Blair Witch
+   * Project FOURTH for "blair witch", behind The Real Blair Witch, The Blair
+   * Witch Legacy and ahead of only The Blair Witch Rejects -- three cash-ins
+   * nobody was looking for, each of which matched the words slightly better.
+   *
+   * The exact-title match still leads, which is right: someone typing a whole
+   * title means that title. What changed is that fame now separates the rest,
+   * so the film people actually mean is second rather than buried.
+   */
+  test('a famous title outranks the cash-ins that match the words better', async () => {
+    for (const [name, pop] of [
+      ['The Real Blair Witch', 0.6],
+      ['The Blair Witch Legacy', 0.4],
+      ['The Blair Witch Rejects', 0.3],
+    ]) {
+      await db.query(
+        `insert into subjects (category,kind,provider,provider_key,slug,name,display_name,search_text,popularity)
+         values ('film','film','tmdb',$1,$1,$2,$2,lower($2),$3) on conflict do nothing`,
+        [name.replace(/\W+/g, '-'), name, pop],
+      );
+    }
+
+    const r = await search('blair witch');
+    const project = r.indexOf('The Blair Witch Project');
+    expect(project).toBeGreaterThanOrEqual(0);
+    for (const cashIn of [
+      'The Real Blair Witch',
+      'The Blair Witch Legacy',
+      'The Blair Witch Rejects',
+    ]) {
+      const i = r.indexOf(cashIn);
+      if (i >= 0) expect(project).toBeLessThan(i);
+    }
   });
 
   test('nothing matches nonsense rather than returning the whole table', async () => {

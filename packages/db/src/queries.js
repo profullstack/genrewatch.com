@@ -784,9 +784,24 @@ export async function searchCatalogue(term, { limit = 30, category = null } = {}
     where (${category}::text is null or s.category = ${category})
       and (s.search_text % ${q} or s.search_text like ${`%${q}%`})
     order by
-      -- A prefix match is what someone typing a title means, every time.
-      (s.search_text like ${`${q}%`}) desc,
-      similarity(s.search_text, ${q}) desc,
+      /*
+       * One score, not a lexicographic cascade.
+       *
+       * Ordering by similarity and only then by popularity sounds right and
+       * ranks badly: searching "blair witch" put the 2016 remake first because
+       * its title matches exactly, and buried The Blair Witch Project behind
+       * The Blair Witch Rejects. An exact match on something nobody has heard of
+       * is not a better answer than a near match on the film they meant.
+       *
+       * So similarity and fame are weighted against each other. Popularity is
+       * logged because TMDB's figure spans four orders of magnitude and a linear
+       * term would let one blockbuster outrank every genuine match.
+       */
+      ((similarity(s.search_text, ${q}) * 0.75)
+        + (least(ln(greatest(coalesce(s.popularity, 0), 1)) / 7.0, 1.0) * 0.25)
+        -- A title that STARTS with what was typed still gets a nudge; it is a
+        -- strong signal, just not one that should beat everything else.
+        + (case when s.search_text like ${`${q}%`} then 0.15 else 0 end)) desc,
       s.popularity desc nulls last
     limit ${limit}
   `;
