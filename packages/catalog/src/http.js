@@ -18,6 +18,21 @@
 const lanes = new Map();
 
 /**
+ * Ceiling on how far a 429 may slow a host down.
+ *
+ * The widening below is deliberate and the ceiling is not optional. Doubling with
+ * no bound turns six 429s into a seventy-second gap BEFORE each request, and a
+ * lane wait already in flight cannot be interrupted by the caller's deadline --
+ * so a throttled host stops looking slow and starts looking hung. That is exactly
+ * what MusicBrainz did on the first production sync: no error, no output, ten
+ * minutes of nothing.
+ *
+ * Thirty seconds is far slower than any provider here needs and still bounded
+ * enough that a pass ends.
+ */
+const MAX_GAP_MS = 30_000;
+
+/**
  * Serialise calls to one host, leaving at least `minGapMs` between them.
  *
  * Implemented as a promise chain rather than a timer wheel: each caller waits on
@@ -33,7 +48,7 @@ function lane(host, minGapMs) {
   }
   // A host's gap can be widened by a 429 (see below) but never narrowed, so a
   // provider that has already complained stays slowed for the life of the process.
-  l.minGapMs = Math.max(l.minGapMs, minGapMs);
+  l.minGapMs = Math.min(Math.max(l.minGapMs, minGapMs), MAX_GAP_MS);
   const mine = l.next.then(() => sleep(l.minGapMs));
   l.next = mine.catch(() => {});
   return mine;
@@ -94,7 +109,7 @@ export async function getJson(url, opts = {}) {
        * ban. Widening the lane's gap makes the correction stick.
        */
       const retryAfter = Number(res.headers.get('retry-after')) || 0;
-      lanes.get(host).minGapMs = Math.max(lanes.get(host).minGapMs * 2, 1000);
+      lanes.get(host).minGapMs = Math.min(Math.max(lanes.get(host).minGapMs * 2, 1000), MAX_GAP_MS);
       lastError = new Error(`${host} rate limited (429)`);
       await sleep(retryAfter * 1000 || backoffMs(attempt));
       continue;
