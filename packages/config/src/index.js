@@ -105,6 +105,17 @@ export const config = {
      * more than a healthy pass needs and far less than a degraded one will take.
      */
     musicDeadlineMs: num('MUSIC_DEADLINE_MS', 180_000),
+
+    /**
+     * How deep to walk TMDB's back catalogue, in pages of twenty.
+     *
+     * 200 pages is 4,000 films and reaches well past anything a reader would
+     * name -- page 20 of this ordering is The Empire Strikes Back and page 250 is
+     * already titles nobody searches for. The remaining million are reachable by
+     * search falling through to the provider live, so this number is about what
+     * is worth holding, not about coverage.
+     */
+    backCataloguePages: num('BACK_CATALOGUE_PAGES', 200),
   },
 
   /**
@@ -117,14 +128,46 @@ export const config = {
    * storing credentials in the clear.
    */
   playlists: {
+    /**
+     * The key the stored playlist URL is encrypted with.
+     *
+     * PLAYLIST_SECRET when it is set, and otherwise derived from DATABASE_URL --
+     * which works because DATABASE_URL is required, so there is always a key, and
+     * because it is NOT stored in the database it protects. That is the whole
+     * point of encrypting these: the threat is a copy of the database (a backup, a
+     * dump pulled to a laptop), and a dump contains the sealed rows but not the
+     * environment that can open them.
+     *
+     * The trade for that convenience: rotating the database credentials makes
+     * stored lists unreadable, and every reader simply adds theirs again --
+     * decryption returns null rather than garbage, so nothing breaks loudly. Set
+     * PLAYLIST_SECRET explicitly to decouple the two.
+     */
     get secret() {
-      return opt('PLAYLIST_SECRET');
+      return opt('PLAYLIST_SECRET') || opt('DATABASE_URL');
     },
+    /** Always on: there is no configuration left to forget. */
     get enabled() {
       return Boolean(this.secret);
     },
     /** Refuse a list bigger than this, in bytes. A real provider list is ~800KB. */
     maxBytes: num('PLAYLIST_MAX_BYTES', 8 * 1024 * 1024),
+    /**
+     * How often each list is re-fetched, in minutes.
+     *
+     * Five, because providers rewrite their numbered event slots close to airtime
+     * and a stale title is a missed match. Know what it costs before lowering it
+     * further: the measured provider supports no conditional request at all (no
+     * ETag, no Last-Modified, If-Modified-Since answered with a full 200), so every
+     * poll downloads the whole file. At five minutes that is 288 fetches and
+     * roughly 230MB a day PER LIST, pulled from the reader's own subscription by a
+     * datacenter IP. Content hashing spares the database but cannot spare the
+     * download.
+     *
+     * Raise it if a provider starts objecting; that is the lever, and it needs no
+     * deploy.
+     */
+    refreshMinutes: num('PLAYLIST_REFRESH_MINUTES', 5),
   },
 
   push: {
@@ -188,6 +231,48 @@ export const config = {
      * off. Left on, it sweeps once per boot, which is ~354 upstream requests.
      */
     onBoot: bool('SYNC_ON_BOOT', false),
+  },
+
+  /**
+   * Analytics, if this deployment has any.
+   *
+   * No default on purpose. A hardcoded site id would mean every deployment of
+   * this codebase -- a fork, a staging copy, a sibling brand -- silently
+   * reporting its traffic into someone else's dashboard, and the numbers would
+   * be wrong in a way nobody would think to check.
+   *
+   * The id is not a secret; it is served in the HTML to every visitor. It lives
+   * in configuration because it identifies the DEPLOYMENT, not because it needs
+   * hiding.
+   */
+  analytics: {
+    /* Read on use rather than snapshotted at import, like the playlist secret
+       above and for the same reason: a value frozen when the module first loads
+       cannot be changed by anything afterwards, which makes it untestable and
+       makes the order modules happen to import in part of the behaviour. */
+    get crawlproofSite() {
+      return opt('CRAWLPROOF_SITE_ID');
+    },
+    get enabled() {
+      return Boolean(this.crawlproofSite);
+    },
+  },
+
+  /**
+   * Network ads, if this deployment sells any.
+   *
+   * No default, for the reason the analytics id above has none: a hardcoded slot
+   * travels with a clone and the wrong site starts earning -- or worse, serving
+   * -- against someone else's inventory. Absent means no ad script is loaded at
+   * all, not an empty box.
+   */
+  ads: {
+    get slot() {
+      return opt('CRAWLPROOF_AD_SLOT');
+    },
+    get enabled() {
+      return Boolean(this.slot);
+    },
   },
 
   cache: {

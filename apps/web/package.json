@@ -13,6 +13,7 @@
     "@genre/config": "workspace:*",
     "@genre/db": "workspace:*",
     "@genre/notify": "workspace:*",
+    "@genre/playlists": "workspace:*",
     "@genre/queue": "workspace:*",
     "@genre/catalog": "workspace:*",
     "hono": "^4.10.3",

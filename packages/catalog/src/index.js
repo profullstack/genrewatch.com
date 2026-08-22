@@ -269,5 +269,207 @@ export async function anythingStale() {
   return false;
 }
 
-export { channelsForTitle, groupsOf, MAX_CHANNELS, oneChannelM3u, parseM3u } from './m3u.js';
+export {
+  channelsForTitle,
+  entryKind,
+  groupsOf,
+  isPlaceholder,
+  MAX_CHANNELS,
+  oneChannelM3u,
+  parseM3u,
+  rankChannelsForTitle,
+} from './m3u.js';
 export { keyFor, normaliseTitle, slugify } from './slug.js';
+
+/**
+ * Fill in the detail that costs a request per title.
+ *
+ * Separate from the catalogue pass because it scales with the number of FILMS
+ * rather than the number of pages: everything else here is a handful of requests
+ * however big the result, and this one is one per title. So it is budgeted, it
+ * takes the soonest events first, and it stamps every attempt -- including the
+ * ones that find nothing -- so a title with no cast listed is not re-fetched
+ * every hour for the rest of its life.
+ *
+ * Only TMDB needs this. The other providers hand over everything they have in the
+ * response we already make.
+ */
+export async function syncDetail({ log = console.log, limit = 120 } = {}) {
+  if (!brandProviders().includes('tmdb')) return { skipped: 'tmdb not enabled' };
+
+  const pending = await q.eventsNeedingDetail({ provider: 'tmdb', limit });
+  if (pending.length === 0) return { enriched: 0 };
+
+  // provider_key is "tmdb:release:<id>"; the id is the last segment.
+  const byId = new Map(pending.map((r) => [String(r.provider_key).split(':').pop(), r.id]));
+  const details = await tmdb.fetchDetail([...byId.keys()], {
+    apiKey: config.catalog.tmdbKey,
+    limit,
+  });
+
+  const rows = details
+    .map((d) => ({ ...d, eventId: byId.get(d.providerId) }))
+    .filter((d) => d.eventId);
+  const saved = await q.saveEventDetail(rows);
+
+  /*
+   * Stamp the ones that came back with nothing too.
+   *
+   * Without this they stay pending forever and the budget is spent re-asking
+   * about the same handful of titles every pass, so the queue never drains and
+   * nothing further along it is ever reached.
+   */
+  const answered = new Set(rows.map((r) => r.eventId));
+  const silent = pending.map((p) => p.id).filter((id) => !answered.has(id));
+  await q.markDetailAttempted(silent);
+
+  log(`[sync] detail: ${saved} enriched, ${silent.length} had nothing`);
+  return { enriched: saved, empty: silent.length };
+}
+
+/** The provider names this deployment has switched on. */
+function brandProviders() {
+  return config.catalog.providers;
+}
+
+/**
+ * Search locally, then ask TMDB for whatever we do not hold.
+ *
+ * The local catalogue is a few thousand titles; TMDB has about a million. Bulk
+ * ingesting the rest is neither possible nor useful, so anything not found here
+ * is looked up live and written down on the way past -- which means the second
+ * person to search for a film gets a local hit, and the catalogue grows towards
+ * what people actually ask for rather than towards what an ingest script guessed.
+ *
+ * The fallthrough only runs when the local answer is thin. A search that already
+ * has good matches should not pay a network round trip to append worse ones.
+ */
+export async function searchWithFallthrough(term, { limit = 30, category = null } = {}) {
+  const local = await q.searchCatalogue(term, { limit, category });
+  const strong = local.filter((r) => Number(r.score) >= 0.35 || r.upcoming > 0);
+  if (strong.length >= 5 || !config.catalog.tmdbKey) return local;
+  if (category && category !== 'film') return local;
+
+  let found = [];
+  try {
+    found = await tmdb.searchTitles(term, { apiKey: config.catalog.tmdbKey });
+  } catch {
+    // A search box must not fail because an upstream did.
+    return local;
+  }
+  if (found.length === 0) return local;
+
+  const ingested = await ingestSearchResults(found);
+  // Local rows first: they are the ones we know something about.
+  const seen = new Set(local.map((r) => r.id));
+  return [...local, ...ingested.filter((r) => !seen.has(r.id))].slice(0, limit);
+}
+
+/**
+ * Write live search results into the catalogue.
+ *
+ * Same shape the back-catalogue pass produces, so a title arrived at by searching
+ * is indistinguishable from one that was ingested in bulk -- it has genres, a
+ * poster, a release event, and it can be followed.
+ */
+async function ingestSearchResults(results) {
+  const rows = tmdb.fromSearchResults(results);
+  if (rows.subjects.length === 0) return [];
+
+  const genreIds = await q.upsertGenres(rows.genres);
+  const subjectIds = await q.upsertSubjects(rows.subjects);
+  await q.replaceSubjectGenres(
+    rows.subjects
+      .map((s) => ({
+        subjectId: subjectIds.get(s.providerKey),
+        genreIds: (s.genreKeys ?? []).map((k) => genreIds.get(k)).filter(Boolean),
+      }))
+      .filter((r) => r.subjectId),
+  );
+
+  const events = rows.events
+    .map((e) => ({ ...e, subjectId: subjectIds.get(e.subjectKey) }))
+    .filter((e) => e.subjectId);
+  const eventIds = await q.upsertEvents(events);
+  await q.replaceEventGenres(
+    events
+      .map((e) => ({
+        eventId: eventIds.get(e.providerKey),
+        genreIds: (rows.subjects.find((s) => s.providerKey === e.subjectKey)?.genreKeys ?? [])
+          .map((k) => genreIds.get(k))
+          .filter(Boolean),
+      }))
+      .filter((r) => r.eventId && r.genreIds.length),
+  );
+
+  // Carry the release date back with each row. Without it a freshly searched
+  // title has no year in the results, which is the one thing that tells two
+  // films of the same name apart.
+  const dateByKey = new Map(rows.events.map((e) => [e.subjectKey, e]));
+
+  return rows.subjects
+    .map((s) => {
+      const ev = dateByKey.get(s.providerKey);
+      return {
+        id: subjectIds.get(s.providerKey),
+        slug: s.slug,
+        display_name: s.displayName,
+        category: s.category,
+        kind: s.kind,
+        image_url: s.imageUrl,
+        backdrop_url: s.backdropUrl,
+        description: s.description,
+        popularity: s.popularity,
+        starts_at: ev?.startsAt ?? null,
+        upcoming: ev && ev.state === 'upcoming' ? 1 : 0,
+      };
+    })
+    .filter((r) => r.id);
+}
+
+/**
+ * Fill in the back catalogue, a slice at a time.
+ *
+ * Popularity-ordered and paged, so each pass takes the next slice and the whole
+ * thing arrives over a few hours rather than in one enormous burst. It only ever
+ * needs doing once -- what was released in 1999 does not change -- so the cursor
+ * stops when it reaches the end and the pass becomes a no-op.
+ *
+ * Everything here is stored with state 'out', which is what keeps a few thousand
+ * old films off the calendar pages: those filter on it.
+ */
+export async function syncBackCatalogue({ log = console.log, pages = 25 } = {}) {
+  if (!config.catalog.providers.includes('tmdb') || !config.catalog.tmdbKey) {
+    return { skipped: 'tmdb not enabled' };
+  }
+
+  const done = await q.backCataloguePagesDone();
+  if (done >= config.catalog.backCataloguePages) return { done: true, pages: done };
+
+  const startPage = done + 1;
+  const result = await tmdb.fetchBackCatalogue({
+    apiKey: config.catalog.tmdbKey,
+    pages,
+    startPage,
+  });
+  if (result.skipped) return result;
+
+  const genreIds = await q.upsertGenres(result.genres);
+  const subjectIds = await q.upsertSubjects(result.subjects);
+  await q.replaceSubjectGenres(
+    result.subjects
+      .map((s) => ({
+        subjectId: subjectIds.get(s.providerKey),
+        genreIds: (s.genreKeys ?? []).map((k) => genreIds.get(k)).filter(Boolean),
+      }))
+      .filter((r) => r.subjectId),
+  );
+  const events = result.events
+    .map((e) => ({ ...e, subjectId: subjectIds.get(e.subjectKey) }))
+    .filter((e) => e.subjectId);
+  await q.upsertEvents(events);
+  await q.setBackCataloguePagesDone(startPage + pages - 1);
+
+  log(`[sync] back catalogue: pages ${startPage}-${startPage + pages - 1}, ${events.length} films`);
+  return { pages: startPage + pages - 1, films: events.length };
+}

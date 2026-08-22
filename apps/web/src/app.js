@@ -1,14 +1,25 @@
 import * as auth from '@genre/auth';
-import { CATEGORIES, EXTERNAL_CATEGORIES, oneChannelM3u } from '@genre/catalog';
+import {
+  CATEGORIES,
+  channelsForTitle,
+  EXTERNAL_CATEGORIES,
+  oneChannelM3u,
+  searchWithFallthrough,
+} from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
-import { sendLoginLink } from '@genre/notify';
+import { sendInviteEmail, sendLoginLink } from '@genre/notify';
+import {
+  firstLiveChannel,
+  importPlaylist,
+  ownChannelsForEvent,
+  refreshPlaylist,
+} from '@genre/playlists';
 import { connection } from '@genre/queue';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
-import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
+import { isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { buildCalendar } from './lib/ics.js';
-import { importPlaylist, ownChannelsForEvent, refreshPlaylist } from './lib/playlist.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
 import {
@@ -19,9 +30,12 @@ import {
   Following,
   GenrePage,
   GenresIndex,
+  Invite,
   Landing,
   NotFound,
+  ProfilePage,
   PushCheck,
+  SearchPage,
   Settings,
   SignIn,
   SubjectPage,
@@ -30,6 +44,28 @@ import {
 export const app = new Hono();
 
 /* ----------------------------------------------------------------- helpers -- */
+
+/**
+ * Which of these titles are already in the reader's own channel list.
+ *
+ * Matched by name against their own entries, and only ever for the account that
+ * supplied them. Returns a Set of subject ids so a template can ask cheaply.
+ */
+async function ownedTitles({ userId, results }) {
+  const none = new Set();
+  if (!userId || !results?.length || !config.playlists.enabled) return none;
+
+  const rows = await q.playlistChannels(userId);
+  if (rows.length === 0) return none;
+
+  const channels = rows.map((r) => ({ title: r.title, url: r.stream_url, kind: r.kind }));
+  const owned = new Set();
+  for (const r of results) {
+    const hit = channelsForTitle(channels, { title: r.display_name });
+    if (hit.length > 0) owned.add(r.id);
+  }
+  return owned;
+}
 
 /**
  * Answer the caller in its own language.
@@ -137,12 +173,46 @@ for (const [name, target] of Object.entries(EXTERNAL_CATEGORIES)) {
 }
 
 /** Every genre we carry, grouped by the medium it belongs to. */
-app.get('/genres', async (c) =>
-  cached(c, 'page:genres', 300, async () => {
+app.get('/genres', async (c) => {
+  const user = c.get('user');
+  // Signed out this is byte-identical and cached; signed in it carries their own
+  // follow counts, and cached() already declines to store a signed-in render.
+  const [counts, upcoming] = user
+    ? await Promise.all([q.genreFollowCounts(user.id), q.upcomingEventCount()])
+    : [null, null];
+
+  return cached(c, 'page:genres', 300, async () => {
     const [categories, genres] = await Promise.all([q.listCategories(), q.listGenres({})]);
-    return render(<GenresIndex user={c.get('user')} categories={categories} genres={genres} />);
-  }),
-);
+    return render(
+      <GenresIndex
+        user={user}
+        categories={categories}
+        genres={genres}
+        genreCounts={counts}
+        upcoming={upcoming}
+      />,
+    );
+  });
+});
+
+/**
+ * Follow every genre at once, and the undo beside it.
+ *
+ * Deliberately genres only. Following a name was a decision made one at a time and
+ * this must not sweep it away -- the undo for "follow everything" is "stop
+ * following everything", not "forget what I picked".
+ */
+app.post('/api/follow-all', async (c) => {
+  const user = requireUser(c);
+  const added = await q.followAllGenres(user.id);
+  return respond(c, { json: { added }, redirectTo: `/genres?followed=${added}` });
+});
+
+app.post('/api/unfollow-all', async (c) => {
+  const user = requireUser(c);
+  const removed = await q.unfollowAllGenres(user.id);
+  return respond(c, { json: { removed }, redirectTo: `/genres?unfollowed=${removed}` });
+});
 
 app.get('/categories/:name', async (c) => {
   const user = c.get('user');
@@ -209,20 +279,103 @@ app.get('/subjects/:slug', async (c) => {
   );
 });
 
+/**
+ * Search, across everything -- including what already came out.
+ *
+ * Every other read here filters to the future, which is right for a calendar and
+ * useless for someone with a subscription asking "do you have this". So this one
+ * has no date filter at all, and falls through to the provider for the roughly
+ * one million films the local catalogue does not hold.
+ *
+ * Not cached: it is per-query, and for a signed-in reader it also carries whether
+ * each result is in their own channel list, which must never be served to anyone
+ * else.
+ */
+app.get('/search', async (c) => {
+  const user = c.get('user');
+  const term = (c.req.query('q') ?? '').trim();
+  const category = CATEGORIES.includes(c.req.query('category')) ? c.req.query('category') : null;
+
+  const results = term.length >= 2 ? await searchWithFallthrough(term, { category }) : [];
+  // Whether the reader already has each of these, which is the whole point of
+  // searching a back catalogue.
+  const owned = await ownedTitles({ userId: user?.id, results });
+
+  return c.html(
+    await render(
+      <SearchPage user={user} term={term} category={category} results={results} owned={owned} />,
+    ),
+  );
+});
+
+app.get('/api/v1/search', async (c) => {
+  const term = (c.req.query('q') ?? '').trim();
+  if (term.length < 2) return c.json({ error: 'q must be at least 2 characters' }, 400);
+  const category = CATEGORIES.includes(c.req.query('category')) ? c.req.query('category') : null;
+  const limit = Math.min(Number(c.req.query('limit') ?? 20) || 20, 50);
+
+  const results = (await searchWithFallthrough(term, { category, limit })).slice(0, limit);
+  c.header('cache-control', 'public, max-age=60');
+  return c.json({
+    query: term,
+    count: results.length,
+    results: results.map((r) => ({
+      slug: r.slug,
+      name: r.display_name,
+      category: r.category,
+      kind: r.kind,
+      image: r.image_url,
+      released: r.starts_at ?? null,
+      upcoming: r.upcoming > 0,
+      url: `${config.siteUrl}/subjects/${r.slug}`,
+    })),
+  });
+});
+
 app.get('/following', async (c) => {
   const user = requireUser(c);
   const [events, follows] = await Promise.all([q.upcomingForUser(user.id), q.listFollows(user.id)]);
+  // What the last clear removed, if that is how we got here. Read back off the query
+  // string rather than held in a session: the redirect is the only thing carrying it,
+  // and a stale flash on a reload is worse than none.
+  const cleared = c.req.query('cleared')
+    ? {
+        removed: Number(c.req.query('cleared')) || 0,
+        subjects: Number(c.req.query('subjects')) || 0,
+        genres: Number(c.req.query('genres')) || 0,
+      }
+    : null;
   return c.html(
     await render(
       <Following
         user={user}
         events={events}
         follows={follows}
+        cleared={cleared}
         vapidKey={config.push.publicKey}
         calendarUrl={`${config.siteUrl}/calendar/me/${user.calendar_token}.ics`}
       />,
     ),
   );
+});
+
+/**
+ * Clear the whole follow list, from the calendar page.
+ *
+ * Sibling of /api/unfollow-all, and not a duplicate of it: that one is the undo for
+ * the follow-everything button and spares hand-picked names on purpose. This one is
+ * pressed while looking at the list it empties, so it takes the names too --
+ * clearing half of what is on screen is the behaviour that would surprise. The
+ * counts come back so the page can say what went, rather than leaving someone to
+ * work out from an empty list whether their names were included.
+ */
+app.post('/api/unfollow-everything', async (c) => {
+  const user = requireUser(c);
+  const result = await q.unfollowAll(user.id);
+  return respond(c, {
+    json: result,
+    redirectTo: `/following?cleared=${result.removed}&subjects=${result.subjects}&genres=${result.genres}`,
+  });
 });
 
 app.get('/events/:id', async (c) => {
@@ -253,6 +406,7 @@ app.get('/events/:id', async (c) => {
         comments={comments}
         following={following}
         ownChannels={ownChannels}
+        streamDead={c.req.query('stream_dead') ?? null}
       />,
     ),
   );
@@ -342,12 +496,65 @@ app.get('/events/:id/playlist.m3u', async (c) => {
   if (!event) return c.notFound();
 
   const own = await ownChannelsForEvent({ userId: user.id, event });
-  if (own.length === 0) return c.redirect(`/events/${event.id}`, 303);
 
-  // The first match, which channelsForTitle has already ranked most-specific
+  /*
+   * Which tier the reader clicked.
+   *
+   * The two lists are different claims -- "this carries your show" and "this
+   * carries the genre" -- and they are indexed separately on the page, so the
+   * link has to say which one it means or ?n=0 hands back the wrong channel.
+   */
+  const tier = c.req.query('tier');
+  const list =
+    tier === 'genre'
+      ? (own.genre ?? [])
+      : tier === 'vod'
+        ? (own.onDemand ?? [])
+        : (own.matches ?? []);
+  if (list.length === 0) return c.redirect(`/events/${event.id}`, 303);
+
+  // The first entry, which rankChannelsForTitle has already ordered most-specific
   // first, unless the reader asked for a particular one by index.
   const wanted = Number(c.req.query('n') ?? 0);
-  const pick = own[Number.isInteger(wanted) && own[wanted] ? wanted : 0];
+  const asked = Number.isInteger(wanted) && list[wanted] ? wanted : 0;
+
+  /*
+   * Ask the stream whether it is there, before handing anybody a file.
+   *
+   * A provider list is mostly aspirational: the slot exists, the title is right,
+   * and a large share of them answer with an HTML error page rather than video.
+   * Handing one of those over is worse than handing over nothing, because the
+   * reader finds out by tapping it -- the file downloads perfectly and then plays
+   * nothing, which reads as our bug rather than an empty slot.
+   *
+   * The one they asked for is tried first, then the rest in rank order. Probing is
+   * sequential inside firstLiveChannel because these are one subscriber's own
+   * connections and the line caps how many can be open at once.
+   */
+  const ordered = [list[asked], ...list.filter((_, i) => i !== asked)].filter(Boolean);
+  const { pick, tried } = await firstLiveChannel(ordered, {
+    onResult: async (ch, result) => {
+      if (!ch.id) return;
+      // Remembered so the page can stop offering a dead slot to the next reader,
+      // and so the next tap does not re-probe what we just learned.
+      await q
+        .markChannelChecked({
+          userId: user.id,
+          channelId: ch.id,
+          live: result.live,
+          note: result.note,
+        })
+        .catch(() => {});
+    },
+  });
+
+  // Which way it failed, not just that it did. "returned a web page, not a stream"
+  // means the slot is empty; "timed out" means it is not. "Something went wrong"
+  // would send somebody off to check their own wifi.
+  if (!pick) {
+    const why = tried[0]?.note ?? 'no answer';
+    return c.redirect(`/events/${event.id}?stream_dead=${encodeURIComponent(why)}`, 303);
+  }
 
   c.header('content-type', 'audio/x-mpegurl; charset=utf-8');
   c.header('content-disposition', `attachment; filename="${event.short_name ?? 'channel'}.m3u"`);
@@ -394,8 +601,244 @@ app.get('/auth/magic', async (c) => {
   if (!token) return c.redirect('/login', 303);
   const result = await auth.consumeLoginLink(token, { userAgent: c.req.header('user-agent') });
   if (!result) return c.html(await render(<SignIn mode="login" next="/following" />), 400);
+
+  /*
+   * Credit whoever invited them, if this link just created the account.
+   *
+   * Only for a genuinely new account -- somebody who already had one and happened to
+   * open a friend's link was not invited by them, and counting them would make the
+   * number on the inviter's page untrue. `created` comes back from the upsert
+   * itself; see findOrCreateUser.
+   *
+   * The cookie is cleared either way, so a stale code cannot follow somebody around
+   * for a month attaching itself to accounts.
+   */
+  const inviteCode = getCookie(c, INVITE_COOKIE);
+  if (inviteCode) {
+    await auth.claimInvite({ code: inviteCode, user: result.user, created: result.user?.created });
+  }
+
+  // The session header goes on first and the invite is cleared after, because
+  // c.header REPLACES set-cookie while the setCookie helper appends. The other order
+  // silently drops one of the two, and the one it drops is the clear.
   c.header('set-cookie', auth.sessionCookie(result.sessionId));
+  if (inviteCode) setCookie(c, INVITE_COOKIE, '', { path: '/', maxAge: 0 });
+
   return c.redirect(c.req.query('next') ?? '/following', 303);
+});
+
+/**
+ * Sign in with a password, for the device that cannot do the other two.
+ *
+ * A plain form post with no script, because the device this exists for is a
+ * television: the whole point is that it works with a remote control and a browser
+ * that may do very little else.
+ *
+ * Every failure comes back identically worded, and verifyPassword spends the same
+ * time on an address with no account as on a wrong password, so this form cannot be
+ * used to find out who has an account here. When it throttles, the message points at
+ * the emailed link -- which is unaffected by the counter, so guessing at somebody's
+ * address can never lock them out of their own account.
+ */
+app.post('/api/auth/password', async (c) => {
+  const body = await c.req.parseBody();
+  const email = String(body.email ?? '');
+  const next = String(body.next ?? '/following');
+
+  const result = await auth.verifyPassword({
+    email,
+    password: String(body.password ?? ''),
+    userAgent: c.req.header('user-agent'),
+    // Behind Railway's proxy the socket address is the proxy; the forwarded header
+    // is the only thing that carries the caller. Recorded for the log, never used
+    // as the rate-limit key -- a shared address would then throttle strangers.
+    ip: (c.req.header('x-forwarded-for') ?? '').split(',')[0].trim() || null,
+  });
+
+  if (!result.ok) {
+    const accept = c.req.header('accept') ?? '';
+    if (accept.includes('application/json')) return c.json({ error: result.error }, 401);
+    return c.html(
+      await render(<SignIn mode="login" next={next} passwordError={result.error} />),
+      401,
+    );
+  }
+
+  c.header('set-cookie', auth.sessionCookie(result.sessionId));
+  return respond(c, { redirectTo: next });
+});
+
+/**
+ * Set, change or remove a password, from inside a session.
+ *
+ * Deliberately only reachable while already signed in by a link or a passkey. That
+ * is what keeps this from being a way to take an account over: whoever can set a
+ * password here already had the session needed to do anything else anyway.
+ */
+app.post('/api/auth/password/set', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+
+  if (body.remove === 'on' || body.remove === 'true') {
+    await auth.removePassword(user.id);
+    // Never a lockout: the link and any passkey still work.
+    return respond(c, { json: { ok: true }, redirectTo: '/settings?password=removed' });
+  }
+
+  const password = String(body.password ?? '');
+  if (password !== String(body.confirm ?? '')) {
+    return respond(c, {
+      json: { error: 'those did not match' },
+      status: 400,
+      redirectTo: `/settings?password_error=${encodeURIComponent('Those two did not match.')}`,
+    });
+  }
+
+  const result = await auth.setPassword({ userId: user.id, email: user.email, password });
+  if (!result.ok) {
+    return respond(c, {
+      json: { error: result.error },
+      status: 400,
+      redirectTo: `/settings?password_error=${encodeURIComponent(result.error)}`,
+    });
+  }
+  return respond(c, { json: { ok: true }, redirectTo: '/settings?password=set' });
+});
+
+/**
+ * Somebody's profile: what they follow, and what is coming up because of it.
+ *
+ * Two gates, and the first one is why this can be added without exposing anybody.
+ * A profile exists only for an account that CHOSE a handle, and handle is null until
+ * somebody types one -- so no existing reader wakes up with a public page. The second
+ * is profile_public, which 404s the page to everyone but its owner.
+ *
+ * 404 rather than 403 on a private profile, because "you are not allowed to see this"
+ * confirms the handle is taken, and a private profile that announces itself is only
+ * half private.
+ *
+ * Not Redis-cached: it differs for the owner, and one reader's private profile served
+ * to the next visitor is exactly the failure the cache helper warns about.
+ */
+app.get('/u/:handle', async (c) => {
+  const viewer = c.get('user');
+  const profile = await q.getUserByHandle(c.req.param('handle'));
+  if (!profile) return c.html(await render(<NotFound user={viewer} />), 404);
+
+  const isOwner = viewer?.id === profile.id;
+  if (!profile.profile_public && !isOwner) {
+    return c.html(await render(<NotFound user={viewer} />), 404);
+  }
+
+  const [follows, upcoming] = await Promise.all([
+    q.listFollows(profile.id),
+    q.upcomingForUser(profile.id, { limit: 20 }),
+  ]);
+
+  return c.html(
+    await render(
+      <ProfilePage
+        user={viewer}
+        profile={profile}
+        follows={follows}
+        upcoming={upcoming}
+        isOwner={isOwner}
+      />,
+    ),
+  );
+});
+
+/* --------------------------------------------------------------- invites -- */
+
+/** How long an opened invite link is remembered while somebody signs up. */
+const INVITE_COOKIE = 'gw_invite';
+const INVITE_COOKIE_DAYS = 30;
+
+/**
+ * Opening somebody's invite link.
+ *
+ * The code goes into a cookie rather than through the sign-up form, because the way
+ * in is an emailed link: the person leaves the site, opens their mail, and comes
+ * back through a URL that carries nothing of where they started. The cookie is the
+ * only thing that survives that round trip.
+ *
+ * An unknown code still lands on the sign-up page. Whether a code is real is not
+ * worth telling a stranger, and turning somebody away over a typo in a link they
+ * were sent would be a strange way to greet them.
+ */
+app.get('/i/:code', (c) => {
+  const code = c.req.param('code');
+  if (/^[A-Za-z0-9_-]{6,64}$/.test(code)) {
+    setCookie(c, INVITE_COOKIE, code, {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'Lax',
+      secure: config.isProd,
+      maxAge: INVITE_COOKIE_DAYS * 86400,
+    });
+  }
+  return c.redirect('/signup', 302);
+});
+
+/** Your link, who has accepted it, and the form that mails it for you. */
+app.get('/invite', async (c) => {
+  const user = requireUser(c);
+  const [code, accepted, sentToday] = await Promise.all([
+    auth.inviteCodeFor(user.id),
+    q.invitesAccepted(user.id),
+    q.invitesSentSince(user.id, { hours: 24 }),
+  ]);
+
+  return c.html(
+    await render(
+      <Invite
+        user={user}
+        url={auth.inviteUrl(code)}
+        accepted={accepted}
+        remaining={Math.max(0, auth.INVITE_DAILY_LIMIT - sentToday)}
+        dailyLimit={auth.INVITE_DAILY_LIMIT}
+        maxPerSubmission={auth.INVITE_MAX_PER_SUBMISSION}
+        notice={c.req.query('sent') ? `Sent ${c.req.query('sent')}.` : null}
+        error={c.req.query('invite_error') ?? null}
+      />,
+    ),
+  );
+});
+
+/**
+ * Mail the link to a few addresses.
+ *
+ * The reply counts rather than naming per-address outcomes. "Skipped, they already
+ * have an account" would make this the address checker that the sign-in page is
+ * careful not to be, so an address that was skipped and one that was mailed are
+ * reported the same way.
+ */
+app.post('/api/invite/email', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+
+  const result = await auth.sendInvites({
+    user,
+    raw: body.emails,
+    send: sendInviteEmail,
+  });
+
+  if (!result.ok) {
+    return respond(c, {
+      json: { error: result.error },
+      status: 400,
+      redirectTo: `/invite?invite_error=${encodeURIComponent(result.error)}`,
+    });
+  }
+
+  const summary =
+    result.skipped > 0
+      ? `${result.sent}, and skipped ${result.skipped}`
+      : `${result.sent === 1 ? '1 invite' : `${result.sent} invites`}`;
+  return respond(c, {
+    json: { sent: result.sent, skipped: result.skipped },
+    redirectTo: `/invite?sent=${encodeURIComponent(summary)}`,
+  });
 });
 
 app.post('/api/auth/logout', async (c) => {
@@ -495,6 +938,51 @@ app.get('/api/subjects/search', async (c) => {
   return c.json({ results: await q.searchSubjects(term) });
 });
 
+/* ---------------------------------------------------------------- profile -- */
+
+/**
+ * The name a person is known by.
+ *
+ * Ported from upstream alongside the columns. Only the naming half exists here so
+ * far, so there is no /u/:handle page yet -- a handle is stored and used to sign
+ * comments, and the profile page arrives with the rest of the social layer.
+ */
+app.post('/api/profile', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const handle = String(body.handle ?? '').trim();
+
+  if (handle && !q.handleAvailableShape(handle)) {
+    return respond(c, {
+      json: { error: 'bad handle' },
+      status: 400,
+      redirectTo: `/settings?profile_error=${encodeURIComponent(
+        'A handle is 3-30 letters, numbers or underscores, and cannot be a reserved word.',
+      )}`,
+    });
+  }
+
+  const result = await q.updateProfile({
+    userId: user.id,
+    handle: handle || null,
+    displayName: String(body.display_name ?? '').trim() || null,
+    bio:
+      String(body.bio ?? '')
+        .trim()
+        .slice(0, 500) || null,
+    profilePublic: body.profile_public === 'on' || body.profile_public === 'true',
+  });
+
+  if (!result.ok) {
+    return respond(c, {
+      json: { error: result.error },
+      status: 409,
+      redirectTo: `/settings?profile_error=${encodeURIComponent(result.error)}`,
+    });
+  }
+  return respond(c, { json: result.user, redirectTo: '/settings?profile=saved' });
+});
+
 /* ------------------------------------------------------------------- prefs -- */
 
 app.post('/api/prefs', async (c) => {
@@ -564,6 +1052,7 @@ app.get('/settings', async (c) => {
         prefs={
           prefs ?? {
             offsets_minutes: config.reminders.defaultOffsets,
+            date_offsets_minutes: config.reminders.dateOffsets,
             channels: ['webpush', 'email'],
           }
         }
@@ -571,6 +1060,17 @@ app.get('/settings', async (c) => {
         playlist={playlist}
         playlistNotice={playlistNotice}
         playlistError={c.req.query('playlist_error') ?? null}
+        profileNotice={c.req.query('profile') ? 'Saved.' : null}
+        profileError={c.req.query('profile_error') ?? null}
+        passwordNotice={
+          c.req.query('password') === 'set'
+            ? 'Password saved. You can sign in with it on a device that cannot do the others.'
+            : c.req.query('password') === 'removed'
+              ? 'Password removed. Links and passkeys still work.'
+              : null
+        }
+        passwordError={c.req.query('password_error') ?? null}
+        passwordMinLength={auth.PASSWORD_MIN_LENGTH}
       />,
     ),
   );
@@ -874,6 +1374,7 @@ app.get('/sitemap.xml', async (c) => {
     `<sitemap><loc>${config.siteUrl}/sitemaps/genres.xml</loc></sitemap>`,
     `<sitemap><loc>${config.siteUrl}/sitemaps/subjects.xml</loc></sitemap>`,
     `<sitemap><loc>${config.siteUrl}/sitemaps/feeds.xml</loc></sitemap>`,
+    `<sitemap><loc>${config.siteUrl}/sitemaps/profiles.xml</loc></sitemap>`,
     ...months.map(
       (m) =>
         `<sitemap><loc>${config.siteUrl}/sitemaps/events-${m.month}.xml</loc>` +
@@ -956,6 +1457,33 @@ app.get('/sitemaps/subjects.xml', async (c) => {
   );
 });
 
+/**
+ * Public profiles.
+ *
+ * Priority is left off deliberately: a profile is not more or less important than a
+ * release, and every search engine that ever used the field ignores it now. lastmod
+ * is the account's creation, which is the only timestamp a profile row actually has
+ * -- claiming a fresher one on every crawl would be a lie that teaches the crawler to
+ * stop trusting the field.
+ *
+ * The query filters out thin profiles; see publicProfiles. Removal needs no cleanup,
+ * because this is generated per request rather than stored.
+ */
+app.get('/sitemaps/profiles.xml', async (c) => {
+  const people = await q.publicProfiles();
+  c.header('content-type', 'application/xml');
+  return c.body(
+    `${xmlHeader}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${people
+      .map(
+        (p) =>
+          `<url><loc>${config.siteUrl}/u/${encodeURIComponent(p.handle)}</loc>` +
+          (p.created_at ? `<lastmod>${iso(p.created_at)}</lastmod>` : '') +
+          '</url>',
+      )
+      .join('')}</urlset>`,
+  );
+});
+
 // One plain param rather than a regex route: Hono's inline pattern syntax uses braces
 // for the constraint, so a {4} quantifier inside it terminates the pattern early and
 // the route silently never matches. Validating in the handler is unambiguous.
@@ -1024,6 +1552,10 @@ const STATIC_FILES = [
   ['/vendor-webauthn.js', 'vendor-webauthn.js', 'text/javascript'],
   ['/sw.js', 'sw.js', 'text/javascript'],
   ['/logo.png', 'logo.png', 'image/png'],
+  // Header logo, in two shapes. The originals are 436KB and 722KB -- fine as
+  // source art, absurd in a header -- so these are the web-sized derivatives.
+  ['/logo-wide.png', 'logo-wide.png', 'image/png'],
+  ['/logo-mark.png', 'logo-mark.png', 'image/png'],
 ];
 
 // Hashed once at boot so pages can link /styles.css?v=<hash>. See lib/asset-version.js.

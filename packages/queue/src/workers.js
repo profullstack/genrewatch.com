@@ -1,7 +1,8 @@
-import { syncAll } from '@genre/catalog';
+import { syncAll, syncBackCatalogue, syncDetail } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendEmail, sendPush } from '@genre/notify';
+import { refreshDuePlaylists } from '@genre/playlists';
 import { Worker } from 'bullmq';
 import { connection, QUEUES, queues } from './index.js';
 
@@ -243,6 +244,14 @@ export function startWorkers({ concurrency = {} } = {}) {
   const workers = [
     new Worker(QUEUES.scan, runScan, { connection, concurrency: 1 }),
 
+    // Concurrency 1, and the poller itself is sequential inside. These are other
+    // people's subscriptions: several ~800KB pulls at once from one datacenter IP
+    // is the traffic pattern that gets a line cut off.
+    new Worker(QUEUES.playlists, () => refreshDuePlaylists({ log }), {
+      connection,
+      concurrency: 1,
+    }),
+
     /*
      * Concurrency 1, always.
      *
@@ -255,9 +264,20 @@ export function startWorkers({ concurrency = {} } = {}) {
     new Worker(
       QUEUES.sync,
       async (job) => {
+        /*
+         * Enrichment runs on its own clock now, so a tick that only wants detail
+         * must not drag the whole catalogue sweep along behind it.
+         */
+        if (job.data?.kind === 'detail') return { detail: await syncDetail({ log }) };
+
         const results = await syncAll({ force: Boolean(job.data?.force) });
+        // After the catalogue, top up the per-title detail within its budget.
+        const detail = await syncDetail({ log });
+        // A slice of the back catalogue each pass, so it arrives over hours
+        // rather than in one burst. Becomes a no-op once the walk is done.
+        const back = await syncBackCatalogue({ log });
         await dropPageCache(results);
-        return results;
+        return { results, detail, back };
       },
       { connection, concurrency: 1 },
     ),

@@ -24,6 +24,22 @@ export function pgArray(values) {
   return `{${items.join(',')}}`;
 }
 
+/*
+ * citext columns are cast to text on the way out.
+ *
+ * citext is an EXTENSION type, so its OID is assigned by the database when the
+ * extension is installed rather than being one of Postgres' built-ins. A driver
+ * can only decode it by recognising that OID, and when it does not, the value
+ * arrives as something that is not a string -- which renders as "[object Object]"
+ * the moment a page prints it, and compares unequal to every string it is checked
+ * against.
+ *
+ * Casting here costs nothing and does not depend on the driver, the extension's
+ * OID, or which database this happens to be pointed at. Case-insensitivity is a
+ * property of the COLUMN and its unique index, so nothing is lost by handing the
+ * application a plain string.
+ */
+
 /* ---------------------------------------------------------------- accounts -- */
 
 /**
@@ -34,9 +50,225 @@ export async function findOrCreateUser(email) {
   const [row] = await sql`
     insert into users ${sql({ email })}
     on conflict (email) do update set last_seen_at = now()
-    returning *
+    -- Whether this row was inserted or updated, which upsert otherwise hides.
+    -- xmax is the transaction that deleted the tuple; an INSERT leaves it zero and
+    -- the ON CONFLICT update leaves it set. It is the only way to tell the two
+    -- apart in one statement, and the alternative -- comparing created_at to now --
+    -- is a guess with a clock in it. Used by the invite flow, which must credit an
+    -- inviter for a new account and not for somebody who already had one.
+    returning *, email::text as email, (xmax = 0) as created
   `;
   return row;
+}
+
+/* ------------------------------------------------------------- passwords -- */
+
+/**
+ * The row a password sign-in checks against.
+ *
+ * Returns null for an address with no account, and a row with a null hash for an
+ * account that never set one. The caller must treat those two the same way from
+ * the outside -- see verifyPassword, which spends the same time on both.
+ */
+export async function getUserForPassword(email) {
+  const [row] = await sql`
+    select id, email::text as email, password_hash
+    from users where email = ${String(email).trim().toLowerCase()}
+  `;
+  return row ?? null;
+}
+
+export async function setPasswordHash({ userId, hash }) {
+  await sql`
+    update users set password_hash = ${hash}, password_set_at = now()
+    where id = ${userId}
+  `;
+}
+
+/** Removing it leaves the account reachable by link and passkey, never locked out. */
+export async function clearPassword(userId) {
+  await sql`
+    update users set password_hash = null, password_set_at = null where id = ${userId}
+  `;
+}
+
+export async function recordLoginAttempt({ email, ok, ip }) {
+  await sql`
+    insert into login_attempts (email, ok, ip)
+    values (${String(email).trim().toLowerCase()}, ${ok}, ${ip ?? null})
+  `;
+}
+
+/**
+ * How many times this address has failed recently.
+ *
+ * Counted since the last SUCCESS, not over a flat window: signing in correctly is
+ * the clearest possible evidence that the person is who they say, so it should not
+ * leave them one typo away from a lockout inherited from an attacker.
+ */
+export async function recentFailedLogins({ email, minutes = 15 }) {
+  const [row] = await sql`
+    select count(*)::int as n from login_attempts
+    where email = ${String(email).trim().toLowerCase()}
+      and not ok
+      and at > now() - (${`${minutes} minutes`})::interval
+      and at > coalesce(
+        (select max(at) from login_attempts
+          where email = ${String(email).trim().toLowerCase()} and ok),
+        'epoch'::timestamptz
+      )
+  `;
+  return row.n;
+}
+
+/** This is a log of who tried to get into what, so it is not kept indefinitely. */
+export async function pruneLoginAttempts({ days = 30 } = {}) {
+  const rows = await sql`
+    delete from login_attempts where at < now() - (${`${days} days`})::interval
+    returning id
+  `;
+  return rows.length;
+}
+
+/**
+ * A profile by its handle.
+ *
+ * Returns the row whether or not it is public: the ROUTE decides what to do with a
+ * private one, because the owner is allowed to look at their own. Doing that
+ * filtering here would make "private" and "does not exist" the same answer, and then
+ * the owner could not see their own page either.
+ */
+export async function getUserByHandle(handle) {
+  const [row] = await sql`
+    select id, handle::text as handle, display_name, bio, profile_public, created_at
+    from users where handle = ${String(handle ?? '').trim()}
+  `;
+  return row ?? null;
+}
+
+/**
+ * Public profiles worth submitting to a search engine.
+ *
+ * Three filters, and the third is the one that matters. A handle and profile_public
+ * are the obvious ones. But an account that has picked a name and done nothing else
+ * is a thin page -- no bio, no follows, nothing to read -- and submitting thousands
+ * of those is how a site teaches a crawler that most of it is empty. So a profile has
+ * to have SOMETHING on it: a bio, a display name, or something followed.
+ *
+ * Upstream also counts following other PEOPLE; there is no user_follows table here,
+ * so that clause is dropped rather than faked.
+ *
+ * A profile turned private, or emptied, simply stops appearing; the sitemap is
+ * generated per request rather than stored, so removal needs no cleanup.
+ */
+export async function publicProfiles({ limit = 45000 } = {}) {
+  return sql`
+    select u.handle::text as handle, u.created_at
+    from users u
+    where u.handle is not null
+      and u.profile_public
+      and (
+        u.bio is not null
+        or u.display_name is not null
+        or exists (select 1 from follows f where f.user_id = u.id)
+      )
+    order by u.created_at desc
+    limit ${limit}
+  `;
+}
+
+/* --------------------------------------------------------------- invites -- */
+
+/**
+ * The reader's own invite code, minted on first use.
+ *
+ * `where invite_code is null` makes this safe to call on every page load: the second
+ * call updates nothing and the select returns what the first one wrote. Two requests
+ * racing cannot produce two codes for one account, because only one of them matches
+ * the null.
+ */
+export async function ensureInviteCode({ userId, code }) {
+  await sql`update users set invite_code = ${code} where id = ${userId} and invite_code is null`;
+  const [row] = await sql`select invite_code from users where id = ${userId}`;
+  return row?.invite_code ?? null;
+}
+
+export async function getUserByInviteCode(code) {
+  const [row] = await sql`
+    select id, display_name, handle::text as handle
+    from users where invite_code = ${code}
+  `;
+  return row ?? null;
+}
+
+/**
+ * Record who brought whom.
+ *
+ * `on conflict do nothing` because the invited user is the primary key: being
+ * invited twice, or by two people, resolves to whoever got there first rather than
+ * to an error the sign-in path would have to handle.
+ */
+export async function recordInviteClaim({ inviterId, invitedUserId }) {
+  if (!inviterId || !invitedUserId || inviterId === invitedUserId) return false;
+  const rows = await sql`
+    insert into invite_claims (invited_user_id, inviter_id)
+    values (${invitedUserId}, ${inviterId})
+    on conflict do nothing
+    returning invited_user_id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Who accepted, for the inviter's own page.
+ *
+ * Deliberately does NOT select an email address. The inviter knows who they sent a
+ * link to, but that is not the same as us confirming which addresses have accounts
+ * -- and an invited person never agreed to have their sign-up reported back. A
+ * chosen name is something they published themselves; anything else is just a date.
+ */
+export async function invitesAccepted(inviterId, { limit = 100 } = {}) {
+  return sql`
+    select c.claimed_at, u.display_name, u.handle::text as handle
+    from invite_claims c
+    join users u on u.id = c.invited_user_id
+    where c.inviter_id = ${inviterId}
+    order by c.claimed_at desc
+    limit ${limit}
+  `;
+}
+
+export async function recordInviteSend({ inviterId, email }) {
+  await sql`
+    insert into invite_sends (inviter_id, email)
+    values (${inviterId}, ${String(email).trim().toLowerCase()})
+  `;
+}
+
+/** How many this account has sent recently, which is what the cap is applied to. */
+export async function invitesSentSince(inviterId, { hours = 24 } = {}) {
+  const [row] = await sql`
+    select count(*)::int as n from invite_sends
+    where inviter_id = ${inviterId} and sent_at > now() - (${`${hours} hours`})::interval
+  `;
+  return row.n;
+}
+
+/**
+ * Has anybody already invited this address?
+ *
+ * Not scoped to the inviter on purpose. The question is whether the person on the
+ * other end has already had one of these, and being emailed the same pitch by three
+ * different people is exactly what makes an invite feature feel like spam to the
+ * only party who did not opt into it.
+ */
+export async function invitedRecently({ email, days = 30 }) {
+  const [row] = await sql`
+    select count(*)::int as n from invite_sends
+    where email = ${String(email).trim().toLowerCase()}
+      and sent_at > now() - (${`${days} days`})::interval
+  `;
+  return row.n > 0;
 }
 
 export async function insertLoginToken({ tokenHash, email, expiresAt }) {
@@ -69,7 +301,8 @@ export async function startSession({ userId, ttlDays, userAgent }) {
 
 export async function getSessionUser(sessionId) {
   const [row] = await sql`
-    select u.* from sessions s
+    select u.*, u.email::text as email, u.handle::text as handle
+    from sessions s
     join users u on u.id = s.user_id
     where s.id = ${sessionId}::uuid and s.expires_at > now()
   `;
@@ -119,6 +352,92 @@ export async function touchPasskey(credentialId, counter) {
     update passkeys set counter = ${counter}, last_used_at = now()
     where credential_id = ${credentialId}
   `;
+}
+
+/* ------------------------------------------------------ profiles & people -- */
+
+/*
+ * The naming half of tipoffwatch's 0016_profiles_and_messages, ported so that
+ * comments stop being signed with a fragment of the author's email address.
+ * Following people, blocking and direct messages are NOT ported yet -- the shapes
+ * here match upstream exactly so the rest can land on them rather than colliding
+ * with a parallel invention.
+ */
+
+/** Handles are the profile URL, so the shape is constrained rather than trusted. */
+export const HANDLE_RE = /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])$/i;
+
+/**
+ * Names we refuse to hand out, because a profile at one of these would shadow a
+ * real page or impersonate the site. Checked here rather than in the route so it
+ * cannot be bypassed by a second caller later.
+ *
+ * The list is this site's routes, not upstream's -- genres and subjects where it
+ * has leagues and teams.
+ */
+const RESERVED_HANDLES = new Set([
+  'about',
+  'admin',
+  'api',
+  'calendar',
+  'categories',
+  'events',
+  'feeds',
+  'following',
+  'genres',
+  'genrewatch',
+  'health',
+  'healthz',
+  'help',
+  // Not because they would shadow a page -- profiles live under /u/ -- but because
+  // @invite reads as something the site said rather than something a person chose.
+  'i',
+  'invite',
+  'invites',
+  'login',
+  'logout',
+  'me',
+  'messages',
+  'my',
+  'settings',
+  'signup',
+  'sitemap',
+  'sports',
+  'staff',
+  'subjects',
+  'support',
+  'u',
+  'watch',
+]);
+
+export const handleAvailableShape = (h) =>
+  HANDLE_RE.test(h ?? '') && !RESERVED_HANDLES.has(String(h).toLowerCase());
+
+/**
+ * Set or change the name a person is known by.
+ *
+ * The unique index is the real guard -- two people claiming the same handle in the
+ * same instant is a race no read-then-write can close -- so a conflict is caught
+ * and reported rather than pre-checked.
+ */
+export async function updateProfile({ userId, handle, displayName, bio, profilePublic }) {
+  try {
+    const [row] = await sql`
+      update users set
+        handle = ${handle ?? null},
+        display_name = ${displayName ?? null},
+        bio = ${bio ?? null},
+        profile_public = ${profilePublic}
+      where id = ${userId}
+      returning id, handle::text as handle, display_name, bio, profile_public
+    `;
+    return { ok: true, user: row };
+  } catch (err) {
+    if (String(err?.message ?? '').includes('users_handle_key')) {
+      return { ok: false, error: 'That handle is taken.' };
+    }
+    throw err;
+  }
 }
 
 /* -------------------------------------------------------- catalogue writes -- */
@@ -211,6 +530,11 @@ export async function upsertSubjects(subjects) {
       display_name: s.displayName ?? s.name,
       description: s.description ?? null,
       image_url: s.imageUrl ?? null,
+      backdrop_url: s.backdropUrl ?? null,
+      popularity: s.popularity ?? null,
+      // Lowercased once here rather than per query: a trigram index cannot be
+      // built over an expression, and matching has to be case-insensitive.
+      search_text: String(s.displayName ?? s.name ?? '').toLowerCase(),
       url: s.url ?? null,
     }));
     return sql`
@@ -223,6 +547,9 @@ export async function upsertSubjects(subjects) {
         -- particular arrive late and intermittently.
         description = coalesce(excluded.description, subjects.description),
         image_url = coalesce(excluded.image_url, subjects.image_url),
+        backdrop_url = coalesce(excluded.backdrop_url, subjects.backdrop_url),
+        popularity = coalesce(excluded.popularity, subjects.popularity),
+        search_text = excluded.search_text,
         url = coalesce(excluded.url, subjects.url)
       returning id, provider_key
     `;
@@ -245,6 +572,12 @@ export async function upsertEvents(events) {
       short_name: e.shortName ?? null,
       summary: e.summary ?? null,
       image_url: e.imageUrl ?? null,
+      backdrop_url: e.backdropUrl ?? null,
+      tagline: e.tagline ?? null,
+      rating: e.rating ?? null,
+      rating_count: e.ratingCount ?? null,
+      trailer_url: e.trailerUrl ?? null,
+      detail: e.detail ? JSON.stringify(e.detail) : null,
       url: e.url ?? null,
       venue: e.venue ?? null,
       venue_region: e.venueRegion ?? null,
@@ -266,6 +599,14 @@ export async function upsertEvents(events) {
         short_name = excluded.short_name,
         summary = coalesce(excluded.summary, events.summary),
         image_url = coalesce(excluded.image_url, events.image_url),
+        backdrop_url = coalesce(excluded.backdrop_url, events.backdrop_url),
+        tagline = coalesce(excluded.tagline, events.tagline),
+        rating = coalesce(excluded.rating, events.rating),
+        rating_count = coalesce(excluded.rating_count, events.rating_count),
+        trailer_url = coalesce(excluded.trailer_url, events.trailer_url),
+        -- coalesce, so a cheap pass that carries no detail cannot wipe what an
+        -- expensive one already found.
+        detail = coalesce(excluded.detail, events.detail),
         url = coalesce(excluded.url, events.url),
         venue = coalesce(excluded.venue, events.venue),
         venue_region = coalesce(excluded.venue_region, events.venue_region),
@@ -372,6 +713,92 @@ export async function knownSubjectGenres(category) {
   return new Map(rows.map((r) => [r.provider_key, r.names ?? []]));
 }
 
+/**
+ * Events that have never had a detail lookup, soonest first.
+ *
+ * Soonest first because that is what a reader is most likely to open. The pass is
+ * budgeted, so the order decides what gets enriched this hour and what waits.
+ */
+export async function eventsNeedingDetail({ provider, limit = 120 }) {
+  return sql`
+    select id, provider_key from events
+    where provider = ${provider}
+      and detail_synced_at is null
+      /*
+       * Recently out, not just still to come.
+       *
+       * A bare "starts_at > now()" looked obviously right and quietly excluded any
+       * released today: a film stored at the noon anchor is in the past by the
+       * afternoon, so its page could never be enriched no matter how many passes
+       * ran. Every list on this site shows things from a few hours back, so the
+       * enrichment window has to reach back at least as far as the pages do.
+       */
+      and starts_at > now() - interval '7 days'
+    order by starts_at
+    limit ${limit}
+  `;
+}
+
+/**
+ * Record what a detail lookup found.
+ *
+ * The stamp is set whether or not anything came back, so a title with genuinely
+ * no cast is not re-fetched every hour forever. That is the whole reason the
+ * column is a timestamp rather than a boolean on the data being present.
+ */
+export async function saveEventDetail(rows) {
+  if (!rows?.length) return 0;
+  let n = 0;
+  for (const r of rows) {
+    await sql`
+      update events set
+        runtime_min = coalesce(${r.runtimeMin ?? null}, runtime_min),
+        tagline = coalesce(${r.tagline ?? null}, tagline),
+        trailer_url = coalesce(${r.trailerUrl ?? null}, trailer_url),
+        detail = coalesce(${r.detail ? JSON.stringify(r.detail) : null}::jsonb, detail),
+        detail_synced_at = now()
+      where id = ${r.eventId}
+    `;
+    n++;
+  }
+  return n;
+}
+
+/** Mark an attempt that returned nothing, so it is not retried forever. */
+export async function markDetailAttempted(eventIds) {
+  if (!eventIds?.length) return;
+  await sql`
+    update events set detail_synced_at = now()
+    where id = any(${pgArray(eventIds)}::bigint[])
+  `;
+}
+
+/*
+ * How far the back-catalogue walk has got.
+ *
+ * Kept in a one-row table rather than derived from the data, because "how many
+ * pages have I fetched" is not answerable from the rows: pages overlap as
+ * popularity shifts, and counting films would drift further from the truth on
+ * every pass.
+ */
+export async function backCataloguePagesDone() {
+  const [row] = await sql`
+    select coalesce(max(pages_done), 0)::int as n from catalogue_progress
+    where provider = 'tmdb'
+  `;
+  return row?.n ?? 0;
+}
+
+export async function setBackCataloguePagesDone(pages) {
+  await sql`
+    insert into catalogue_progress (provider, pages_done, updated_at)
+    values ('tmdb', ${pages}, now())
+    on conflict (provider) do update set
+      pages_done = greatest(catalogue_progress.pages_done, excluded.pages_done),
+      updated_at = now()
+  `;
+}
+
 /* --------------------------------------------------------- catalogue reads -- */
 
 /** Categories that actually have something in them, with counts. */
@@ -457,10 +884,11 @@ export async function subjectsForGenre(genreId, { viewerId = null, limit = 200 }
 /** The columns every event list renders. Kept in one place so they cannot drift. */
 const EVENT_COLUMNS = sql`
   e.id, e.category, e.kind, e.starts_at, e.time_known, e.precision, e.state,
-  e.name, e.short_name, e.summary, e.image_url, e.url, e.venue, e.venue_region,
-  e.season, e.number, e.runtime_min,
+  e.name, e.short_name, e.summary, e.image_url, e.backdrop_url, e.url,
+  e.venue, e.venue_region, e.tagline, e.rating, e.rating_count, e.trailer_url,
+  e.detail, e.season, e.number, e.runtime_min,
   s.slug as subject_slug, s.display_name as subject_name, s.kind as subject_kind,
-  s.image_url as subject_image
+  s.image_url as subject_image, s.backdrop_url as subject_backdrop
 `;
 
 export async function upcomingForGenre(genreId, { limit = 200, viewerId = null } = {}) {
@@ -518,7 +946,15 @@ export async function scheduleForDay({ day, category = null, limit = 300, viewer
 export async function getEvent(eventId) {
   const [row] = await sql`
     select ${EVENT_COLUMNS}, e.provider, e.subject_id, s.url as subject_url,
-           s.description as subject_description
+           s.description as subject_description,
+           -- One genre name, for matching a reader's own 24/7 genre channels.
+           -- The first alphabetically rather than "the" genre: there is no primary
+           -- one, and picking arbitrarily but STABLY beats picking differently on
+           -- every read.
+           (select g.name from event_genres eg
+              join genres g on g.id = eg.genre_id
+             where eg.event_id = e.id
+             order by g.name limit 1) as genre_name
     from events e
     join subjects s on s.id = e.subject_id
     where e.id = ${eventId}
@@ -534,6 +970,73 @@ export async function genresForEvent(eventId) {
     where eg.event_id = ${eventId} and g.active
     order by g.name
   `;
+}
+
+/**
+ * Search the whole catalogue, past and future.
+ *
+ * Deliberately unbounded by date. Every other read on this site filters to what
+ * has not happened yet, which is right for a calendar and wrong here -- the
+ * question behind a search box is "do you have this", and a film from 1999 is a
+ * perfectly good answer.
+ *
+ * Ranked by similarity first and popularity second. Similarity alone puts an
+ * exact match on an obscure title above a near match on a famous one, which is
+ * wrong for the way people type; popularity alone ignores what was asked. The
+ * band is the compromise: close matches together, then the ones people mean.
+ */
+export async function searchCatalogue(term, { limit = 30, category = null } = {}) {
+  const q = String(term ?? '')
+    .trim()
+    .toLowerCase();
+  if (q.length < 2) return [];
+
+  return sql`
+    select s.id, s.slug, s.display_name, s.category, s.kind, s.image_url,
+           s.backdrop_url, s.description, s.popularity,
+           similarity(s.search_text, ${q}) as score,
+           (select e.id from events e where e.subject_id = s.id
+             order by e.starts_at desc limit 1) as event_id,
+           (select e.starts_at from events e where e.subject_id = s.id
+             order by e.starts_at desc limit 1) as starts_at,
+           (select count(*) from events e
+             where e.subject_id = s.id and e.starts_at > now())::int as upcoming
+    from subjects s
+    where (${category}::text is null or s.category = ${category})
+      and (s.search_text % ${q} or s.search_text like ${`%${q}%`})
+    order by
+      /*
+       * One score, not a lexicographic cascade.
+       *
+       * Ordering by similarity and only then by popularity sounds right and
+       * ranks badly: searching "blair witch" put the 2016 remake first because
+       * its title matches exactly, and buried The Blair Witch Project behind
+       * The Blair Witch Rejects. An exact match on something nobody has heard of
+       * is not a better answer than a near match on the film they meant.
+       *
+       * So similarity and fame are weighted against each other. Popularity is
+       * logged because TMDB's figure spans four orders of magnitude and a linear
+       * term would let one blockbuster outrank every genuine match.
+       */
+      ((similarity(s.search_text, ${q}) * 0.75)
+        + (least(ln(greatest(coalesce(s.popularity, 0), 1)) / 7.0, 1.0) * 0.25)
+        -- A title that STARTS with what was typed still gets a nudge; it is a
+        -- strong signal, just not one that should beat everything else.
+        + (case when s.search_text like ${`${q}%`} then 0.15 else 0 end)) desc,
+      s.popularity desc nulls last
+    limit ${limit}
+  `;
+}
+
+/** Does this catalogue already hold that provider key? Used before ingesting a
+ *  live search result, so a repeated search does not write the same row twice. */
+export async function subjectsByProviderKeys(keys) {
+  if (!keys?.length) return new Map();
+  const rows = await sql`
+    select provider_key, id, slug from subjects
+    where provider_key = any(${pgArray(keys)}::text[])
+  `;
+  return new Map(rows.map((r) => [r.provider_key, r]));
 }
 
 /** Powers the follow picker's search box. */
@@ -578,6 +1081,91 @@ export async function removeFollow({ userId, subjectType, subjectId }) {
     delete from follows
     where user_id = ${userId} and subject_type = ${subjectType} and subject_id = ${subjectId}
   `;
+}
+
+/**
+ * Follow every active genre in one statement.
+ *
+ * insert-select rather than a loop: the cost of doing it a row at a time is one
+ * round trip per genre for something a single statement expresses exactly.
+ * `on conflict do nothing` makes it idempotent, so a second press adds whatever
+ * genres have appeared since the first and nothing else.
+ *
+ * Returns how many were NEW, which is what the page reports back -- claiming the
+ * full count when nothing changed would be a lie to anyone pressing it twice.
+ */
+export async function followAllGenres(userId) {
+  const rows = await sql`
+    insert into follows (user_id, subject_type, subject_id)
+    select ${userId}, 'genre', g.id from genres g where g.active
+    on conflict do nothing
+    returning subject_id
+  `;
+  return rows.length;
+}
+
+/** The undo. Only genres: a name was followed one at a time and is left alone. */
+export async function unfollowAllGenres(userId) {
+  const rows = await sql`
+    delete from follows where user_id = ${userId} and subject_type = 'genre'
+    returning subject_id
+  `;
+  return rows.length;
+}
+
+/**
+ * Clear the whole follow list -- names as well as genres.
+ *
+ * Deliberately NOT the same thing as unfollowAllGenres. That one is the undo for
+ * the follow-everything button, and it spares the individual names because they
+ * were chosen one at a time. This one backs "Unfollow all" on the calendar page,
+ * where the list being cleared is the one in front of you: leaving the names
+ * behind there would be the surprise, not the safeguard.
+ *
+ * Returns the counts by kind, because a bare total tells someone who is about to
+ * wonder whether the names they picked survived exactly nothing.
+ */
+export async function unfollowAll(userId) {
+  const rows = await sql`
+    delete from follows where user_id = ${userId}
+    returning subject_type
+  `;
+  return {
+    removed: rows.length,
+    genres: rows.filter((r) => r.subject_type === 'genre').length,
+    subjects: rows.filter((r) => r.subject_type === 'subject').length,
+  };
+}
+
+/** How many genres this reader follows, and how many there are. */
+export async function genreFollowCounts(userId) {
+  const [row] = await sql`
+    select
+      (select count(*)::int from genres where active) as total,
+      (select count(*)::int from follows
+        where user_id = ${userId}::uuid and subject_type = 'genre') as following
+  `;
+  return row;
+}
+
+/**
+ * How much a "follow everything" actually signs someone up for.
+ *
+ * Shown before they press it, because the honest number is large: every upcoming
+ * release in the catalogue, each of which sends a reminder at every offset they
+ * have turned on. A button that quietly enrols someone in thousands of
+ * notifications is not a feature.
+ *
+ * Bounded to a fortnight rather than counting the whole table -- a genre calendar
+ * carries announced dates years out, and "42,000 coming up" would overstate what
+ * lands in the next couple of weeks badly enough to be its own kind of lie.
+ */
+export async function upcomingEventCount() {
+  const [row] = await sql`
+    select count(*)::int as n from events
+    where starts_at > now() and starts_at < now() + interval '14 days'
+  `;
+  return row.n;
 }
 
 export async function isFollowing({ userId, subjectType, subjectId }) {
@@ -710,7 +1298,7 @@ export async function followersOfEventPage({
 export async function deliveryTargets(userIds) {
   if (userIds.length === 0) return [];
   return sql`
-    select u.id as user_id, u.email, u.timezone,
+    select u.id as user_id, u.email::text as email, u.timezone,
            coalesce(p.channels, '{webpush,email}') as channels,
            coalesce(p.offsets_minutes, '{60,1}') as offsets_minutes,
            coalesce(p.date_offsets_minutes, '{1440,0}') as date_offsets_minutes,
@@ -817,7 +1405,10 @@ export async function savePrefs({ userId, offsetsMinutes, dateOffsetsMinutes, ch
 /* --------------------------------------------------------------- calendar -- */
 
 export async function userByCalendarToken(token) {
-  const [row] = await sql`select * from users where calendar_token = ${token}::uuid`;
+  const [row] = await sql`
+    select u.*, u.email::text as email, u.handle::text as handle
+    from users u where u.calendar_token = ${token}::uuid
+  `;
   return row ?? null;
 }
 
@@ -938,7 +1529,8 @@ export async function publicEvents({
 
 export async function commentsForEvent(eventId, { limit = 200 } = {}) {
   return sql`
-    select c.id, c.body, c.created_at, u.email
+    select c.id, c.body, c.created_at, c.user_id,
+           u.email::text as email, u.handle::text as handle, u.display_name, u.profile_public
     from comments c join users u on u.id = c.user_id
     where c.event_id = ${eventId} and c.deleted_at is null
     order by c.created_at
@@ -994,10 +1586,61 @@ export async function deletePlaylist(userId) {
   await sql`delete from user_playlists where user_id = ${userId}`;
 }
 
+/**
+ * Record a failure, and back off before trying again.
+ *
+ * Exponential to a ceiling of an hour. There is nothing to gain from pulling 800KB
+ * every five minutes from something answering 404, and hammering a dead line is how
+ * the subscription behind it gets noticed. The streak is capped so it cannot
+ * overflow the exponent on a provider that has been down for a week.
+ */
 export async function markPlaylistError({ userId, error }) {
   await sql`
-    update user_playlists set last_error = ${error}, last_synced_at = now()
+    update user_playlists set
+      last_error = ${String(error).slice(0, 300)},
+      last_synced_at = now(),
+      error_streak = least(error_streak + 1, 8),
+      refresh_after = now() + (least(power(2, least(error_streak + 1, 6))::int, 60) || ' minutes')::interval
     where user_id = ${userId}
+  `;
+}
+
+/** A successful poll: clear the error state and book the next one. */
+export async function markPlaylistFresh({ userId, contentHash, nextAt }) {
+  await sql`
+    update user_playlists set
+      last_synced_at = now(),
+      last_error = null,
+      error_streak = 0,
+      content_hash = ${contentHash},
+      refresh_after = ${nextAt}
+    where user_id = ${userId}
+  `;
+}
+
+/**
+ * Which lists may be fetched now.
+ *
+ * `refresh_after is null` is the never-polled case and sorts first, so a list added
+ * a minute ago is picked up on the next tick rather than waiting out an interval it
+ * was never scheduled into.
+ */
+export async function playlistsDueForRefresh({ limit = 25 } = {}) {
+  return sql`
+    select user_id, source_url, label, content_hash
+    from user_playlists
+    where refresh_after is null or refresh_after <= now()
+    order by refresh_after nulls first, last_synced_at nulls first
+    limit ${Math.min(Math.max(Number(limit) || 25, 1), 200)}
+  `;
+}
+
+/** For the idle log line: when the poller expects to have something to do. */
+export async function nextPlaylistRefreshAt() {
+  return sql`
+    select min(coalesce(refresh_after, now())) as next_at,
+           count(*)::int as lists
+    from user_playlists
   `;
 }
 
@@ -1036,12 +1679,37 @@ export async function replacePlaylistChannels({ userId, channels }) {
 
 export async function playlistChannels(userId, { limit = 20000 } = {}) {
   return sql`
-    select c.title, c.group_title, c.stream_url, c.norm_title
+    select c.id, c.title, c.group_title, c.stream_url, c.norm_title, c.is_live, c.checked_at
     from user_playlist_channels c
     join user_playlists p on p.id = c.playlist_id
     where p.user_id = ${userId}
+      -- A verdict of "dead" is respected only while it is fresh. Providers rewrite
+      -- their event slots around airtime, so a slot that was empty an hour ago is
+      -- exactly the one that fills when the thing starts. NULL is never filtered
+      -- out: unchecked is not the same as dead, and thousands of channels cannot
+      -- all be probed on import.
+      and (c.is_live is not false or c.checked_at < now() - interval '30 minutes')
     order by c.position
     limit ${limit}
+  `;
+}
+
+/**
+ * Record what a probe saw.
+ *
+ * Scoped by user as well as by channel id, so an id from anywhere else cannot write
+ * a verdict into somebody else's list.
+ */
+export async function markChannelChecked({ userId, channelId, live, note }) {
+  await sql`
+    update user_playlist_channels c set
+      is_live = ${live},
+      checked_at = now(),
+      check_note = ${String(note ?? '').slice(0, 200)}
+    from user_playlists p
+    where c.playlist_id = p.id
+      and p.user_id = ${userId}
+      and c.id = ${channelId}
   `;
 }
 

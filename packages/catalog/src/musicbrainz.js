@@ -1,24 +1,31 @@
 /**
  * Music, from MusicBrainz.
  *
- * Music is the thinnest category on this site and it is worth being honest about
- * why, because the numbers look like a bug otherwise. Measured against the live
- * API on 2026-08-21, for a four-month forward window:
+ * Music was the thinnest category on this site, and the reason was here rather
+ * than at the source. Measured against the live API on 2026-08-21, for a
+ * four-month forward window:
  *
  *   - MusicBrainz knows about 2,228 official releases in the window.
  *   - Only 11% of those carry a DAY. The rest are "2026" or "2026-09", because a
  *     label announces a quarter long before it announces a date.
- *   - Of the artists behind the day-precision releases, 25% have any genre tag.
+ *   - Of the artists behind them, 25% have any genre tag.
  *
- * So the honest yield is a few dozen genre-placed releases a month, not
- * thousands. The alternatives were measured too and are worse: Wikidata has 46
- * forward music releases in SIX months, iTunes Search does not expose pre-orders
- * at all, and Deezer's genre-to-artist mapping files Bad Bunny under Rock. There
- * is no free source with volume, dates and genres together; this is the best of
- * them, and it improves on its own as the community tags.
+ * Requiring a day threw away the other 89% -- 2,228 releases became 245, and
+ * with them most of the genres, because a genre only appears on the site once
+ * something in it is coming. Month precision is accepted now: a release dated
+ * "2026-09" is stored on the first of that month with `precision: 'month'`, and
+ * the page renders "September 2026" rather than a day nobody claimed. That is
+ * reporting what we were told, which is the opposite of inventing a date --
+ * `timeKnown` is false either way, so no reminder can claim an hour.
  *
- * Everything without a day is dropped rather than padded. A reminder site that
- * invents a release date is worse than one that admits it does not know.
+ * A bare year is still dropped: "sometime in 2026" is not something a reader can
+ * act on, and it would swamp four months with a whole year.
+ *
+ * The alternatives were measured too and are worse: Wikidata has 46 forward
+ * music releases in SIX months, iTunes Search does not expose pre-orders at all,
+ * and Deezer's genre-to-artist mapping files Bad Bunny under Rock. There is no
+ * free source with volume, dates and genres together; this is the best of them,
+ * and it improves on its own as the community tags.
  */
 
 import { getJson } from './http.js';
@@ -48,12 +55,73 @@ function noonUtc(dateStr) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * What MusicBrainz actually told us about when a release lands.
+ *
+ * A label announces a quarter long before it announces a date, so the field
+ * arrives as "2026-09-18", "2026-09" or "2026". Only the first was accepted
+ * before, which threw away 89% of the window -- 2,228 releases in four months
+ * became 245, and with them most of the genres, because a genre only appears on
+ * the site once something in it is coming.
+ *
+ * Reporting the precision we were given is not the same as inventing a date. The
+ * schema has carried `precision` since 0001, the spaceflight adapter has emitted
+ * 'month' from the start, and components.jsx already renders year and month
+ * ("September 2026") rather than a false day. `timeKnown` stays false throughout,
+ * so nothing here can produce a reminder that claims an hour.
+ *
+ * Year precision is deliberately NOT accepted: "sometime in 2026" is not news a
+ * reader can act on, and it would swamp the next four months with the whole year.
+ *
+ * @param {string} dateStr
+ * @returns {{ startsAt: Date, precision: 'day'|'month' } | null}
+ */
+function releaseDate(dateStr) {
+  const raw = String(dateStr ?? '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const startsAt = noonUtc(raw);
+    return startsAt ? { startsAt, precision: 'day' } : null;
+  }
+  if (/^\d{4}-\d{2}$/.test(raw)) {
+    // The first of the month, at noon for the same reason a day is: a reader in
+    // the Americas must not see the month before.
+    const startsAt = noonUtc(`${raw}-01`);
+    return startsAt ? { startsAt, precision: 'month' } : null;
+  }
+  return null;
+}
+
 /** MusicBrainz genre names are lowercase by convention ("hip hop", "j-pop"). */
 function titleCase(s) {
   return String(s)
     .split(/(\s|-)/)
     .map((part) => (/^[a-z]/.test(part) ? part[0].toUpperCase() + part.slice(1) : part))
     .join('');
+}
+
+/**
+ * Artist artwork, from fanart.tv.
+ *
+ * MusicBrainz holds no images at all, which left every artist on this site as a
+ * grey square. fanart.tv is keyed by MusicBrainz ID -- the exact identifier
+ * already stored as this subject's provider key -- so no matching or searching is
+ * involved, and a wrong picture is not a failure mode here.
+ *
+ * Budgeted like the genre lookups and for the same reason: it is one request per
+ * artist. A 404 means nobody has uploaded art, which is the common case and is
+ * cached as "none" by the caller rather than retried forever.
+ */
+async function fetchArtistArt(mbid, apiKey) {
+  if (!apiKey) return null;
+  const d = await getJson(`https://webservice.fanart.tv/v3/music/${mbid}?api_key=${apiKey}`, {
+    minGapMs: 250,
+    timeoutMs: 20_000,
+    retries: 1,
+  });
+  if (!d) return null;
+  const thumb = d.artistthumb?.[0]?.url ?? null;
+  const back = d.artistbackground?.[0]?.url ?? null;
+  return thumb || back ? { imageUrl: thumb ?? back, backdropUrl: back ?? null } : null;
 }
 
 /**
@@ -74,6 +142,8 @@ export async function fetchAll({
   genreCache = new Map(),
   lookupBudget = 60,
   deadlineMs = 180_000,
+  fanartKey = process.env.FANART_TV_API_KEY,
+  artBudget = 40,
 } = {}) {
   // Whatever has been collected when this expires is written; the rest arrives on
   // the next pass. See the note in the orchestrator.
@@ -94,10 +164,11 @@ export async function fetchAll({
     if (releases.length === 0) break;
 
     for (const r of releases) {
-      // A bare year or a year-month is not a date. See the note at the top.
-      if (!r?.id || !r.date || r.date.length !== 10) continue;
-      const startsAt = noonUtc(r.date);
-      if (!startsAt || startsAt < from || startsAt > to) continue;
+      // A year-month IS a date, at month precision. A bare year is not. See
+      // releaseDate() for why that line is drawn where it is.
+      if (!r?.id) continue;
+      const when = releaseDate(r.date);
+      if (!when || when.startsAt < from || when.startsAt > to) continue;
 
       const credit = r['artist-credit']?.[0]?.artist;
       if (!credit?.id) continue;
@@ -150,7 +221,12 @@ export async function fetchAll({
           // MusicBrainz genre votes include long-tail noise; one vote is not a genre.
           .filter((g) => (g.count ?? 1) >= 1)
           .sort((x, y) => (y.count ?? 0) - (x.count ?? 0))
-          .slice(0, 4)
+          // Eight rather than four. This costs nothing -- the tags are already in
+          // the response we paid a request for -- and the fourth-to-eighth are
+          // exactly the specific ones worth browsing by: an artist reads
+          // "rock, alternative rock, indie rock, shoegaze, dream pop" and the
+          // interesting half was being discarded.
+          .slice(0, 8)
           .map((g) => g.name);
         genreCache.set(subject.providerKey, names);
       } catch {
@@ -181,7 +257,11 @@ export async function fetchAll({
   for (const { release, artistKey } of pending) {
     const subject = subjects.get(artistKey);
     if (!subject) continue;
-    const startsAt = noonUtc(release.date);
+    // Re-read rather than carried through `pending`: the filter above already
+    // rejected anything this cannot parse, so a null here is impossible and a
+    // second parse is cheaper than another field on every queued row.
+    const when = releaseDate(release.date);
+    if (!when) continue;
     const type = release['release-group']?.['primary-type'] ?? 'Release';
 
     events.push({
@@ -190,10 +270,11 @@ export async function fetchAll({
       category: CATEGORY,
       subjectKey: artistKey,
       kind: 'release',
-      startsAt,
-      // A release date is a day. There is no such thing as a 3pm album.
+      startsAt: when.startsAt,
+      // A release date is never a time. There is no such thing as a 3pm album,
+      // and a month-precision row must not claim one either.
       timeKnown: false,
-      precision: 'day',
+      precision: when.precision,
       state: 'upcoming',
       name: `${subject.displayName} — ${release.title}`,
       shortName: release.title,
@@ -208,6 +289,28 @@ export async function fetchAll({
       number: null,
       runtimeMin: null,
     });
+  }
+
+  /*
+   * Artwork, after the genres and within what is left of the clock.
+   *
+   * Deliberately last: a genre decides which pages an artist appears on, and a
+   * picture only decides how that page looks. If the pass runs out of time, the
+   * catalogue is still correct and merely plain.
+   */
+  let artSpent = 0;
+  for (const subject of subjects.values()) {
+    if (subject.imageUrl || artSpent >= artBudget || outOfTime()) continue;
+    artSpent++;
+    try {
+      const art = await fetchArtistArt(subject._mbid, fanartKey);
+      if (art) {
+        subject.imageUrl = art.imageUrl;
+        subject.backdropUrl = art.backdropUrl;
+      }
+    } catch {
+      // Artwork is decoration; never fail a catalogue pass over it.
+    }
   }
 
   for (const s of subjects.values()) s._mbid = undefined;

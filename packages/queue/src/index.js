@@ -23,6 +23,8 @@ export const QUEUES = {
   fanout: 'reminder-fanout',
   /** One job per page of followers. Claims and sends. */
   batch: 'reminder-batch',
+  /** Re-fetches readers' own channel lists from their providers. */
+  playlists: 'playlist-refresh',
 };
 
 const defaults = {
@@ -47,7 +49,7 @@ export const queues = Object.fromEntries(
  * every boot makes the code the single source of truth for what is scheduled.
  */
 export async function installSchedules({ log = console.log } = {}) {
-  for (const queue of [queues.scan, queues.sync]) {
+  for (const queue of [queues.scan, queues.sync, queues.playlists]) {
     for (const r of await queue.getRepeatableJobs()) await queue.removeRepeatableByKey(r.key);
   }
 
@@ -67,6 +69,38 @@ export async function installSchedules({ log = console.log } = {}) {
   await queues.sync.add('sync-tick', { kind: 'tick' }, { repeat: { every: 3600_000 } });
 
   /*
+   * Enrichment gets its own clock, because it is a different job.
+   *
+   * It used to run only at the tail of a catalogue pass, which meant it
+   * inherited that pass's cadence AND its fragility: a repeatable fires one
+   * interval from now, so a day of frequent deploys pushes the hourly tick
+   * forever into the future and the detail pass simply never happens. That is
+   * the trap this file already warns about, reached through a job that was
+   * bolted onto the end of another one.
+   *
+   * It is also much cheaper -- a bounded number of requests against a provider
+   * that tolerates fifty a second -- so there is no reason for it to wait on a
+   * sweep that is deliberately slow.
+   */
+  await queues.sync.add('detail', { kind: 'detail' }, { repeat: { every: 30 * 60_000 } });
+
+  /*
+   * Readers' own channel lists, on their own clock.
+   *
+   * Not folded into the sync tick: this polls other people's subscriptions rather
+   * than our providers, it runs far more often, and the interval is an env var
+   * precisely so it can be raised without a deploy if a provider objects. The
+   * per-list schedule lives in the database (refresh_after), so this tick only
+   * asks "is anything due" -- which is why re-adding it on every boot is harmless
+   * here in a way the trap below describes for the catalogue sweep.
+   */
+  await queues.playlists.add(
+    'playlists',
+    {},
+    { repeat: { every: config.playlists.refreshMinutes * 60_000 }, jobId: 'playlists' },
+  );
+
+  /*
    * A repeatable first fires one interval from NOW, not immediately.
    *
    * Two problems, one check. A fresh database would serve an empty calendar for
@@ -82,6 +116,19 @@ export async function installSchedules({ log = console.log } = {}) {
    */
   const stale = await anythingStale();
   const empty = (await q.catalogueStats()).upcoming === 0;
+
+  /*
+   * And one on boot, unconditionally.
+   *
+   * Unlike a catalogue sweep this is safe to run every time: it is budgeted, it
+   * stamps what it touches, and it is a no-op once nothing is pending. Making it
+   * conditional is what left it never running at all.
+   */
+  await queues.sync.add(
+    'detail',
+    { kind: 'detail' },
+    { jobId: `detail-${minuteStamp()}`, delay: 25_000 },
+  );
 
   if (stale || empty || config.sync.onBoot) {
     log(`[queue] syncing now (stale: ${stale}, empty: ${empty}, forced: ${config.sync.onBoot})`);

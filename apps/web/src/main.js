@@ -1,7 +1,7 @@
 import { config } from '@genre/config';
 import { close as closeDb, healthcheck } from '@genre/db';
 import { migrate } from '@genre/db/migrate';
-import { closeQueues, installSchedules } from '@genre/queue';
+import { closeQueues, connection, installSchedules } from '@genre/queue';
 import { startWorkers } from '@genre/queue/workers';
 import { app } from './app.js';
 
@@ -56,7 +56,43 @@ if (config.roles.includes('worker')) {
 }
 
 let server;
+/**
+ * Drop the rendered page cache on boot.
+ *
+ * Read pages are cached in Redis for 60-900 seconds and served byte-identical to
+ * every signed-out visitor -- which means a deploy that changes MARKUP keeps
+ * serving the old markup until each key expires. Shipping a new header and then
+ * watching the old one come back on the feeds page for a quarter of an hour is
+ * indistinguishable from the deploy not having worked.
+ *
+ * The sync worker already evicts after it writes; this is the same fix for the
+ * other way pages go stale. SCAN rather than KEYS, because this Redis also carries
+ * the delivery queues and KEYS blocks the server for the length of the keyspace.
+ * Failing is harmless -- the TTL is still there as a backstop -- so a Redis blip
+ * must not stop the container from booting.
+ */
+async function dropPageCache() {
+  let cursor = '0';
+  let dropped = 0;
+  try {
+    do {
+      const [next, keys] = await connection.scan(cursor, 'MATCH', 'page:*', 'COUNT', 200);
+      cursor = next;
+      if (keys.length > 0) {
+        await connection.del(...keys);
+        dropped += keys.length;
+      }
+    } while (cursor !== '0');
+  } catch (err) {
+    console.warn(`[boot] page cache not cleared: ${err?.message ?? err}`);
+    return;
+  }
+  if (dropped) console.log(`[boot] cleared ${dropped} cached page(s)`);
+}
+
 if (config.roles.includes('web')) {
+  await dropPageCache();
+
   // Railway injects PORT. Never hardcode it: a fixed port leaves the edge proxy
   // forwarding to a closed socket and every request 404s while the container
   // still reports healthy.

@@ -18,7 +18,10 @@ import { getJson } from './http.js';
 import { keyFor, slugify } from './slug.js';
 
 const BASE = 'https://api.themoviedb.org/3';
-const IMAGE = 'https://image.tmdb.org/t/p/w342';
+const POSTER = 'https://image.tmdb.org/t/p/w342';
+/* Wide art for the top of a page. w780 rather than original: a backdrop is
+   decoration, and originals run to several megabytes. */
+const BACKDROP = 'https://image.tmdb.org/t/p/w780';
 const PROVIDER = 'tmdb';
 export const CATEGORY = 'film';
 
@@ -115,7 +118,15 @@ export async function fetchAll({
 
       const subjectKey = keyFor(PROVIDER, 'movie', String(m.id));
       const summary = m.overview?.trim() || null;
-      const image = m.poster_path ? `${IMAGE}${m.poster_path}` : null;
+      const image = m.poster_path ? `${POSTER}${m.poster_path}` : null;
+      /*
+       * Free. discover already returns these in the response we are making
+       * anyway -- they were being parsed and thrown away, which is why an event
+       * page had a date and a sentence on it and nothing else.
+       */
+      const backdrop = m.backdrop_path ? `${BACKDROP}${m.backdrop_path}` : null;
+      const votes = Number(m.vote_count ?? 0);
+      const rating = votes > 0 ? Number(m.vote_average) : null;
 
       subjects.set(subjectKey, {
         provider: PROVIDER,
@@ -127,6 +138,7 @@ export async function fetchAll({
         displayName: m.title,
         description: summary,
         imageUrl: image,
+        backdropUrl: backdrop,
         url: `https://www.themoviedb.org/movie/${m.id}`,
         genreKeys,
       });
@@ -147,6 +159,12 @@ export async function fetchAll({
         shortName: null,
         summary,
         imageUrl: image,
+        backdropUrl: backdrop,
+        rating,
+        ratingCount: votes || null,
+        // The provider's own id, so a later detail pass can find this row again
+        // without re-deriving it from the URL.
+        providerId: String(m.id),
         url: `https://www.themoviedb.org/movie/${m.id}`,
         venue: 'Cinemas',
         venueRegion: null,
@@ -163,3 +181,271 @@ export async function fetchAll({
 }
 
 export const adapter = { name: PROVIDER, category: CATEGORY, fetchAll };
+
+/**
+ * The detail one further request buys, per film.
+ *
+ * `append_to_response` bundles credits, videos, watch providers and the rest into
+ * the SAME call, so a fully populated film costs one request rather than five.
+ * That still makes it the only pass here that scales with the catalogue instead of
+ * with pages, which is why the caller hands it a budget and a list rather than
+ * letting it walk everything.
+ *
+ * Returns a flat shape the database layer stores as-is. Absent fields are absent
+ * rather than empty, so a renderer can tell "no trailer" from "not looked yet".
+ *
+ * @param {string[]} ids TMDB movie ids that have never been enriched
+ */
+export async function fetchDetail(ids, { apiKey = process.env.TMDB_API_KEY, limit = 120 } = {}) {
+  if (!apiKey || !ids?.length) return [];
+  const out = [];
+
+  for (const id of ids.slice(0, limit)) {
+    const url =
+      `${BASE}/movie/${id}?api_key=${apiKey}` +
+      `&append_to_response=credits,videos,watch/providers`;
+    let d;
+    try {
+      d = await getJson(url, { minGapMs: MIN_GAP_MS });
+    } catch {
+      // One bad title must not end the pass. It stays unenriched and is retried
+      // next time, because nothing is stamped for it.
+      continue;
+    }
+    if (!d) continue;
+
+    const credits = d.credits ?? {};
+    const director = (credits.crew ?? []).find((c) => c.job === 'Director')?.name ?? null;
+    const cast = (credits.cast ?? []).slice(0, 8).map((c) => c.name);
+
+    /*
+     * A trailer, preferring the official one.
+     *
+     * Stored as a full URL rather than a site+key pair so no renderer has to know
+     * that YouTube keys and Vimeo keys are built into different addresses.
+     */
+    const vids = (d.videos?.results ?? []).filter(
+      (v) => v.type === 'Trailer' && v.site === 'YouTube',
+    );
+    const trailer = vids.find((v) => v.official) ?? vids[0];
+
+    // Flat-rate streaming only. Rent and buy are a different question from "is it
+    // included where I already subscribe", and mixing them misleads.
+    const us = d['watch/providers']?.results?.US ?? {};
+    const watch = (us.flatrate ?? []).map((p) => p.provider_name).slice(0, 6);
+
+    out.push({
+      providerId: String(id),
+      runtimeMin: d.runtime || null,
+      tagline: d.tagline?.trim() || null,
+      trailerUrl: trailer ? `https://www.youtube.com/watch?v=${trailer.key}` : null,
+      detail: {
+        cast,
+        director,
+        studios: (d.production_companies ?? []).map((c) => c.name).slice(0, 3),
+        language: d.spoken_languages?.[0]?.english_name ?? null,
+        watch,
+        imdbId: d.imdb_id ?? null,
+      },
+    });
+  }
+
+  return out;
+}
+
+/**
+ * The back catalogue: what already came out.
+ *
+ * A release calendar only ever needed the future, which made the site useless for
+ * the question someone with a VOD subscription actually asks -- can I watch this
+ * tonight. A 1999 film is a perfectly ordinary row; it simply has a date in the
+ * past.
+ *
+ * Bounded by popularity rather than by date, because TMDB holds about 1.05 MILLION
+ * films and ingesting them is neither possible nor useful. Popularity decays fast:
+ * page 20 of this ordering is The Empire Strikes Back and page 250 is already
+ * titles nobody is searching for, so a few hundred pages reaches well past
+ * anything a reader would name. Everything below that line is reachable by search
+ * falling through to TMDB live, which is where the other million live.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.pages] 20 titles per page
+ * @param {number} [opts.minYear] how far back to reach
+ */
+export async function fetchBackCatalogue({
+  apiKey = process.env.TMDB_API_KEY,
+  pages = 200,
+  minYear = 1970,
+  startPage = 1,
+} = {}) {
+  if (!apiKey) return { genres: [], subjects: [], events: [], skipped: 'no TMDB_API_KEY' };
+
+  const genreById = await fetchGenres(apiKey);
+  const genres = new Map();
+  const subjects = new Map();
+  const events = [];
+  const today = new Date().toISOString().slice(0, 10);
+
+  for (let page = startPage; page < startPage + pages; page++) {
+    // TMDB refuses pages beyond 500 whatever the result count.
+    if (page > 500) break;
+    const url =
+      `${BASE}/discover/movie?api_key=${apiKey}` +
+      `&primary_release_date.gte=${minYear}-01-01` +
+      `&primary_release_date.lte=${today}` +
+      `&sort_by=popularity.desc&include_adult=false&page=${page}`;
+
+    const res = await getJson(url, { minGapMs: MIN_GAP_MS });
+    const results = res?.results ?? [];
+    if (results.length === 0) break;
+
+    for (const m of results) {
+      if (!m?.id || !m.release_date) continue;
+      const startsAt = noonUtc(m.release_date);
+      if (!startsAt) continue;
+
+      const genreKeys = [];
+      for (const gid of m.genre_ids ?? []) {
+        const g = genreById.get(gid);
+        if (!g) continue;
+        genres.set(g.providerKey, g);
+        genreKeys.push(g.providerKey);
+      }
+      if (genreKeys.length === 0) continue;
+
+      const subjectKey = keyFor(PROVIDER, 'movie', String(m.id));
+      const summary = m.overview?.trim() || null;
+      const image = m.poster_path ? `${POSTER}${m.poster_path}` : null;
+      const backdrop = m.backdrop_path ? `${BACKDROP}${m.backdrop_path}` : null;
+      const votes = Number(m.vote_count ?? 0);
+
+      subjects.set(subjectKey, {
+        provider: PROVIDER,
+        providerKey: subjectKey,
+        category: CATEGORY,
+        kind: 'film',
+        slug: slugify(m.title, String(m.id)),
+        name: m.title,
+        displayName: m.title,
+        description: summary,
+        imageUrl: image,
+        backdropUrl: backdrop,
+        popularity: Number(m.popularity) || null,
+        url: `https://www.themoviedb.org/movie/${m.id}`,
+        genreKeys,
+      });
+
+      events.push({
+        provider: PROVIDER,
+        providerKey: keyFor(PROVIDER, 'release', String(m.id)),
+        category: CATEGORY,
+        subjectKey,
+        kind: 'release',
+        startsAt,
+        timeKnown: false,
+        precision: 'day',
+        // Already out. The calendar pages filter on this, so a back catalogue
+        // cannot flood them however large it grows.
+        state: 'out',
+        name: m.title,
+        summary,
+        imageUrl: image,
+        backdropUrl: backdrop,
+        rating: votes > 0 ? Number(m.vote_average) : null,
+        ratingCount: votes || null,
+        url: `https://www.themoviedb.org/movie/${m.id}`,
+        venue: null,
+      });
+    }
+  }
+
+  return { genres: [...genres.values()], subjects: [...subjects.values()], events };
+}
+
+/**
+ * Look a title up on TMDB directly.
+ *
+ * The fallthrough for everything not held locally, which is most of a million
+ * films. One request, and whatever it returns can be stored on the way past so the
+ * second person to search for it gets a local hit.
+ */
+export async function searchTitles(term, { apiKey = process.env.TMDB_API_KEY, limit = 12 } = {}) {
+  if (!apiKey || !term?.trim()) return [];
+  const url = `${BASE}/search/movie?api_key=${apiKey}&include_adult=false&query=${encodeURIComponent(term.trim())}`;
+  const res = await getJson(url, { minGapMs: MIN_GAP_MS });
+  return (res?.results ?? []).slice(0, limit);
+}
+
+/**
+ * Turn raw TMDB search results into the catalogue's own shape.
+ *
+ * Shared with the back-catalogue pass on purpose: a film arrived at by searching
+ * should be indistinguishable from one ingested in bulk, or the two paths drift
+ * and a searched title ends up without genres or a followable subject.
+ */
+export function fromSearchResults(results, { genreById = null } = {}) {
+  const genres = new Map();
+  const subjects = [];
+  const events = [];
+
+  for (const m of results ?? []) {
+    if (!m?.id || !m.title) continue;
+    const startsAt = m.release_date ? noonUtc(m.release_date) : null;
+    const subjectKey = keyFor(PROVIDER, 'movie', String(m.id));
+    const image = m.poster_path ? `${POSTER}${m.poster_path}` : null;
+    const backdrop = m.backdrop_path ? `${BACKDROP}${m.backdrop_path}` : null;
+    const summary = m.overview?.trim() || null;
+
+    /*
+     * Search returns genre IDS with no names, and looking the table up would be
+     * another request per search. So a searched title carries whatever genre
+     * names we can resolve and is otherwise left ungrouped -- the next catalogue
+     * pass fills it in properly if it is popular enough to be swept.
+     */
+    const genreKeys = [];
+    for (const gid of m.genre_ids ?? []) {
+      const g = genreById?.get(gid);
+      if (!g) continue;
+      genres.set(g.providerKey, g);
+      genreKeys.push(g.providerKey);
+    }
+
+    subjects.push({
+      provider: PROVIDER,
+      providerKey: subjectKey,
+      category: CATEGORY,
+      kind: 'film',
+      slug: slugify(m.title, String(m.id)),
+      name: m.title,
+      displayName: m.title,
+      description: summary,
+      imageUrl: image,
+      backdropUrl: backdrop,
+      popularity: Number(m.popularity) || null,
+      url: `https://www.themoviedb.org/movie/${m.id}`,
+      genreKeys,
+    });
+
+    if (!startsAt) continue;
+    events.push({
+      provider: PROVIDER,
+      providerKey: keyFor(PROVIDER, 'release', String(m.id)),
+      category: CATEGORY,
+      subjectKey,
+      kind: 'release',
+      startsAt,
+      timeKnown: false,
+      precision: 'day',
+      state: startsAt.getTime() > Date.now() ? 'upcoming' : 'out',
+      name: m.title,
+      summary,
+      imageUrl: image,
+      backdropUrl: backdrop,
+      rating: Number(m.vote_count ?? 0) > 0 ? Number(m.vote_average) : null,
+      ratingCount: Number(m.vote_count ?? 0) || null,
+      url: `https://www.themoviedb.org/movie/${m.id}`,
+    });
+  }
+
+  return { genres: [...genres.values()], subjects, events };
+}

@@ -1,5 +1,6 @@
 import { assetUrl } from '../lib/asset-version.js';
 import {
+  Ad,
   EventList,
   FollowButton,
   GenreChips,
@@ -9,6 +10,20 @@ import {
   whenLabel,
 } from './components.jsx';
 import { Layout } from './Layout.jsx';
+
+/**
+ * What to sign a comment with.
+ *
+ * Order matters and is the whole point: a chosen display name, then the handle,
+ * and only then the local part of an email address. That last one used to be the
+ * ONLY option, so every public comment was signed with a fragment of the author's
+ * address -- something they never chose to publish, on a page anyone can read
+ * without an account. It survives as a fallback for accounts that have not picked
+ * a name, and nothing beyond the local part is ever rendered.
+ */
+function commenterName(c) {
+  return c.display_name || (c.handle ? `@${c.handle}` : String(c.email ?? '?').split('@')[0]);
+}
 
 /**
  * What each category is called, and what it actually covers.
@@ -26,6 +41,29 @@ export const CATEGORY_LABEL = {
 };
 
 const labelFor = (c) => CATEGORY_LABEL[c]?.name ?? c;
+
+/**
+ * Deep links into a player that can actually handle these streams.
+ *
+ * The .m3u hand-off is right on a desktop and useless on a phone: iOS Safari either
+ * saves the playlist or follows it and offers to save a .ts, and neither plays,
+ * because these providers serve MPEG-2 Transport Stream and Safari has no demuxer
+ * for it. That is a missing codec, not a missing header. Both players worth naming
+ * register a URL scheme instead, so a tap opens the app already on the stream.
+ *
+ * The stream URL is in the href and has to be: an external player holds no session
+ * with us and cannot fetch an authenticated endpoint. It is the reader's own
+ * credential on the reader's own signed-in page, which is the same exposure the
+ * .m3u download already carried.
+ */
+const playerLinks = (url) => {
+  const target = encodeURIComponent(url);
+  return {
+    // The documented VLC-iOS form; VLC on Android registers the same handler.
+    vlc: `vlc-x-callback://x-callback-url/stream?url=${target}`,
+    infuse: `infuse://x-callback-url/play?url=${target}`,
+  };
+};
 
 /** The category strip that heads most pages. */
 const CategoryNav = ({ current }) => (
@@ -79,7 +117,7 @@ export const Landing = ({ user, today, vapidKey }) => (
 );
 
 /** Every genre we carry, grouped by category. */
-export const GenresIndex = ({ user, categories, genres }) => {
+export const GenresIndex = ({ user, categories, genres, genreCounts, upcoming }) => {
   const byCategory = new Map();
   for (const g of genres) {
     if (!byCategory.has(g.category)) byCategory.set(g.category, []);
@@ -93,6 +131,48 @@ export const GenresIndex = ({ user, categories, genres }) => {
         {genres.length.toLocaleString('en-US')} genres across {categories.length} categories.
         Following a genre means you hear about everything filed under it.
       </p>
+
+      {/* Follow everything, with the size of "everything" stated before it is
+          pressed rather than discovered afterwards. Following every genre means a
+          reminder for every release in the catalogue at every offset turned on,
+          which is thousands of notifications -- a button that enrols someone in
+          that quietly is not a feature, it is a trap. */}
+      {user && genreCounts ? (
+        <section class="follow-all card">
+          <div class="card-head">
+            <h2 class="card-title">
+              {genreCounts.following >= genreCounts.total
+                ? 'You follow every genre'
+                : 'Follow everything'}
+            </h2>
+            <p class="card-desc">
+              {genreCounts.following >= genreCounts.total
+                ? `All ${genreCounts.total.toLocaleString('en-US')} genres. You will be told about every release in the catalogue.`
+                : `All ${genreCounts.total.toLocaleString('en-US')} genres in one go — about ${(upcoming ?? 0).toLocaleString('en-US')} releases in the next fortnight, and a reminder for each one at every offset you have turned on.`}
+              {genreCounts.following > 0 && genreCounts.following < genreCounts.total
+                ? ` You follow ${genreCounts.following.toLocaleString('en-US')} so far.`
+                : ''}
+            </p>
+          </div>
+          <div class="card-actions">
+            {genreCounts.following < genreCounts.total ? (
+              <form method="post" action="/api/follow-all" class="inline">
+                <button class="cta" type="submit">
+                  Follow everything!
+                </button>
+              </form>
+            ) : null}
+            {genreCounts.following > 0 ? (
+              <form method="post" action="/api/unfollow-all" class="inline">
+                <button class="ghost" type="submit">
+                  Unfollow all genres
+                </button>
+              </form>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
       <CategoryNav />
 
       {[...byCategory.entries()].map(([category, list]) => (
@@ -145,6 +225,8 @@ export const CategoryPage = ({ user, category, genres, events }) => {
           <a href={`/feeds/category/${category}.xml`}>RSS</a>
         </p>
       </section>
+
+      <Ad />
     </Layout>
   );
 };
@@ -173,6 +255,12 @@ export const GenrePage = ({ user, genre, subjects, events, following }) => (
       <h2>Coming up</h2>
       <EventList events={events} emptyText="Nothing scheduled in this genre yet." />
     </section>
+
+    {/* Between the two lists: a real seam in the page, where a reader has
+        finished one thing and not started the next. Not floated beside the
+        content, and not at the very bottom where it would be billed without
+        ever being looked at. */}
+    <Ad />
 
     <section>
       <h2>Names in {genre.name}</h2>
@@ -246,8 +334,31 @@ export const SubjectPage = ({ user, subject, events, genres, following }) => (
   </Layout>
 );
 
-export const EventPage = ({ user, event, genres, comments, following, ownChannels }) => {
+export const EventPage = ({
+  user,
+  event,
+  genres,
+  comments,
+  following,
+  ownChannels,
+  streamDead,
+}) => {
   const when = whenLabel(event);
+  /*
+   * The driver hands jsonb back parsed or as a string depending on the column and
+   * the query, so this is the one place that decides -- rather than every field
+   * below guessing separately and one of them getting it wrong.
+   */
+  const detail = (() => {
+    const raw = event.detail;
+    if (!raw) return {};
+    if (typeof raw !== 'string') return raw;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  })();
   return (
     <Layout title={event.name} user={user}>
       <header class="page-head">
@@ -269,37 +380,144 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
         />
       </header>
 
-      <section class="stats">
-        <div class="stat">
-          <span class="stat-label">{when.kind === 'time' ? 'Starts' : 'Out'}</span>
-          <StartTime event={event} />
+      {/*
+        A banner where there is one, the poster beside the facts where there is
+        not. Two different shapes doing two different jobs: a 16:9 backdrop can
+        run the width of the page, a 2:3 poster cannot without either cropping
+        the faces off or being enormous.
+      */}
+      {event.backdrop_url || event.subject_backdrop ? (
+        <div class="event-banner">
+          <img
+            src={event.backdrop_url ?? event.subject_backdrop}
+            alt=""
+            loading="lazy"
+            decoding="async"
+          />
         </div>
-        {event.venue ? (
-          <div class="stat">
-            <span class="stat-label">
-              {event.category === 'space' ? 'Launch site' : 'Where to watch'}
-            </span>
-            <span class="stat-value">
-              {event.venue}
-              {event.venue_region ? `, ${event.venue_region}` : ''}
-            </span>
-          </div>
+      ) : null}
+
+      <div class="event-detail">
+        {event.image_url || event.subject_image ? (
+          <img
+            class="event-poster"
+            src={event.image_url ?? event.subject_image}
+            alt=""
+            loading="lazy"
+            decoding="async"
+          />
         ) : null}
-        {event.season ? (
-          <div class="stat">
-            <span class="stat-label">Episode</span>
-            <span class="stat-value">
-              Season {event.season}, episode {event.number}
-            </span>
-          </div>
-        ) : null}
-        {event.runtime_min ? (
-          <div class="stat">
-            <span class="stat-label">Runtime</span>
-            <span class="stat-value">{event.runtime_min} min</span>
-          </div>
-        ) : null}
-      </section>
+
+        <div class="event-facts">
+          {event.tagline ? <p class="tagline">{event.tagline}</p> : null}
+          {event.summary ? <p class="blurb">{event.summary}</p> : null}
+
+          <ul class="factlist">
+            <li>
+              <span>{when.kind === 'time' ? 'Starts' : 'Out'}</span>
+              <StartTime event={event} />
+            </li>
+            {event.venue ? (
+              <li>
+                <span>{event.category === 'space' ? 'Launch site' : 'Where'}</span>
+                {event.venue}
+                {event.venue_region ? `, ${event.venue_region}` : ''}
+              </li>
+            ) : null}
+            {event.season ? (
+              <li>
+                <span>Episode</span>
+                Season {event.season}, episode {event.number}
+              </li>
+            ) : null}
+            {event.runtime_min ? (
+              <li>
+                <span>Runtime</span>
+                {event.runtime_min} min
+              </li>
+            ) : null}
+            {/* A score resting on a handful of votes is noise, so it is only
+                shown once enough people have voted to mean anything. */}
+            {event.rating && (event.rating_count ?? 0) >= 10 ? (
+              <li>
+                <span>Rating</span>
+                {Number(event.rating).toFixed(1)} / 10
+              </li>
+            ) : null}
+            {detail.director ? (
+              <li>
+                <span>Director</span>
+                {detail.director}
+              </li>
+            ) : null}
+            {detail.rocket ? (
+              <li>
+                <span>Rocket</span>
+                {detail.rocket}
+              </li>
+            ) : null}
+            {detail.orbit ? (
+              <li>
+                <span>Orbit</span>
+                {detail.orbit}
+              </li>
+            ) : null}
+            {detail.probability ? (
+              <li>
+                <span>Odds</span>
+                {detail.probability}% go for launch
+              </li>
+            ) : null}
+            {detail.network ? (
+              <li>
+                <span>Network</span>
+                {detail.network}
+              </li>
+            ) : null}
+            {detail.studios?.length ? (
+              <li>
+                <span>Studio</span>
+                {detail.studios.join(', ')}
+              </li>
+            ) : null}
+            {detail.language ? (
+              <li>
+                <span>Language</span>
+                {detail.language}
+              </li>
+            ) : null}
+          </ul>
+
+          {detail.cast?.length ? (
+            <p class="cast">
+              <span class="stat-label">Cast</span>
+              {detail.cast.join(' · ')}
+            </p>
+          ) : null}
+
+          {/* Where it is included, not where it can be rented -- those are
+              different questions and mixing them misleads. */}
+          {detail.watch?.length ? (
+            <p class="watch">
+              <span class="stat-label">Streaming on</span>
+              {detail.watch.join(' · ')}
+            </p>
+          ) : null}
+
+          <p class="more">
+            {event.trailer_url ? (
+              <a class="cta" href={event.trailer_url} rel="noopener nofollow external">
+                Watch the trailer ↗
+              </a>
+            ) : null}
+            {event.url ? (
+              <a class="link-quiet" href={event.url} rel="noopener nofollow external">
+                Full details ↗
+              </a>
+            ) : null}
+          </p>
+        </div>
+      </div>
 
       {/*
         Said out loud rather than implied by a missing clock.
@@ -315,42 +533,132 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
         </p>
       ) : null}
 
-      {event.summary ? <p class="blurb">{event.summary}</p> : null}
       <GenreChips genres={genres} />
-
-      {event.url ? (
-        <p class="more">
-          <a href={event.url} rel="noopener nofollow external">
-            Full details ↗
-          </a>
-        </p>
-      ) : null}
 
       {/*
         A reader's own channels, matched against their own list.
+
         Nothing here is shared, pooled or relayed: these URLs came from this
         account and go back only to this account. The page is deliberately not
         cached in Redis for exactly this reason.
+
+        The empty state is not decoration. Rendering nothing when a list is present
+        but nothing matched is indistinguishable from the feature being broken --
+        which is how it read before the count was carried back.
       */}
-      {ownChannels && ownChannels.length > 0 ? (
-        <section>
-          <h2>In your channel list</h2>
-          <p class="muted small">
-            From the playlist you added. Opening one hands a file to your own player — nothing is
-            streamed through GenreWatch.
-          </p>
-          <ul class="channels">
-            {ownChannels.map((ch, i) => (
-              <li>
-                <span>{ch.title}</span>
-                <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?n=${i}`}>
-                  Open
-                </a>
-              </li>
-            ))}
-          </ul>
+      {ownChannels?.hasList ? (
+        <section class="own-line">
+          <h2>In your list</h2>
+
+          {/* Why the last attempt handed back nothing, in the words of the probe.
+              "returned a web page, not a stream" means the slot is empty;
+              "timed out" means it is not. "Something went wrong" would send
+              somebody off to check their own wifi. */}
+          {streamDead ? (
+            <p class="feedback error" role="status">
+              That one did not play — {streamDead}. The others are still listed; a provider slot
+              often fills only once the thing is actually on.
+            </p>
+          ) : null}
+
+          {/* On demand first: it is there whenever they want it, where a channel
+              is a claim about right now. */}
+          {ownChannels.onDemand?.length > 0 ? (
+            <>
+              <h3>Available on demand</h3>
+              <ul class="channels">
+                {ownChannels.onDemand.map((ch, i) => (
+                  <li>
+                    <span>{ch.title}</span>
+                    <span class="own-channel-actions">
+                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
+                        VLC
+                      </a>
+                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
+                        Infuse
+                      </a>
+                      <a
+                        class="ghost small-btn"
+                        href={`/events/${event.id}/playlist.m3u?tier=vod&n=${i}`}
+                      >
+                        .m3u
+                      </a>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+
+          {ownChannels.matches.length > 0 ? (
+            <>
+              <p class="muted small">
+                From the playlist you added. Opening one hands a file to your own player — nothing
+                is streamed through GenreWatch.
+              </p>
+              <ul class="channels">
+                {ownChannels.matches.map((ch, i) => (
+                  <li>
+                    <span>{ch.title}</span>
+                    <span class="own-channel-actions">
+                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
+                        VLC
+                      </a>
+                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
+                        Infuse
+                      </a>
+                      <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?n=${i}`}>
+                        .m3u
+                      </a>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : ownChannels.onDemand?.length > 0 ? null : (
+            <p class="empty">
+              None of your {ownChannels.channelCount.toLocaleString('en-US')} entries look like they
+              carry this. Provider names vary a lot, so it may still be in there under a name we did
+              not recognise.
+            </p>
+          )}
+
+          {/* A different claim, worded as one: a 24/7 genre channel carries
+              whatever is on, which is not the same as having this. */}
+          {ownChannels.genre?.length > 0 ? (
+            <>
+              <h3>Channels for this genre</h3>
+              <p class="muted small">
+                These carry the genre rather than this specific thing, so they may or may not be
+                showing it.
+              </p>
+              <ul class="channels">
+                {ownChannels.genre.map((ch, i) => (
+                  <li>
+                    <span>{ch.title}</span>
+                    <span class="own-channel-actions">
+                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
+                        VLC
+                      </a>
+                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
+                        Infuse
+                      </a>
+                      <a
+                        class="ghost small-btn"
+                        href={`/events/${event.id}/playlist.m3u?tier=genre&n=${i}`}
+                      >
+                        .m3u
+                      </a>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
         </section>
       ) : null}
+
+      <Ad />
 
       <section id="comments">
         <h2>Comments</h2>
@@ -360,7 +668,22 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
           <ul class="comments">
             {comments.map((c) => (
               <li>
-                <span class="who">{c.email.split('@')[0]}</span>
+                {/* A chosen name where there is one. Signing a public comment with
+                    the local part of an address was publishing something nobody
+                    chose to publish; a display name or handle replaces it the
+                    moment one is set. */}
+                {/* Linked only when there is a handle AND the profile is public.
+                    A private profile 404s to everyone but its owner, so a link
+                    there is a link to a dead page -- and the name still shows,
+                    because being named on your own comment is not the same as
+                    having a profile people can open. */}
+                {c.handle && c.profile_public ? (
+                  <a class="who comment-author" href={`/u/${c.handle}`}>
+                    {commenterName(c)}
+                  </a>
+                ) : (
+                  <span class="who">{commenterName(c)}</span>
+                )}
                 <LocalTime at={c.created_at} />
                 <p>{c.body}</p>
               </li>
@@ -387,7 +710,107 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
   );
 };
 
-export const Following = ({ user, events, follows, vapidKey, calendarUrl }) => (
+/**
+ * Search results, past and future together.
+ *
+ * The one page here that is not a calendar. A film from 1999 and one out next
+ * month are equally good answers to "do you have this", so nothing is filtered by
+ * date and the year is shown instead -- which is what tells them apart.
+ */
+export const SearchPage = ({ user, term, category, results, owned }) => (
+  <Layout title={term ? `${term} — search` : 'Search'} user={user}>
+    <h1>Search</h1>
+
+    <form method="get" action="/search" class="searchbar">
+      <label class="field">
+        <span class="visually-hidden">Search</span>
+        <input
+          type="search"
+          name="q"
+          value={term ?? ''}
+          placeholder="A show, a film, an artist, a rocket"
+          autocomplete="off"
+          autofocus
+        />
+      </label>
+      <select name="category">
+        <option value="">Everything</option>
+        {Object.entries(CATEGORY_LABEL).map(([slug, meta]) => (
+          <option value={slug} selected={slug === category}>
+            {meta.name}
+          </option>
+        ))}
+      </select>
+      <button class="cta" type="submit">
+        Search
+      </button>
+    </form>
+
+    {!term ? (
+      <p class="muted">
+        Everything we know about, whether it is out yet or not. If you have added a channel list,
+        results say which ones you already have.
+      </p>
+    ) : results.length === 0 ? (
+      <p class="empty">Nothing matched “{term}”.</p>
+    ) : (
+      <ul class="results">
+        {results.map((r) => (
+          <li class="result">
+            {r.image_url ? (
+              <img src={r.image_url} alt="" loading="lazy" width="60" height="90" />
+            ) : (
+              <span class="subject-blank" />
+            )}
+            <div class="result-main">
+              <a href={`/subjects/${r.slug}`}>{r.display_name}</a>
+              <span class="meta">
+                {CATEGORY_LABEL[r.category]?.name ?? r.category}
+                {r.starts_at ? ` · ${new Date(r.starts_at).getUTCFullYear()}` : ''}
+                {r.upcoming > 0 ? ' · coming up' : ''}
+              </span>
+              {r.description ? <p class="result-blurb">{r.description}</p> : null}
+            </div>
+            {/* The answer to the question that brought them here. */}
+            {owned?.has?.(r.id) ? (
+              <span class="badge owned" title="Found in your channel list">
+                In your list
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    )}
+
+    {/* Only once there is something to sit under. An ad above an empty result
+        set is the only thing on the page, which is both worse to read and
+        billed identically. */}
+    {term && results.length > 0 ? <Ad format="text_link" /> : null}
+  </Layout>
+);
+
+/**
+ * "3 names and 12 genres", for the confirm text and for the receipt afterwards.
+ *
+ * Both halves need the breakdown rather than a total. The question anyone pressing
+ * "Unfollow all" has is whether the names they picked one at a time are included --
+ * the button on /genres deliberately spares them, so the answer is not obvious --
+ * and the question afterwards is whether those names really went. A bare number
+ * answers neither. Counts come from a follow list, or from the delete's own tally.
+ */
+const countPhrase = (follows, counts) => {
+  const subjects = counts
+    ? counts.subjects
+    : follows.filter((f) => f.subject_type === 'subject').length;
+  const genres = counts ? counts.genres : follows.filter((f) => f.subject_type === 'genre').length;
+  const parts = [];
+  if (subjects)
+    parts.push(`${subjects.toLocaleString('en-US')} ${subjects === 1 ? 'name' : 'names'}`);
+  if (genres) parts.push(`${genres.toLocaleString('en-US')} ${genres === 1 ? 'genre' : 'genres'}`);
+  return parts.join(' and ') || 'nothing';
+};
+
+export const Following = ({ user, events, follows, cleared, vapidKey, calendarUrl }) => (
   <Layout title="Your calendar" user={user} vapidKey={vapidKey}>
     <h1>Your calendar</h1>
 
@@ -485,13 +908,39 @@ export const Following = ({ user, events, follows, vapidKey, calendarUrl }) => (
       </section>
     ) : null}
 
+    {cleared ? (
+      <p class="feedback ok" role="status">
+        {cleared.removed === 0
+          ? 'There was nothing left to unfollow.'
+          : `Unfollowed ${cleared.removed.toLocaleString('en-US')} — ${countPhrase(null, cleared)}.`}
+      </p>
+    ) : null}
+
     {follows.length === 0 ? (
       <p class="empty">
         You're not following anything yet. <a href="/genres">Browse by genre</a> to find something.
       </p>
     ) : (
       <>
-        <h2>Following ({follows.length})</h2>
+        <div class="follows-head">
+          <h2>Following ({follows.length})</h2>
+          {/* The wipe. Unlike the one on /genres -- which is the undo for "follow
+              everything" and spares the individual names on purpose -- this clears
+              the list it sits above, names included, because that list is what is
+              being looked at. data-confirm makes the browser ask first and names
+              what goes; with script off the form still posts, the same trade the
+              rest of the site makes, which is why the count is also on the receipt
+              afterwards. */}
+          <form method="post" action="/api/unfollow-everything" class="inline">
+            <button
+              type="submit"
+              class="ghost small-btn"
+              data-confirm={`Unfollow all ${follows.length}? That is ${countPhrase(follows)}. Your reminders and calendar stay empty until you follow something again.`}
+            >
+              Unfollow all
+            </button>
+          </form>
+        </div>
         <ul class="chips">
           {follows.map((f) => (
             <li class="chip">
@@ -563,7 +1012,213 @@ export const Channels = ({ user, playlist, groups }) => (
   </Layout>
 );
 
-export const SignIn = ({ mode, sent, next }) => (
+/**
+ * Somebody's profile.
+ *
+ * What is on it is exactly what a follow list already implies: the genres and names
+ * they follow, and the schedule that falls out of following them. Nothing here is
+ * derived from anything they did not choose to put on the account -- no email, no
+ * activity, no counts of what they clicked.
+ *
+ * The owner sees the same page everyone else does, plus a line saying whether anyone
+ * else can. That is deliberate: a privacy switch you cannot see the effect of is a
+ * privacy switch nobody trusts.
+ */
+export const ProfilePage = ({ user, profile, follows, upcoming, isOwner }) => {
+  const name = profile.display_name || `@${profile.handle}`;
+  const genres = follows.filter((f) => f.subject_type === 'genre');
+  const subjects = follows.filter((f) => f.subject_type === 'subject');
+
+  return (
+    <Layout
+      title={name}
+      user={user}
+      canonical={profile.profile_public ? `/u/${profile.handle}` : undefined}
+    >
+      <div class="page-head">
+        <h1>{name}</h1>
+        {profile.display_name ? <p class="muted">@{profile.handle}</p> : null}
+      </div>
+
+      {isOwner ? (
+        <p class="feedback info" role="status">
+          {profile.profile_public
+            ? 'This is your profile as everyone else sees it.'
+            : 'Only you can see this. Turn on a public profile in Settings to share it.'}{' '}
+          <a href="/settings">Settings</a>
+        </p>
+      ) : null}
+
+      {profile.bio ? <p class="bio">{profile.bio}</p> : null}
+
+      <h2>Coming up</h2>
+      <EventList
+        events={upcoming}
+        emptyText={
+          isOwner
+            ? 'Nothing coming up for what you follow yet.'
+            : `Nothing coming up for what ${name} follows.`
+        }
+      />
+
+      <h2>Following ({follows.length})</h2>
+      {follows.length === 0 ? (
+        <p class="empty">
+          {isOwner ? (
+            <>
+              You're not following anything yet. <a href="/genres">Browse by genre</a>.
+            </>
+          ) : (
+            'Nothing yet.'
+          )}
+        </p>
+      ) : (
+        <>
+          {genres.length > 0 ? (
+            <>
+              <h3>Genres</h3>
+              <ul class="chips">
+                {genres.map((f) => (
+                  <li class="chip">
+                    <a href={`/genres/${f.slug}`}>{f.label}</a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {subjects.length > 0 ? (
+            <>
+              <h3>Names</h3>
+              <ul class="chips">
+                {subjects.map((f) => (
+                  <li class="chip">
+                    <a href={`/subjects/${f.slug}`}>{f.label}</a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </>
+      )}
+    </Layout>
+  );
+};
+
+/**
+ * What an invited person is called back to the inviter.
+ *
+ * A chosen name or handle, and otherwise nothing. Deliberately NOT the fallback
+ * commenterName uses: signing up is not publishing, and somebody who accepted an
+ * invite never agreed to have a fragment of their address reported to whoever sent
+ * it. "Someone new" is the honest answer and costs nothing.
+ */
+const inviteeName = (row) => row.display_name || (row.handle ? `@${row.handle}` : 'Someone new');
+
+export const Invite = ({
+  user,
+  url,
+  accepted,
+  remaining,
+  dailyLimit,
+  maxPerSubmission,
+  notice,
+  error,
+}) => (
+  <Layout title="Invite friends" user={user}>
+    <h1>Invite friends</h1>
+    <p class="muted">
+      Anyone who follows something will get told before it drops. It is free, there are no ads, and
+      there is nothing to unlock — so this is a recommendation rather than a referral scheme.
+    </p>
+
+    {notice ? (
+      <p class="feedback ok" role="status">
+        {notice}
+      </p>
+    ) : null}
+    {error ? (
+      <p class="feedback error" role="status">
+        {error}
+      </p>
+    ) : null}
+
+    {/* The link first, because it is the half with no limits and no risk: they
+        send it themselves, through whatever they already use. */}
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Your link</h2>
+        <p class="card-desc">
+          Send this however you like. It does not expire and there is no limit on how many people
+          use it.
+        </p>
+      </div>
+      <div class="field">
+        <div class="copy-row">
+          <input
+            id="invite-url"
+            class="input mono"
+            type="text"
+            readonly
+            value={url}
+            spellcheck="false"
+            aria-label="Your invite link"
+          />
+          <button type="button" class="ghost" data-copy="#invite-url">
+            Copy
+          </button>
+        </div>
+      </div>
+    </section>
+
+    {/* And the half that needs limits, with the limit stated rather than
+        discovered by hitting it. */}
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Or we can email it</h2>
+        <p class="card-desc">
+          Up to {maxPerSubmission} addresses at a time, {dailyLimit} a day. They get one email, from
+          us, saying you suggested it — your address is not in it, and we do not create an account
+          for them or email them again.
+        </p>
+      </div>
+      <form method="post" action="/api/invite/email" class="invite-form">
+        <label>
+          Email addresses
+          <textarea
+            name="emails"
+            rows="3"
+            required
+            placeholder="one@example.com, two@example.com"
+          />
+        </label>
+        <button class="cta" type="submit" disabled={remaining <= 0}>
+          {remaining > 0 ? 'Send' : 'Back tomorrow'}
+        </button>
+      </form>
+      <p class="muted small">
+        {remaining > 0
+          ? `${remaining} left today.`
+          : 'That is today’s limit. Your link above still works.'}
+      </p>
+    </section>
+
+    <h2>Who has joined</h2>
+    {accepted.length === 0 ? (
+      <p class="empty">Nobody yet. Nothing happens until somebody signs up through your link.</p>
+    ) : (
+      <ul class="invitees">
+        {accepted.map((a) => (
+          <li>
+            <span>{inviteeName(a)}</span>
+            <span class="muted small">joined {new Date(a.claimed_at).toLocaleDateString()}</span>
+          </li>
+        ))}
+      </ul>
+    )}
+  </Layout>
+);
+
+export const SignIn = ({ mode, sent, next, passwordError }) => (
   <Layout title={mode === 'signup' ? 'Create your account' : 'Sign in'}>
     <section class="auth">
       <h1>{mode === 'signup' ? 'Create your account' : 'Sign in'}</h1>
@@ -602,6 +1257,45 @@ export const SignIn = ({ mode, sent, next }) => (
           </button>
           <p id="passkey-signin-msg" class="feedback" hidden />
 
+          {/* The third way in, and the one that exists for televisions.
+              A plain form with no script: on the device this is for, a remote
+              control is the keyboard and the browser may do very little else. It
+              is last because it is the weakest of the three and should not be the
+              obvious choice on a phone -- but it is on the page rather than behind
+              a toggle, because a toggle is one more thing to hit with a D-pad. */}
+          <details class="password-signin" open={Boolean(passwordError)}>
+            <summary>Use a password</summary>
+            {passwordError ? (
+              <p class="feedback error" role="status">
+                {passwordError}
+              </p>
+            ) : null}
+            <form method="post" action="/api/auth/password">
+              <input type="hidden" name="next" value={next ?? '/following'} />
+              <label>
+                Email
+                <input
+                  type="email"
+                  name="email"
+                  required
+                  autocomplete="username"
+                  placeholder="you@example.com"
+                />
+              </label>
+              <label>
+                Password
+                <input type="password" name="password" required autocomplete="current-password" />
+              </label>
+              <button class="ghost" type="submit">
+                Sign in
+              </button>
+            </form>
+            <p class="muted small">
+              Only if you have set one, in Settings, from a device you were already signed in on.
+              There is no password reset — use the emailed link, which always works.
+            </p>
+          </details>
+
           <p class="muted small">
             {mode === 'signup' ? (
               <>
@@ -638,7 +1332,19 @@ const COMMON_ZONES = [
   'UTC',
 ];
 
-export const Settings = ({ user, prefs, passkeys, playlist, playlistNotice, playlistError }) => (
+export const Settings = ({
+  user,
+  prefs,
+  passkeys,
+  playlist,
+  playlistNotice,
+  playlistError,
+  profileNotice,
+  profileError,
+  passwordNotice,
+  passwordError,
+  passwordMinLength,
+}) => (
   <Layout title="Settings" user={user}>
     <h1>Settings</h1>
 
@@ -709,6 +1415,61 @@ export const Settings = ({ user, prefs, passkeys, playlist, playlistNotice, play
         The address is stored encrypted because it usually contains your username and password. Only
         you ever see it, and removing the list deletes it.
       </p>
+    </section>
+
+    {/* The name a comment is signed with. Before this there was none, so a public
+        comment carried the local part of the author's email address -- something
+        they never chose to publish. */}
+    <section>
+      <h2>Your name</h2>
+      <p class="muted small">
+        What your comments are signed with. Without one they fall back to part of your email
+        address, which is not something you chose to publish.
+      </p>
+      {profileError ? <p class="feedback error">{profileError}</p> : null}
+      {profileNotice ? <p class="feedback ok">{profileNotice}</p> : null}
+      <form method="post" action="/api/profile">
+        <label class="field">
+          <span>Display name</span>
+          <input
+            type="text"
+            name="display_name"
+            maxlength="60"
+            value={user.display_name ?? ''}
+            placeholder="How you want to be known"
+            autocomplete="nickname"
+          />
+        </label>
+        <label class="field">
+          <span>Handle (optional)</span>
+          <input
+            type="text"
+            name="handle"
+            maxlength="30"
+            value={user.handle ?? ''}
+            placeholder="letters, numbers, underscores"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label class="check">
+          <input type="checkbox" name="profile_public" checked={user.profile_public !== false} />
+          Let others see a profile page for me
+        </label>
+        <button class="cta" type="submit">
+          Save name
+        </button>
+      </form>
+      {/* The switch above is abstract until you can see what it produces, so the
+          page it controls is one click away. Only once a handle exists, because
+          without one there is no page. */}
+      {user.handle ? (
+        <p class="muted small">
+          Your profile is at <a href={`/u/${user.handle}`}>/u/{user.handle}</a> — it shows what you
+          follow and what is coming up{' '}
+          {user.profile_public === false ? 'and only you can see it.' : 'to anyone who opens it.'}
+        </p>
+      ) : null}
     </section>
 
     <section>
@@ -827,6 +1588,71 @@ export const Settings = ({ user, prefs, passkeys, playlist, playlistNotice, play
         Add a passkey
       </button>
       <p id="add-passkey-msg" class="feedback" hidden />
+    </section>
+
+    {/* A password, for the television.
+        Set from here and only from here: whoever can set one already has this
+        session, so this can never be how an account is first taken over. It is
+        described as what it is rather than sold as an upgrade -- it is the weakest
+        of the three ways in, and worth having only where the other two cannot
+        work. */}
+    <section>
+      <h2>Password</h2>
+      <p class="muted small">
+        For devices that cannot open an emailed link or hold a passkey — a television, mostly. The
+        link and your passkeys keep working either way, so there is no password reset here: if you
+        forget it, sign in with a link and set a new one.
+      </p>
+
+      {passwordNotice ? (
+        <p class="feedback ok" role="status">
+          {passwordNotice}
+        </p>
+      ) : null}
+      {passwordError ? (
+        <p class="feedback error" role="status">
+          {passwordError}
+        </p>
+      ) : null}
+
+      <p class="muted">
+        {user.password_set_at
+          ? `Set ${new Date(user.password_set_at).toLocaleDateString()}.`
+          : 'No password set.'}
+      </p>
+
+      <form method="post" action="/api/auth/password/set">
+        <label>
+          {user.password_set_at ? 'New password' : 'Password'}
+          <input
+            type="password"
+            name="password"
+            required
+            minlength={passwordMinLength}
+            autocomplete="new-password"
+          />
+        </label>
+        <label>
+          Again
+          <input type="password" name="confirm" required autocomplete="new-password" />
+        </label>
+        <button class="ghost" type="submit">
+          {user.password_set_at ? 'Change it' : 'Set a password'}
+        </button>
+      </form>
+
+      {user.password_set_at ? (
+        <form method="post" action="/api/auth/password/set" class="inline">
+          <input type="hidden" name="remove" value="on" />
+          <button
+            class="ghost small-btn"
+            type="submit"
+            data-confirm="Remove your password? You will still be able to sign in with an emailed link or a passkey."
+          >
+            Remove it
+          </button>
+        </form>
+      ) : null}
     </section>
 
     <section>

@@ -60,13 +60,50 @@ describe('migrations', () => {
     }
   });
 
-  test('there is no password column anywhere', async () => {
-    expect(
-      await rows(
-        `select table_name, column_name from information_schema.columns
-         where table_schema='public' and column_name ilike '%password%'`,
-      ),
-    ).toEqual([]);
+  /**
+   * There WAS a rule here that no password column may exist anywhere, and it held
+   * until a television needed to sign in -- a device with no mail client to open a
+   * link in and no authenticator to hold a passkey, where "use another device" is
+   * not an answer because the TV is the device.
+   *
+   * The rule it is replaced by keeps what the original was protecting. A password
+   * is optional, never issued, and never required: an account has one only if
+   * somebody deliberately set one from inside a session. So the check is no longer
+   * "does this column exist" but "can an account still exist without it", which is
+   * the property that actually mattered.
+   */
+  test('the only password columns are the optional ones, and they are opt-in', async () => {
+    const cols = await rows(
+      `select table_name, column_name, is_nullable, column_default
+         from information_schema.columns
+        where table_schema='public' and column_name ilike '%password%'
+        order by table_name, column_name`,
+    );
+
+    expect(cols.map((c) => `${c.table_name}.${c.column_name}`)).toEqual([
+      'users.password_hash',
+      'users.password_set_at',
+    ]);
+
+    for (const c of cols) {
+      // Nullable and undefaulted: a new account has no password and needs none.
+      expect({ col: c.column_name, nullable: c.is_nullable, def: c.column_default }).toEqual({
+        col: c.column_name,
+        nullable: 'YES',
+        def: null,
+      });
+    }
+  });
+
+  test('a new account is created without a password', async () => {
+    // The invariant the old rule was really defending: signing up never produces a
+    // credential nobody chose.
+    const u = await one(
+      `insert into users (email) values ('fresh@example.test')
+       returning password_hash, password_set_at`,
+    );
+    expect(u.password_hash).toBeNull();
+    expect(u.password_set_at).toBeNull();
   });
 });
 

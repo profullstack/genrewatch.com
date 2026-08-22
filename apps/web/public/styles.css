@@ -137,22 +137,29 @@ main {
 /* Big enough to actually read the mark at a glance; it now carries the name on
    its own, with no wordmark beside it. */
 .brand-logo {
-  /* Big, deliberately. The mark is an illustrated badge with "TipOffWatch" spelled
-     inside it, so it is the wordmark -- not an icon sitting next to one. Sized to
-     be read, not to fit a conventional header. Four goes at this: 44, 33, 48 and 72
-     were all too small because I was sizing the box instead of looking at the art. */
-  width: 112px;
-  height: 112px;
-  border-radius: 12px;
+  /*
+   * Sized by HEIGHT, with the width left to the image.
+   *
+   * Two shapes come through this one element -- a 3:1 wordmark on a wide screen
+   * and a 1:1 mark on a narrow one -- so pinning both dimensions would squash one
+   * of them. Height plus `width: auto` renders each at its own ratio, and the
+   * width/height attributes on the markup still reserve the right box before the
+   * bytes arrive.
+   */
+  height: 56px;
+  width: auto;
   display: block;
-  object-fit: contain;
 }
-@media (max-width: 40rem) {
+
+@media (max-width: 34rem) {
   .brand-logo {
-    width: 76px;
-    height: 76px;
+    /* The square mark at this height, which is where the swap pays: a wordmark
+       shrunk to fit a phone header is unreadable long before it is small. */
+    height: 40px;
+    border-radius: 10px;
   }
 }
+
 .topbar nav {
   display: flex;
   gap: 1.4rem;
@@ -1723,4 +1730,332 @@ ul.follows .meta {
   .stats .stat {
     min-width: 7rem;
   }
+}
+
+/* ============================================================== event detail ==
+   A banner, a poster and the facts. Three pieces rather than one image, because
+   a 16:9 backdrop and a 2:3 poster are different shapes doing different jobs. */
+
+.event-banner {
+  margin: 1.25rem 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  /* Reserve the shape before the bytes land, so the page does not jump. */
+  aspect-ratio: 16 / 7;
+}
+.event-banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.event-detail {
+  display: flex;
+  gap: 1.25rem;
+  align-items: flex-start;
+  margin: 1.5rem 0;
+}
+.event-poster {
+  flex: 0 0 180px;
+  width: 180px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  display: block;
+  background: var(--panel);
+}
+.event-facts {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tagline {
+  font-family: var(--disp);
+  font-size: 1.3rem;
+  color: var(--accent);
+  margin: 0 0 0.6rem;
+}
+
+/* The facts, as a definition list in all but markup: label left, value right,
+   one per line, so scanning for "Runtime" does not mean reading a paragraph. */
+ul.factlist {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0 0;
+}
+ul.factlist li {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.95rem;
+}
+ul.factlist li > span:first-child {
+  flex: 0 0 7.5rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 0.2rem;
+}
+
+.cast,
+.watch {
+  margin: 1rem 0 0;
+  font-size: 0.95rem;
+  color: var(--fg);
+}
+.cast .stat-label,
+.watch .stat-label {
+  margin-bottom: 0.25rem;
+}
+
+@media (max-width: 40rem) {
+  .event-detail {
+    flex-direction: column;
+  }
+  /* The poster stops being a sidebar and becomes a thumbnail: at phone width a
+     180px column leaves the facts in a gutter. */
+  .event-poster {
+    flex: none;
+    width: 128px;
+  }
+  ul.factlist li {
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  ul.factlist li > span:first-child {
+    flex: none;
+  }
+  .event-banner {
+    aspect-ratio: 16 / 9;
+  }
+}
+
+/* ==================================================================== search ==
+   The one page that is not a calendar: past and future together, so the year is
+   what tells a 1999 film from one out next month. */
+
+.searchbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin: 1rem 0 1.5rem;
+}
+.searchbar .field {
+  flex: 1 1 18rem;
+  margin: 0;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+ul.results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+li.result {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--line);
+}
+li.result img {
+  border-radius: 6px;
+  flex: none;
+  object-fit: cover;
+  background: var(--panel);
+}
+.result-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.result-main a {
+  font-family: var(--disp);
+  font-size: 1.2rem;
+}
+.result-blurb {
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin: 0.3rem 0 0;
+  /* Two lines: enough to tell two films apart, not enough to bury the next one. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.badge.owned {
+  background: var(--ok);
+  color: oklch(0.16 0.02 155);
+  flex: none;
+}
+
+/* ======================================================================= ads ==
+   Network units. Marked, spaced and never dressed up as content.
+
+   The label is not decoration and not a legal box-tick: an unlabelled ad in the
+   middle of a genre page reads as an editorial recommendation, which is exactly
+   the confusion that makes people stop trusting a listing site. It costs one
+   line of 11px text. */
+
+.ad {
+  display: block;
+  margin: 2rem 0;
+  padding: 0.75rem 0;
+  /* Hairlines above and below rather than a filled card: it separates without
+     competing with the real cards on the same page. */
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: center;
+}
+.ad-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+/*
+ * Reserve the box before the creative lands.
+ *
+ * ad.js fills the unit after DOMContentLoaded, so without a reserved height the
+ * page reflows and whatever the reader was looking at jumps. The height matches
+ * the format's own dimensions plus the label, so nothing moves when it fills --
+ * and nothing collapses if the slot is inactive and never fills at all.
+ */
+.ad-banner_300x250 {
+  min-height: calc(250px + 2rem);
+}
+.ad-text_link {
+  min-height: calc(40px + 2rem);
+}
+.ad [data-cp-ad] {
+  display: flex;
+  justify-content: center;
+}
+
+@media (max-width: 34rem) {
+  .ad {
+    margin: 1.5rem 0;
+  }
+}
+
+/* Follow-everything, on the genre index. Uses the card shell so it reads as one
+   deliberate action rather than a stray button above the list. */
+.follow-all {
+  margin: 1rem 0 1.5rem;
+}
+.follow-all .card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* "Following (12)" with Unfollow all opposite it, on the calendar page. The
+   heading keeps its own margins -- baseline aligns the button with the text rather
+   than with the box -- and the button drops under the heading on a narrow screen
+   instead of squeezing the count. */
+.follows-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+.follows-head h2 {
+  margin-bottom: 0.4rem;
+}
+
+/* Player buttons on a channel row. They wrap under the name on a phone, which is
+   where these are actually tapped -- and where the .m3u is removed at runtime, so
+   the row is often two buttons rather than three. */
+.own-channel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex: none;
+}
+.player-hint {
+  margin-top: 0.75rem;
+}
+
+/* The password form on the sign-in page. Folded away by default: it is the
+   weakest of the three ways in and should not be the obvious choice on a phone,
+   but it stays on the page rather than behind a link, because one more navigation
+   is one more thing to hit with a D-pad. */
+.password-signin {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+.password-signin summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.password-signin[open] summary {
+  margin-bottom: 0.5rem;
+}
+
+/* Who has accepted an invite. Deliberately plain: it is a list of names and
+   dates, and there is nothing else on it to show. */
+.invitees {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.invitees li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.4rem;
+}
+
+/* The invite form. A bare label wrapping a textarea does not stack the way the
+   auth forms do, so it is made to -- otherwise the label sits beside the box and
+   Send ends up floating next to it. */
+.invite-form label {
+  display: block;
+  margin-bottom: 0.6rem;
+}
+.invite-form textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  background: var(--panel);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.7rem;
+  font: inherit;
+  resize: vertical;
+}
+
+/* A comment author who has a public profile. Coloured only on hover so a thread
+   does not turn into a wall of links. */
+.comment-author {
+  color: inherit;
+  text-decoration: none;
+}
+.comment-author:hover {
+  color: var(--accent);
 }
