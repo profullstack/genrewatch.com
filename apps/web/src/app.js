@@ -166,12 +166,46 @@ for (const [name, target] of Object.entries(EXTERNAL_CATEGORIES)) {
 }
 
 /** Every genre we carry, grouped by the medium it belongs to. */
-app.get('/genres', async (c) =>
-  cached(c, 'page:genres', 300, async () => {
+app.get('/genres', async (c) => {
+  const user = c.get('user');
+  // Signed out this is byte-identical and cached; signed in it carries their own
+  // follow counts, and cached() already declines to store a signed-in render.
+  const [counts, upcoming] = user
+    ? await Promise.all([q.genreFollowCounts(user.id), q.upcomingEventCount()])
+    : [null, null];
+
+  return cached(c, 'page:genres', 300, async () => {
     const [categories, genres] = await Promise.all([q.listCategories(), q.listGenres({})]);
-    return render(<GenresIndex user={c.get('user')} categories={categories} genres={genres} />);
-  }),
-);
+    return render(
+      <GenresIndex
+        user={user}
+        categories={categories}
+        genres={genres}
+        genreCounts={counts}
+        upcoming={upcoming}
+      />,
+    );
+  });
+});
+
+/**
+ * Follow every genre at once, and the undo beside it.
+ *
+ * Deliberately genres only. Following a name was a decision made one at a time and
+ * this must not sweep it away -- the undo for "follow everything" is "stop
+ * following everything", not "forget what I picked".
+ */
+app.post('/api/follow-all', async (c) => {
+  const user = requireUser(c);
+  const added = await q.followAllGenres(user.id);
+  return respond(c, { json: { added }, redirectTo: `/genres?followed=${added}` });
+});
+
+app.post('/api/unfollow-all', async (c) => {
+  const user = requireUser(c);
+  const removed = await q.unfollowAllGenres(user.id);
+  return respond(c, { json: { removed }, redirectTo: `/genres?unfollowed=${removed}` });
+});
 
 app.get('/categories/:name', async (c) => {
   const user = c.get('user');
@@ -294,17 +328,47 @@ app.get('/api/v1/search', async (c) => {
 app.get('/following', async (c) => {
   const user = requireUser(c);
   const [events, follows] = await Promise.all([q.upcomingForUser(user.id), q.listFollows(user.id)]);
+  // What the last clear removed, if that is how we got here. Read back off the query
+  // string rather than held in a session: the redirect is the only thing carrying it,
+  // and a stale flash on a reload is worse than none.
+  const cleared = c.req.query('cleared')
+    ? {
+        removed: Number(c.req.query('cleared')) || 0,
+        subjects: Number(c.req.query('subjects')) || 0,
+        genres: Number(c.req.query('genres')) || 0,
+      }
+    : null;
   return c.html(
     await render(
       <Following
         user={user}
         events={events}
         follows={follows}
+        cleared={cleared}
         vapidKey={config.push.publicKey}
         calendarUrl={`${config.siteUrl}/calendar/me/${user.calendar_token}.ics`}
       />,
     ),
   );
+});
+
+/**
+ * Clear the whole follow list, from the calendar page.
+ *
+ * Sibling of /api/unfollow-all, and not a duplicate of it: that one is the undo for
+ * the follow-everything button and spares hand-picked names on purpose. This one is
+ * pressed while looking at the list it empties, so it takes the names too --
+ * clearing half of what is on screen is the behaviour that would surprise. The
+ * counts come back so the page can say what went, rather than leaving someone to
+ * work out from an empty list whether their names were included.
+ */
+app.post('/api/unfollow-everything', async (c) => {
+  const user = requireUser(c);
+  const result = await q.unfollowAll(user.id);
+  return respond(c, {
+    json: result,
+    redirectTo: `/following?cleared=${result.removed}&subjects=${result.subjects}&genres=${result.genres}`,
+  });
 });
 
 app.get('/events/:id', async (c) => {

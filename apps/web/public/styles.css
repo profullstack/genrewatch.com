@@ -1953,3 +1953,29 @@ li.result img {
     margin: 1.5rem 0;
   }
 }
+
+/* Follow-everything, on the genre index. Uses the card shell so it reads as one
+   deliberate action rather than a stray button above the list. */
+.follow-all {
+  margin: 1rem 0 1.5rem;
+}
+.follow-all .card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* "Following (12)" with Unfollow all opposite it, on the calendar page. The
+   heading keeps its own margins -- baseline aligns the button with the text rather
+   than with the box -- and the button drops under the heading on a narrow screen
+   instead of squeezing the count. */
+.follows-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+.follows-head h2 {
+  margin-bottom: 0.4rem;
+}

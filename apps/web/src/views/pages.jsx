@@ -94,7 +94,7 @@ export const Landing = ({ user, today, vapidKey }) => (
 );
 
 /** Every genre we carry, grouped by category. */
-export const GenresIndex = ({ user, categories, genres }) => {
+export const GenresIndex = ({ user, categories, genres, genreCounts, upcoming }) => {
   const byCategory = new Map();
   for (const g of genres) {
     if (!byCategory.has(g.category)) byCategory.set(g.category, []);
@@ -108,6 +108,48 @@ export const GenresIndex = ({ user, categories, genres }) => {
         {genres.length.toLocaleString('en-US')} genres across {categories.length} categories.
         Following a genre means you hear about everything filed under it.
       </p>
+
+      {/* Follow everything, with the size of "everything" stated before it is
+          pressed rather than discovered afterwards. Following every genre means a
+          reminder for every release in the catalogue at every offset turned on,
+          which is thousands of notifications -- a button that enrols someone in
+          that quietly is not a feature, it is a trap. */}
+      {user && genreCounts ? (
+        <section class="follow-all card">
+          <div class="card-head">
+            <h2 class="card-title">
+              {genreCounts.following >= genreCounts.total
+                ? 'You follow every genre'
+                : 'Follow everything'}
+            </h2>
+            <p class="card-desc">
+              {genreCounts.following >= genreCounts.total
+                ? `All ${genreCounts.total.toLocaleString('en-US')} genres. You will be told about every release in the catalogue.`
+                : `All ${genreCounts.total.toLocaleString('en-US')} genres in one go — about ${(upcoming ?? 0).toLocaleString('en-US')} releases in the next fortnight, and a reminder for each one at every offset you have turned on.`}
+              {genreCounts.following > 0 && genreCounts.following < genreCounts.total
+                ? ` You follow ${genreCounts.following.toLocaleString('en-US')} so far.`
+                : ''}
+            </p>
+          </div>
+          <div class="card-actions">
+            {genreCounts.following < genreCounts.total ? (
+              <form method="post" action="/api/follow-all" class="inline">
+                <button class="cta" type="submit">
+                  Follow everything!
+                </button>
+              </form>
+            ) : null}
+            {genreCounts.following > 0 ? (
+              <form method="post" action="/api/unfollow-all" class="inline">
+                <button class="ghost" type="submit">
+                  Unfollow all genres
+                </button>
+              </form>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
       <CategoryNav />
 
       {[...byCategory.entries()].map(([category, list]) => (
@@ -670,7 +712,28 @@ export const SearchPage = ({ user, term, category, results, owned }) => (
   </Layout>
 );
 
-export const Following = ({ user, events, follows, vapidKey, calendarUrl }) => (
+/**
+ * "3 names and 12 genres", for the confirm text and for the receipt afterwards.
+ *
+ * Both halves need the breakdown rather than a total. The question anyone pressing
+ * "Unfollow all" has is whether the names they picked one at a time are included --
+ * the button on /genres deliberately spares them, so the answer is not obvious --
+ * and the question afterwards is whether those names really went. A bare number
+ * answers neither. Counts come from a follow list, or from the delete's own tally.
+ */
+const countPhrase = (follows, counts) => {
+  const subjects = counts
+    ? counts.subjects
+    : follows.filter((f) => f.subject_type === 'subject').length;
+  const genres = counts ? counts.genres : follows.filter((f) => f.subject_type === 'genre').length;
+  const parts = [];
+  if (subjects)
+    parts.push(`${subjects.toLocaleString('en-US')} ${subjects === 1 ? 'name' : 'names'}`);
+  if (genres) parts.push(`${genres.toLocaleString('en-US')} ${genres === 1 ? 'genre' : 'genres'}`);
+  return parts.join(' and ') || 'nothing';
+};
+
+export const Following = ({ user, events, follows, cleared, vapidKey, calendarUrl }) => (
   <Layout title="Your calendar" user={user} vapidKey={vapidKey}>
     <h1>Your calendar</h1>
 
@@ -768,13 +831,39 @@ export const Following = ({ user, events, follows, vapidKey, calendarUrl }) => (
       </section>
     ) : null}
 
+    {cleared ? (
+      <p class="feedback ok" role="status">
+        {cleared.removed === 0
+          ? 'There was nothing left to unfollow.'
+          : `Unfollowed ${cleared.removed.toLocaleString('en-US')} — ${countPhrase(null, cleared)}.`}
+      </p>
+    ) : null}
+
     {follows.length === 0 ? (
       <p class="empty">
         You're not following anything yet. <a href="/genres">Browse by genre</a> to find something.
       </p>
     ) : (
       <>
-        <h2>Following ({follows.length})</h2>
+        <div class="follows-head">
+          <h2>Following ({follows.length})</h2>
+          {/* The wipe. Unlike the one on /genres -- which is the undo for "follow
+              everything" and spares the individual names on purpose -- this clears
+              the list it sits above, names included, because that list is what is
+              being looked at. data-confirm makes the browser ask first and names
+              what goes; with script off the form still posts, the same trade the
+              rest of the site makes, which is why the count is also on the receipt
+              afterwards. */}
+          <form method="post" action="/api/unfollow-everything" class="inline">
+            <button
+              type="submit"
+              class="ghost small-btn"
+              data-confirm={`Unfollow all ${follows.length}? That is ${countPhrase(follows)}. Your reminders and calendar stay empty until you follow something again.`}
+            >
+              Unfollow all
+            </button>
+          </form>
+        </div>
         <ul class="chips">
           {follows.map((f) => (
             <li class="chip">

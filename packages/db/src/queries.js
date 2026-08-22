@@ -862,6 +862,91 @@ export async function removeFollow({ userId, subjectType, subjectId }) {
   `;
 }
 
+/**
+ * Follow every active genre in one statement.
+ *
+ * insert-select rather than a loop: the cost of doing it a row at a time is one
+ * round trip per genre for something a single statement expresses exactly.
+ * `on conflict do nothing` makes it idempotent, so a second press adds whatever
+ * genres have appeared since the first and nothing else.
+ *
+ * Returns how many were NEW, which is what the page reports back -- claiming the
+ * full count when nothing changed would be a lie to anyone pressing it twice.
+ */
+export async function followAllGenres(userId) {
+  const rows = await sql`
+    insert into follows (user_id, subject_type, subject_id)
+    select ${userId}, 'genre', g.id from genres g where g.active
+    on conflict do nothing
+    returning subject_id
+  `;
+  return rows.length;
+}
+
+/** The undo. Only genres: a name was followed one at a time and is left alone. */
+export async function unfollowAllGenres(userId) {
+  const rows = await sql`
+    delete from follows where user_id = ${userId} and subject_type = 'genre'
+    returning subject_id
+  `;
+  return rows.length;
+}
+
+/**
+ * Clear the whole follow list -- names as well as genres.
+ *
+ * Deliberately NOT the same thing as unfollowAllGenres. That one is the undo for
+ * the follow-everything button, and it spares the individual names because they
+ * were chosen one at a time. This one backs "Unfollow all" on the calendar page,
+ * where the list being cleared is the one in front of you: leaving the names
+ * behind there would be the surprise, not the safeguard.
+ *
+ * Returns the counts by kind, because a bare total tells someone who is about to
+ * wonder whether the names they picked survived exactly nothing.
+ */
+export async function unfollowAll(userId) {
+  const rows = await sql`
+    delete from follows where user_id = ${userId}
+    returning subject_type
+  `;
+  return {
+    removed: rows.length,
+    genres: rows.filter((r) => r.subject_type === 'genre').length,
+    subjects: rows.filter((r) => r.subject_type === 'subject').length,
+  };
+}
+
+/** How many genres this reader follows, and how many there are. */
+export async function genreFollowCounts(userId) {
+  const [row] = await sql`
+    select
+      (select count(*)::int from genres where active) as total,
+      (select count(*)::int from follows
+        where user_id = ${userId}::uuid and subject_type = 'genre') as following
+  `;
+  return row;
+}
+
+/**
+ * How much a "follow everything" actually signs someone up for.
+ *
+ * Shown before they press it, because the honest number is large: every upcoming
+ * release in the catalogue, each of which sends a reminder at every offset they
+ * have turned on. A button that quietly enrols someone in thousands of
+ * notifications is not a feature.
+ *
+ * Bounded to a fortnight rather than counting the whole table -- a genre calendar
+ * carries announced dates years out, and "42,000 coming up" would overstate what
+ * lands in the next couple of weeks badly enough to be its own kind of lie.
+ */
+export async function upcomingEventCount() {
+  const [row] = await sql`
+    select count(*)::int as n from events
+    where starts_at > now() and starts_at < now() + interval '14 days'
+  `;
+  return row.n;
+}
+
 export async function isFollowing({ userId, subjectType, subjectId }) {
   if (!userId) return false;
   const [row] = await sql`

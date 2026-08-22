@@ -471,6 +471,39 @@ async function initPasskeys() {
   }
 }
 
+/* --------------------------------------------------------------- confirm -- */
+
+/**
+ * `data-confirm="..."` on a submit button: ask before the form goes.
+ *
+ * Only for the handful of controls that destroy something a person built up over
+ * time -- clearing the whole follow list -- never for an ordinary toggle, where a
+ * dialog is noise and the undo is one click away.
+ *
+ * It listens on submit rather than click so a keyboard Enter in the form is caught
+ * too, and reads the message off the submitter, because the button is what carries
+ * the consequence. With script off nothing asks and the form simply posts; that is
+ * the same trade every other control here makes, and the page reports afterwards
+ * exactly what was removed.
+ */
+function initConfirmForms() {
+  document.addEventListener(
+    'submit',
+    (event) => {
+      const button = event.submitter ?? event.target?.querySelector?.('[data-confirm]');
+      const message = button?.getAttribute?.('data-confirm');
+      if (!message) return;
+      if (!window.confirm(message)) {
+        event.preventDefault();
+        // Stop the follow-form handler from acting on a submit that the person
+        // just declined.
+        event.stopImmediatePropagation();
+      }
+    },
+    true,
+  );
+}
+
 /* ------------------------------------------------------------------ copy -- */
 
 /**
@@ -644,6 +677,9 @@ localiseTimes();
 reportTimezone();
 initPush();
 initPasskeys();
+// Before initFollowForms: it must be able to cancel a submit that handler would
+// otherwise have already sent.
+initConfirmForms();
 initFollowForms();
 initCopyButtons();
 initNavigation();
