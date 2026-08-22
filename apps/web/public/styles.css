@@ -1979,3 +1979,16 @@ li.result img {
 .follows-head h2 {
   margin-bottom: 0.4rem;
 }
+
+/* Player buttons on a channel row. They wrap under the name on a phone, which is
+   where these are actually tapped -- and where the .m3u is removed at runtime, so
+   the row is often two buttons rather than three. */
+.own-channel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex: none;
+}
+.player-hint {
+  margin-top: 0.75rem;
+}

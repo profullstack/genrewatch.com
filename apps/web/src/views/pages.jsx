@@ -42,6 +42,29 @@ export const CATEGORY_LABEL = {
 
 const labelFor = (c) => CATEGORY_LABEL[c]?.name ?? c;
 
+/**
+ * Deep links into a player that can actually handle these streams.
+ *
+ * The .m3u hand-off is right on a desktop and useless on a phone: iOS Safari either
+ * saves the playlist or follows it and offers to save a .ts, and neither plays,
+ * because these providers serve MPEG-2 Transport Stream and Safari has no demuxer
+ * for it. That is a missing codec, not a missing header. Both players worth naming
+ * register a URL scheme instead, so a tap opens the app already on the stream.
+ *
+ * The stream URL is in the href and has to be: an external player holds no session
+ * with us and cannot fetch an authenticated endpoint. It is the reader's own
+ * credential on the reader's own signed-in page, which is the same exposure the
+ * .m3u download already carried.
+ */
+const playerLinks = (url) => {
+  const target = encodeURIComponent(url);
+  return {
+    // The documented VLC-iOS form; VLC on Android registers the same handler.
+    vlc: `vlc-x-callback://x-callback-url/stream?url=${target}`,
+    infuse: `infuse://x-callback-url/play?url=${target}`,
+  };
+};
+
 /** The category strip that heads most pages. */
 const CategoryNav = ({ current }) => (
   <nav class="cats" aria-label="Categories">
@@ -311,7 +334,15 @@ export const SubjectPage = ({ user, subject, events, genres, following }) => (
   </Layout>
 );
 
-export const EventPage = ({ user, event, genres, comments, following, ownChannels }) => {
+export const EventPage = ({
+  user,
+  event,
+  genres,
+  comments,
+  following,
+  ownChannels,
+  streamDead,
+}) => {
   const when = whenLabel(event);
   /*
    * The driver hands jsonb back parsed or as a string depending on the column and
@@ -516,8 +547,19 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
         which is how it read before the count was carried back.
       */}
       {ownChannels?.hasList ? (
-        <section>
+        <section class="own-line">
           <h2>In your list</h2>
+
+          {/* Why the last attempt handed back nothing, in the words of the probe.
+              "returned a web page, not a stream" means the slot is empty;
+              "timed out" means it is not. "Something went wrong" would send
+              somebody off to check their own wifi. */}
+          {streamDead ? (
+            <p class="feedback error" role="status">
+              That one did not play — {streamDead}. The others are still listed; a provider slot
+              often fills only once the thing is actually on.
+            </p>
+          ) : null}
 
           {/* On demand first: it is there whenever they want it, where a channel
               is a claim about right now. */}
@@ -528,12 +570,20 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
                 {ownChannels.onDemand.map((ch, i) => (
                   <li>
                     <span>{ch.title}</span>
-                    <a
-                      class="ghost small-btn"
-                      href={`/events/${event.id}/playlist.m3u?tier=vod&n=${i}`}
-                    >
-                      Open
-                    </a>
+                    <span class="own-channel-actions">
+                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
+                        VLC
+                      </a>
+                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
+                        Infuse
+                      </a>
+                      <a
+                        class="ghost small-btn"
+                        href={`/events/${event.id}/playlist.m3u?tier=vod&n=${i}`}
+                      >
+                        .m3u
+                      </a>
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -550,9 +600,17 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
                 {ownChannels.matches.map((ch, i) => (
                   <li>
                     <span>{ch.title}</span>
-                    <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?n=${i}`}>
-                      Open
-                    </a>
+                    <span class="own-channel-actions">
+                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
+                        VLC
+                      </a>
+                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
+                        Infuse
+                      </a>
+                      <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?n=${i}`}>
+                        .m3u
+                      </a>
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -578,12 +636,20 @@ export const EventPage = ({ user, event, genres, comments, following, ownChannel
                 {ownChannels.genre.map((ch, i) => (
                   <li>
                     <span>{ch.title}</span>
-                    <a
-                      class="ghost small-btn"
-                      href={`/events/${event.id}/playlist.m3u?tier=genre&n=${i}`}
-                    >
-                      Open
-                    </a>
+                    <span class="own-channel-actions">
+                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
+                        VLC
+                      </a>
+                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
+                        Infuse
+                      </a>
+                      <a
+                        class="ghost small-btn"
+                        href={`/events/${event.id}/playlist.m3u?tier=genre&n=${i}`}
+                      >
+                        .m3u
+                      </a>
+                    </span>
                   </li>
                 ))}
               </ul>

@@ -4,6 +4,8 @@ import { MAX_CHANNELS, normaliseTitle, parseM3u, rankChannelsForTitle } from '@g
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 
+export { firstLiveChannel, probeStream } from './probe.js';
+
 /**
  * Importing and reading a reader's own channel list.
  *
@@ -181,7 +183,9 @@ export async function ownChannelsForEvent({ userId, event }) {
   if (rows.length === 0) return none;
 
   const ranked = rankChannelsForTitle(
-    rows.map((r) => ({ title: r.title, url: r.stream_url })),
+    // The row id travels with the channel so a probe verdict can be written back
+    // against the right one. It is an internal id and never reaches a page.
+    rows.map((r) => ({ id: r.id, title: r.title, url: r.stream_url })),
     {
       // The SUBJECT's name, never the event title -- that carries season and
       // episode numbering no provider writes into a channel name.
@@ -195,7 +199,7 @@ export async function ownChannelsForEvent({ userId, event }) {
 
   const unseal = (list) =>
     list
-      .map((m) => ({ title: m.title, url: open(m.url) }))
+      .map((m) => ({ id: m.id, title: m.title, url: open(m.url) }))
       .filter((m) => m.url)
       .slice(0, 10);
 

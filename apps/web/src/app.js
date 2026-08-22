@@ -9,7 +9,12 @@ import {
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendLoginLink } from '@genre/notify';
-import { importPlaylist, ownChannelsForEvent, refreshPlaylist } from '@genre/playlists';
+import {
+  firstLiveChannel,
+  importPlaylist,
+  ownChannelsForEvent,
+  refreshPlaylist,
+} from '@genre/playlists';
 import { connection } from '@genre/queue';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -399,6 +404,7 @@ app.get('/events/:id', async (c) => {
         comments={comments}
         following={following}
         ownChannels={ownChannels}
+        streamDead={c.req.query('stream_dead') ?? null}
       />,
     ),
   );
@@ -508,7 +514,45 @@ app.get('/events/:id/playlist.m3u', async (c) => {
   // The first entry, which rankChannelsForTitle has already ordered most-specific
   // first, unless the reader asked for a particular one by index.
   const wanted = Number(c.req.query('n') ?? 0);
-  const pick = list[Number.isInteger(wanted) && list[wanted] ? wanted : 0];
+  const asked = Number.isInteger(wanted) && list[wanted] ? wanted : 0;
+
+  /*
+   * Ask the stream whether it is there, before handing anybody a file.
+   *
+   * A provider list is mostly aspirational: the slot exists, the title is right,
+   * and a large share of them answer with an HTML error page rather than video.
+   * Handing one of those over is worse than handing over nothing, because the
+   * reader finds out by tapping it -- the file downloads perfectly and then plays
+   * nothing, which reads as our bug rather than an empty slot.
+   *
+   * The one they asked for is tried first, then the rest in rank order. Probing is
+   * sequential inside firstLiveChannel because these are one subscriber's own
+   * connections and the line caps how many can be open at once.
+   */
+  const ordered = [list[asked], ...list.filter((_, i) => i !== asked)].filter(Boolean);
+  const { pick, tried } = await firstLiveChannel(ordered, {
+    onResult: async (ch, result) => {
+      if (!ch.id) return;
+      // Remembered so the page can stop offering a dead slot to the next reader,
+      // and so the next tap does not re-probe what we just learned.
+      await q
+        .markChannelChecked({
+          userId: user.id,
+          channelId: ch.id,
+          live: result.live,
+          note: result.note,
+        })
+        .catch(() => {});
+    },
+  });
+
+  // Which way it failed, not just that it did. "returned a web page, not a stream"
+  // means the slot is empty; "timed out" means it is not. "Something went wrong"
+  // would send somebody off to check their own wifi.
+  if (!pick) {
+    const why = tried[0]?.note ?? 'no answer';
+    return c.redirect(`/events/${event.id}?stream_dead=${encodeURIComponent(why)}`, 303);
+  }
 
   c.header('content-type', 'audio/x-mpegurl; charset=utf-8');
   c.header('content-disposition', `attachment; filename="${event.short_name ?? 'channel'}.m3u"`);
