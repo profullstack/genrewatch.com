@@ -222,3 +222,154 @@ describe('linking to a profile', () => {
     expect(handleAvailableShape('anthony')).toBe(true);
   });
 });
+
+/**
+ * The cap on what a public profile lists.
+ *
+ * Ported from tipoffwatch along with the cap itself. "Follow everything" is one
+ * button on /genres and there are 134 active genres, so the uncapped list printed
+ * the whole catalogue onto a public page for anyone who had pressed it.
+ *
+ * The SQL is lifted out of queries.js and run as written, so an edit to the
+ * shipped query is what gets tested rather than a copy of it here.
+ */
+describe('a public profile does not print the catalogue', () => {
+  let publicFollowsSql;
+  let totalSql;
+  let userId;
+
+  const lift = (source, name, params) => {
+    const at = source.indexOf(`export async function ${name}(`);
+    expect(at).toBeGreaterThan(-1);
+    const open = source.indexOf('sql`', at);
+    const close = source.indexOf('`;', open);
+    let text = source.slice(open + 4, close);
+    params.forEach(([placeholder, n]) => {
+      text = text.replace(new RegExp(placeholder, 'g'), `$${n}`);
+    });
+    return text;
+  };
+
+  beforeAll(async () => {
+    const source = await readFile(
+      new URL('../packages/db/src/queries.js', import.meta.url).pathname,
+      'utf8',
+    );
+    publicFollowsSql = lift(source, 'publicFollows', [
+      ['\\$\\{userId\\}', 1],
+      ['\\$\\{Math\\.min\\(Math\\.max\\(Number\\(limit\\) \\|\\| 60, 1\\), 200\\)\\}', 2],
+    ]);
+    totalSql = lift(source, 'followTotal', [['\\$\\{userId\\}', 1]]);
+
+    userId = (
+      await rows(`insert into users (email, handle) values ('cap@example.test','cap')
+                  returning id`)
+    )[0].id;
+
+    // Twelve genres and two names, so the cap has something to bite on and the
+    // ordering has something to prove.
+    for (let i = 0; i < 12; i++) {
+      const g = (
+        await rows(
+          `insert into genres (category, provider, provider_key, slug, name, active)
+           values ('music','test',$1,$1,$2,true) returning id`,
+          [`cap-genre-${i}`, `AAA Genre ${i}`],
+        )
+      )[0].id;
+      await rows(`insert into follows (user_id, subject_type, subject_id) values ($1,'genre',$2)`, [
+        userId,
+        g,
+      ]);
+    }
+    for (const [slug, name] of [
+      ['zzz-band', 'ZZZ Band'],
+      ['yyy-band', 'YYY Band'],
+    ]) {
+      const s = (
+        await rows(
+          `insert into subjects (category, kind, provider, provider_key, slug, name, display_name)
+           values ('music','artist','test',$1,$1,$2,$2) returning id`,
+          [slug, name],
+        )
+      )[0].id;
+      await rows(
+        `insert into follows (user_id, subject_type, subject_id) values ($1,'subject',$2)`,
+        [userId, s],
+      );
+    }
+  });
+
+  test('caps the list', async () => {
+    const out = await rows(publicFollowsSql, [userId, 5]);
+    expect(out.length).toBe(5);
+  });
+
+  test('keeps the hand-picked names ahead of the bulk-followed genres', async () => {
+    // The genres are named "AAA ..." and the names "ZZZ"/"YYY", so ordering by
+    // label alone would cut exactly the two the person chose one at a time.
+    const out = await rows(publicFollowsSql, [userId, 5]);
+    expect(out.slice(0, 2).map((r) => r.subject_type)).toEqual(['subject', 'subject']);
+  });
+
+  test('the total counts everything, not just the page shown', async () => {
+    const [{ n }] = await rows(totalSql, [userId]);
+    expect(n).toBe(14);
+  });
+
+  test('an inactive genre is left out of both the list and the total', async () => {
+    // Otherwise the heading promises a chip the list can never render.
+    const g = (
+      await rows(
+        `insert into genres (category, provider, provider_key, slug, name, active)
+         values ('music','test','cap-dead','cap-dead','Dead Genre',false) returning id`,
+      )
+    )[0].id;
+    await rows(`insert into follows (user_id, subject_type, subject_id) values ($1,'genre',$2)`, [
+      userId,
+      g,
+    ]);
+
+    const [{ n }] = await rows(totalSql, [userId]);
+    expect(n).toBe(14);
+    const out = await rows(publicFollowsSql, [userId, 200]);
+    expect(out.map((r) => r.label)).not.toContain('Dead Genre');
+  });
+});
+
+describe('the profile says what the cap left out', () => {
+  const render = async (props) => {
+    const { ProfilePage } = await import('../apps/web/src/views/pages.jsx');
+    return (
+      await ProfilePage({
+        user: null,
+        profile: { id: 'p1', handle: 'ann', display_name: 'Ann', profile_public: true },
+        follows: [{ subject_type: 'genre', subject_id: 1, slug: 'rock', label: 'Rock' }],
+        upcoming: [],
+        isOwner: false,
+        ...props,
+      }).toString()
+    ).toString();
+  };
+
+  test('the heading counts everything, not the capped list', async () => {
+    const html = await render({ followTotal: 134 });
+    expect(html).toContain('Following (134)');
+  });
+
+  test('and says how many are not shown', async () => {
+    const html = await render({ followTotal: 134 });
+    expect(html).toContain('Showing 1 of 134');
+  });
+
+  test('with nothing to add when the list is whole', async () => {
+    const html = await render({ followTotal: 1 });
+    expect(html).not.toContain('Showing');
+  });
+
+  test('falls back to the list length when no total is passed', async () => {
+    // So an un-updated caller shows a heading matching its own list rather than
+    // the word "undefined".
+    const html = await render({});
+    expect(html).toContain('Following (1)');
+  });
+});

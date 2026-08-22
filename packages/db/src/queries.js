@@ -1199,6 +1199,61 @@ export async function listFollows(userId) {
 }
 
 /**
+ * The same list, capped, for somebody else's public profile.
+ *
+ * Ported from tipoffwatch, where the same page had the same problem: "follow
+ * everything" is one button, so an uncapped public list prints the whole
+ * catalogue for anyone who presses it. There are 134 active genres, and the
+ * profile rendered a chip for every one.
+ *
+ * Names sort ahead of genres. Follow-everything adds genres in bulk, so ordering
+ * by label alone buried the handful of names somebody actually chose one at a time
+ * underneath a hundred they took in a single click -- and the cap would then cut
+ * exactly the ones worth showing.
+ *
+ * The caller reads the real total from followTotal and says how many are not
+ * shown, so the cap never reads as the whole story.
+ */
+export async function publicFollows(userId, { limit = 60 } = {}) {
+  return sql`
+    select * from (
+      select 'genre' as subject_type, g.id as subject_id, g.slug, g.name as label,
+             g.category, null::text as image_url
+      from follows f join genres g on g.id = f.subject_id
+      where f.user_id = ${userId} and f.subject_type = 'genre' and g.active
+      union all
+      select 'subject', s.id, s.slug, s.display_name, s.category, s.image_url
+      from follows f join subjects s on s.id = f.subject_id
+      where f.user_id = ${userId} and f.subject_type = 'subject'
+    ) rows
+    order by (subject_type = 'subject') desc, label
+    limit ${Math.min(Math.max(Number(limit) || 60, 1), 200)}
+  `;
+}
+
+/**
+ * How many things somebody follows, counted the same way the list selects them.
+ *
+ * Counted rather than taken from the list's length, because the list is capped
+ * now. An inactive genre is excluded on both sides: it is filtered out of the
+ * list, so counting it would put a number above a list that could never reach it.
+ */
+export async function followTotal(userId) {
+  const [row] = await sql`
+    select
+      (select count(*)::int
+         from follows f join genres g on g.id = f.subject_id
+        where f.user_id = ${userId} and f.subject_type = 'genre' and g.active)
+      +
+      (select count(*)::int
+         from follows f join subjects s on s.id = f.subject_id
+        where f.user_id = ${userId} and f.subject_type = 'subject')
+      as n
+  `;
+  return row.n;
+}
+
+/**
  * A reader's own calendar: everything upcoming from anything they follow.
  *
  * distinct on the event, because following both a genre and a name inside it is

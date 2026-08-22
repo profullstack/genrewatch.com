@@ -730,8 +730,13 @@ app.get('/u/:handle', async (c) => {
     return c.html(await render(<NotFound user={viewer} />), 404);
   }
 
-  const [follows, upcoming] = await Promise.all([
-    q.listFollows(profile.id),
+  // Capped, with the true total beside it. Following everything is one button on
+  // /genres, so an uncapped list printed a chip for all 134 active genres onto a
+  // public page for anyone who had pressed it. Ported from tipoffwatch, which had
+  // the same button and the same page.
+  const [follows, followTotal, upcoming] = await Promise.all([
+    q.publicFollows(profile.id, { limit: 60 }),
+    q.followTotal(profile.id),
     q.upcomingForUser(profile.id, { limit: 20 }),
   ]);
 
@@ -741,6 +746,7 @@ app.get('/u/:handle', async (c) => {
         user={viewer}
         profile={profile}
         follows={follows}
+        followTotal={followTotal}
         upcoming={upcoming}
         isOwner={isOwner}
       />,

@@ -1024,10 +1024,15 @@ export const Channels = ({ user, playlist, groups }) => (
  * else can. That is deliberate: a privacy switch you cannot see the effect of is a
  * privacy switch nobody trusts.
  */
-export const ProfilePage = ({ user, profile, follows, upcoming, isOwner }) => {
+export const ProfilePage = ({ user, profile, follows, followTotal, upcoming, isOwner }) => {
   const name = profile.display_name || `@${profile.handle}`;
   const genres = follows.filter((f) => f.subject_type === 'genre');
   const subjects = follows.filter((f) => f.subject_type === 'subject');
+  // The list is capped now, so its length is no longer the answer to "how many".
+  // Defaulted rather than required, so a caller that has not been updated shows a
+  // heading that matches its own list instead of "undefined".
+  const total = followTotal ?? follows.length;
+  const hidden = Math.max(total - follows.length, 0);
 
   return (
     <Layout
@@ -1061,7 +1066,7 @@ export const ProfilePage = ({ user, profile, follows, upcoming, isOwner }) => {
         }
       />
 
-      <h2>Following ({follows.length})</h2>
+      <h2>Following ({total.toLocaleString('en-US')})</h2>
       {follows.length === 0 ? (
         <p class="empty">
           {isOwner ? (
@@ -1097,6 +1102,13 @@ export const ProfilePage = ({ user, profile, follows, upcoming, isOwner }) => {
                 ))}
               </ul>
             </>
+          ) : null}
+          {/* Say what the cap left out, with the real total, so the last chip is
+              never mistaken for the end of the list. */}
+          {hidden > 0 ? (
+            <p class="muted small">
+              Showing {follows.length.toLocaleString('en-US')} of {total.toLocaleString('en-US')}.
+            </p>
           ) : null}
         </>
       )}
