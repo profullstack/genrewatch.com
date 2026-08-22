@@ -9,9 +9,16 @@ import {
 } from '@simplewebauthn/server';
 
 /**
- * Magic link + passkey. There is no password anywhere in this file, by design:
- * the emailed link already proves control of the address, and a password would only
- * add a weaker second secret whose recovery path collapses back to emailing a link.
+ * Magic link + passkey, which are still the way in for anyone who has a phone or a
+ * laptop. The argument against a password has not changed and is written out in
+ * ./password.js: it is a weaker second secret whose recovery path collapses back to
+ * emailing a link.
+ *
+ * There is one anyway, opt-in and off by default, because a television has no mail
+ * client to open a link in, no authenticator to hold a passkey, and a remote instead
+ * of a keyboard -- and "sign in on another device" is not an answer when the TV is
+ * the device. It lives in its own file rather than here so that the primary methods
+ * stay readable as the primary methods.
  */
 
 const TOKEN_TTL_MINUTES = 20;
@@ -183,4 +190,11 @@ export function safeEqualHex(a, b) {
   return ba.length === bb.length && timingSafeEqual(ba, bb);
 }
 
+export {
+  MIN_LENGTH as PASSWORD_MIN_LENGTH,
+  passwordProblem,
+  removePassword,
+  setPassword,
+  verifyPassword,
+} from './password.js';
 export { open, seal } from './secretbox.js';

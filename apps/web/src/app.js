@@ -603,6 +603,84 @@ app.get('/auth/magic', async (c) => {
   return c.redirect(c.req.query('next') ?? '/following', 303);
 });
 
+/**
+ * Sign in with a password, for the device that cannot do the other two.
+ *
+ * A plain form post with no script, because the device this exists for is a
+ * television: the whole point is that it works with a remote control and a browser
+ * that may do very little else.
+ *
+ * Every failure comes back identically worded, and verifyPassword spends the same
+ * time on an address with no account as on a wrong password, so this form cannot be
+ * used to find out who has an account here. When it throttles, the message points at
+ * the emailed link -- which is unaffected by the counter, so guessing at somebody's
+ * address can never lock them out of their own account.
+ */
+app.post('/api/auth/password', async (c) => {
+  const body = await c.req.parseBody();
+  const email = String(body.email ?? '');
+  const next = String(body.next ?? '/following');
+
+  const result = await auth.verifyPassword({
+    email,
+    password: String(body.password ?? ''),
+    userAgent: c.req.header('user-agent'),
+    // Behind Railway's proxy the socket address is the proxy; the forwarded header
+    // is the only thing that carries the caller. Recorded for the log, never used
+    // as the rate-limit key -- a shared address would then throttle strangers.
+    ip: (c.req.header('x-forwarded-for') ?? '').split(',')[0].trim() || null,
+  });
+
+  if (!result.ok) {
+    const accept = c.req.header('accept') ?? '';
+    if (accept.includes('application/json')) return c.json({ error: result.error }, 401);
+    return c.html(
+      await render(<SignIn mode="login" next={next} passwordError={result.error} />),
+      401,
+    );
+  }
+
+  c.header('set-cookie', auth.sessionCookie(result.sessionId));
+  return respond(c, { redirectTo: next });
+});
+
+/**
+ * Set, change or remove a password, from inside a session.
+ *
+ * Deliberately only reachable while already signed in by a link or a passkey. That
+ * is what keeps this from being a way to take an account over: whoever can set a
+ * password here already had the session needed to do anything else anyway.
+ */
+app.post('/api/auth/password/set', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+
+  if (body.remove === 'on' || body.remove === 'true') {
+    await auth.removePassword(user.id);
+    // Never a lockout: the link and any passkey still work.
+    return respond(c, { json: { ok: true }, redirectTo: '/settings?password=removed' });
+  }
+
+  const password = String(body.password ?? '');
+  if (password !== String(body.confirm ?? '')) {
+    return respond(c, {
+      json: { error: 'those did not match' },
+      status: 400,
+      redirectTo: `/settings?password_error=${encodeURIComponent('Those two did not match.')}`,
+    });
+  }
+
+  const result = await auth.setPassword({ userId: user.id, email: user.email, password });
+  if (!result.ok) {
+    return respond(c, {
+      json: { error: result.error },
+      status: 400,
+      redirectTo: `/settings?password_error=${encodeURIComponent(result.error)}`,
+    });
+  }
+  return respond(c, { json: { ok: true }, redirectTo: '/settings?password=set' });
+});
+
 app.post('/api/auth/logout', async (c) => {
   const sid = getCookie(c, config.session.cookie);
   if (sid) await q.endSession(sid);
@@ -824,6 +902,15 @@ app.get('/settings', async (c) => {
         playlistError={c.req.query('playlist_error') ?? null}
         profileNotice={c.req.query('profile') ? 'Saved.' : null}
         profileError={c.req.query('profile_error') ?? null}
+        passwordNotice={
+          c.req.query('password') === 'set'
+            ? 'Password saved. You can sign in with it on a device that cannot do the others.'
+            : c.req.query('password') === 'removed'
+              ? 'Password removed. Links and passkeys still work.'
+              : null
+        }
+        passwordError={c.req.query('password_error') ?? null}
+        passwordMinLength={auth.PASSWORD_MIN_LENGTH}
       />,
     ),
   );

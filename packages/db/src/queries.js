@@ -55,6 +55,75 @@ export async function findOrCreateUser(email) {
   return row;
 }
 
+/* ------------------------------------------------------------- passwords -- */
+
+/**
+ * The row a password sign-in checks against.
+ *
+ * Returns null for an address with no account, and a row with a null hash for an
+ * account that never set one. The caller must treat those two the same way from
+ * the outside -- see verifyPassword, which spends the same time on both.
+ */
+export async function getUserForPassword(email) {
+  const [row] = await sql`
+    select id, email::text as email, password_hash
+    from users where email = ${String(email).trim().toLowerCase()}
+  `;
+  return row ?? null;
+}
+
+export async function setPasswordHash({ userId, hash }) {
+  await sql`
+    update users set password_hash = ${hash}, password_set_at = now()
+    where id = ${userId}
+  `;
+}
+
+/** Removing it leaves the account reachable by link and passkey, never locked out. */
+export async function clearPassword(userId) {
+  await sql`
+    update users set password_hash = null, password_set_at = null where id = ${userId}
+  `;
+}
+
+export async function recordLoginAttempt({ email, ok, ip }) {
+  await sql`
+    insert into login_attempts (email, ok, ip)
+    values (${String(email).trim().toLowerCase()}, ${ok}, ${ip ?? null})
+  `;
+}
+
+/**
+ * How many times this address has failed recently.
+ *
+ * Counted since the last SUCCESS, not over a flat window: signing in correctly is
+ * the clearest possible evidence that the person is who they say, so it should not
+ * leave them one typo away from a lockout inherited from an attacker.
+ */
+export async function recentFailedLogins({ email, minutes = 15 }) {
+  const [row] = await sql`
+    select count(*)::int as n from login_attempts
+    where email = ${String(email).trim().toLowerCase()}
+      and not ok
+      and at > now() - (${`${minutes} minutes`})::interval
+      and at > coalesce(
+        (select max(at) from login_attempts
+          where email = ${String(email).trim().toLowerCase()} and ok),
+        'epoch'::timestamptz
+      )
+  `;
+  return row.n;
+}
+
+/** This is a log of who tried to get into what, so it is not kept indefinitely. */
+export async function pruneLoginAttempts({ days = 30 } = {}) {
+  const rows = await sql`
+    delete from login_attempts where at < now() - (${`${days} days`})::interval
+    returning id
+  `;
+  return rows.length;
+}
+
 export async function insertLoginToken({ tokenHash, email, expiresAt }) {
   await sql`
     insert into login_tokens ${sql({ token_hash: tokenHash, email, expires_at: expiresAt })}

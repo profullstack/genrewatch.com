@@ -35,9 +35,22 @@ describe('citext never leaves the query layer as citext', () => {
 
     const offenders = [];
     for (const m of stripped.matchAll(/\bselect\b[\s\S]{0,500}?`/g)) {
-      const list = m[0];
+      const stmt = m[0];
       // Writes name the column too; only select lists matter here.
-      if (list.includes('insert into') || list.includes('on conflict')) continue;
+      if (stmt.includes('insert into') || stmt.includes('on conflict')) continue;
+
+      /*
+       * Only the SELECT LIST, not the whole statement.
+       *
+       * The rule is about what leaves as citext, and a WHERE clause returns
+       * nothing -- `where email = ${address}` is a comparison, which is precisely
+       * what citext is for and must not be cast away. Scanning to the end of the
+       * statement flagged those too, which would have pushed a correct query into
+       * a wrong one to satisfy the test.
+       */
+      const from = stmt.search(/\bfrom\b/);
+      const list = from === -1 ? stmt : stmt.slice(0, from);
+
       if (/\b(?:u\.)?(?:email|handle)\b/.test(list)) {
         offenders.push(list.replace(/\s+/g, ' ').slice(0, 90));
       }

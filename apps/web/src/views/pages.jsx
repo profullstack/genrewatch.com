@@ -1001,7 +1001,7 @@ export const Channels = ({ user, playlist, groups }) => (
   </Layout>
 );
 
-export const SignIn = ({ mode, sent, next }) => (
+export const SignIn = ({ mode, sent, next, passwordError }) => (
   <Layout title={mode === 'signup' ? 'Create your account' : 'Sign in'}>
     <section class="auth">
       <h1>{mode === 'signup' ? 'Create your account' : 'Sign in'}</h1>
@@ -1039,6 +1039,45 @@ export const SignIn = ({ mode, sent, next }) => (
             Use a passkey
           </button>
           <p id="passkey-signin-msg" class="feedback" hidden />
+
+          {/* The third way in, and the one that exists for televisions.
+              A plain form with no script: on the device this is for, a remote
+              control is the keyboard and the browser may do very little else. It
+              is last because it is the weakest of the three and should not be the
+              obvious choice on a phone -- but it is on the page rather than behind
+              a toggle, because a toggle is one more thing to hit with a D-pad. */}
+          <details class="password-signin" open={Boolean(passwordError)}>
+            <summary>Use a password</summary>
+            {passwordError ? (
+              <p class="feedback error" role="status">
+                {passwordError}
+              </p>
+            ) : null}
+            <form method="post" action="/api/auth/password">
+              <input type="hidden" name="next" value={next ?? '/following'} />
+              <label>
+                Email
+                <input
+                  type="email"
+                  name="email"
+                  required
+                  autocomplete="username"
+                  placeholder="you@example.com"
+                />
+              </label>
+              <label>
+                Password
+                <input type="password" name="password" required autocomplete="current-password" />
+              </label>
+              <button class="ghost" type="submit">
+                Sign in
+              </button>
+            </form>
+            <p class="muted small">
+              Only if you have set one, in Settings, from a device you were already signed in on.
+              There is no password reset — use the emailed link, which always works.
+            </p>
+          </details>
 
           <p class="muted small">
             {mode === 'signup' ? (
@@ -1085,6 +1124,9 @@ export const Settings = ({
   playlistError,
   profileNotice,
   profileError,
+  passwordNotice,
+  passwordError,
+  passwordMinLength,
 }) => (
   <Layout title="Settings" user={user}>
     <h1>Settings</h1>
@@ -1319,6 +1361,71 @@ export const Settings = ({
         Add a passkey
       </button>
       <p id="add-passkey-msg" class="feedback" hidden />
+    </section>
+
+    {/* A password, for the television.
+        Set from here and only from here: whoever can set one already has this
+        session, so this can never be how an account is first taken over. It is
+        described as what it is rather than sold as an upgrade -- it is the weakest
+        of the three ways in, and worth having only where the other two cannot
+        work. */}
+    <section>
+      <h2>Password</h2>
+      <p class="muted small">
+        For devices that cannot open an emailed link or hold a passkey — a television, mostly. The
+        link and your passkeys keep working either way, so there is no password reset here: if you
+        forget it, sign in with a link and set a new one.
+      </p>
+
+      {passwordNotice ? (
+        <p class="feedback ok" role="status">
+          {passwordNotice}
+        </p>
+      ) : null}
+      {passwordError ? (
+        <p class="feedback error" role="status">
+          {passwordError}
+        </p>
+      ) : null}
+
+      <p class="muted">
+        {user.password_set_at
+          ? `Set ${new Date(user.password_set_at).toLocaleDateString()}.`
+          : 'No password set.'}
+      </p>
+
+      <form method="post" action="/api/auth/password/set">
+        <label>
+          {user.password_set_at ? 'New password' : 'Password'}
+          <input
+            type="password"
+            name="password"
+            required
+            minlength={passwordMinLength}
+            autocomplete="new-password"
+          />
+        </label>
+        <label>
+          Again
+          <input type="password" name="confirm" required autocomplete="new-password" />
+        </label>
+        <button class="ghost" type="submit">
+          {user.password_set_at ? 'Change it' : 'Set a password'}
+        </button>
+      </form>
+
+      {user.password_set_at ? (
+        <form method="post" action="/api/auth/password/set" class="inline">
+          <input type="hidden" name="remove" value="on" />
+          <button
+            class="ghost small-btn"
+            type="submit"
+            data-confirm="Remove your password? You will still be able to sign in with an emailed link or a passkey."
+          >
+            Remove it
+          </button>
+        </form>
+      ) : null}
     </section>
 
     <section>
