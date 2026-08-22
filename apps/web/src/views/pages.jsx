@@ -1001,6 +1001,120 @@ export const Channels = ({ user, playlist, groups }) => (
   </Layout>
 );
 
+/**
+ * What an invited person is called back to the inviter.
+ *
+ * A chosen name or handle, and otherwise nothing. Deliberately NOT the fallback
+ * commenterName uses: signing up is not publishing, and somebody who accepted an
+ * invite never agreed to have a fragment of their address reported to whoever sent
+ * it. "Someone new" is the honest answer and costs nothing.
+ */
+const inviteeName = (row) => row.display_name || (row.handle ? `@${row.handle}` : 'Someone new');
+
+export const Invite = ({
+  user,
+  url,
+  accepted,
+  remaining,
+  dailyLimit,
+  maxPerSubmission,
+  notice,
+  error,
+}) => (
+  <Layout title="Invite friends" user={user}>
+    <h1>Invite friends</h1>
+    <p class="muted">
+      Anyone who follows something will get told before it drops. It is free, there are no ads, and
+      there is nothing to unlock — so this is a recommendation rather than a referral scheme.
+    </p>
+
+    {notice ? (
+      <p class="feedback ok" role="status">
+        {notice}
+      </p>
+    ) : null}
+    {error ? (
+      <p class="feedback error" role="status">
+        {error}
+      </p>
+    ) : null}
+
+    {/* The link first, because it is the half with no limits and no risk: they
+        send it themselves, through whatever they already use. */}
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Your link</h2>
+        <p class="card-desc">
+          Send this however you like. It does not expire and there is no limit on how many people
+          use it.
+        </p>
+      </div>
+      <div class="field">
+        <div class="copy-row">
+          <input
+            id="invite-url"
+            class="input mono"
+            type="text"
+            readonly
+            value={url}
+            spellcheck="false"
+            aria-label="Your invite link"
+          />
+          <button type="button" class="ghost" data-copy="#invite-url">
+            Copy
+          </button>
+        </div>
+      </div>
+    </section>
+
+    {/* And the half that needs limits, with the limit stated rather than
+        discovered by hitting it. */}
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Or we can email it</h2>
+        <p class="card-desc">
+          Up to {maxPerSubmission} addresses at a time, {dailyLimit} a day. They get one email, from
+          us, saying you suggested it — your address is not in it, and we do not create an account
+          for them or email them again.
+        </p>
+      </div>
+      <form method="post" action="/api/invite/email" class="invite-form">
+        <label>
+          Email addresses
+          <textarea
+            name="emails"
+            rows="3"
+            required
+            placeholder="one@example.com, two@example.com"
+          />
+        </label>
+        <button class="cta" type="submit" disabled={remaining <= 0}>
+          {remaining > 0 ? 'Send' : 'Back tomorrow'}
+        </button>
+      </form>
+      <p class="muted small">
+        {remaining > 0
+          ? `${remaining} left today.`
+          : 'That is today’s limit. Your link above still works.'}
+      </p>
+    </section>
+
+    <h2>Who has joined</h2>
+    {accepted.length === 0 ? (
+      <p class="empty">Nobody yet. Nothing happens until somebody signs up through your link.</p>
+    ) : (
+      <ul class="invitees">
+        {accepted.map((a) => (
+          <li>
+            <span>{inviteeName(a)}</span>
+            <span class="muted small">joined {new Date(a.claimed_at).toLocaleDateString()}</span>
+          </li>
+        ))}
+      </ul>
+    )}
+  </Layout>
+);
+
 export const SignIn = ({ mode, sent, next, passwordError }) => (
   <Layout title={mode === 'signup' ? 'Create your account' : 'Sign in'}>
     <section class="auth">

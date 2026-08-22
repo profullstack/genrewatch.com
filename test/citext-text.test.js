@@ -30,6 +30,17 @@ describe('citext never leaves the query layer as citext', () => {
      * matching is a genuine uncast select.
      */
     const stripped = src
+      /*
+       * Comments are not SQL.
+       *
+       * A doc comment explaining that a query "does NOT select an email address"
+       * contains the words `select` and `email` in that order, which is enough to
+       * trip the scan below. Stripping comments first keeps the check on the code
+       * and stops it policing the prose -- the alternative was rewording an
+       * accurate comment to appease a regex.
+       */
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
       .replace(/\b\w*\.?email::text as email\b/g, '')
       .replace(/\b\w*\.?handle::text as handle\b/g, '');
 

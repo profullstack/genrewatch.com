@@ -2010,3 +2010,42 @@ li.result img {
 .password-signin[open] summary {
   margin-bottom: 0.5rem;
 }
+
+/* Who has accepted an invite. Deliberately plain: it is a list of names and
+   dates, and there is nothing else on it to show. */
+.invitees {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.invitees li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.4rem;
+}
+
+/* The invite form. A bare label wrapping a textarea does not stack the way the
+   auth forms do, so it is made to -- otherwise the label sits beside the box and
+   Send ends up floating next to it. */
+.invite-form label {
+  display: block;
+  margin-bottom: 0.6rem;
+}
+.invite-form textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  background: var(--panel);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.7rem;
+  font: inherit;
+  resize: vertical;
+}

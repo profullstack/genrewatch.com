@@ -191,6 +191,16 @@ export function safeEqualHex(a, b) {
 }
 
 export {
+  claimInvite,
+  DAILY_SEND_LIMIT as INVITE_DAILY_LIMIT,
+  inviteCodeFor,
+  inviterName,
+  inviteUrl,
+  MAX_PER_SUBMISSION as INVITE_MAX_PER_SUBMISSION,
+  parseAddresses,
+  sendInvites,
+} from './invites.js';
+export {
   MIN_LENGTH as PASSWORD_MIN_LENGTH,
   passwordProblem,
   removePassword,

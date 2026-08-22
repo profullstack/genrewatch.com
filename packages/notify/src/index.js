@@ -108,6 +108,42 @@ export async function sendEmail(target, { event, offsetMinutes }) {
 }
 
 /** Magic link. The only transactional mail that is not a reminder. */
+/**
+ * An invite, sent on somebody's behalf.
+ *
+ * `from` is a chosen display name or handle, never the inviter's email address --
+ * they gave us that to receive reminders, not to have it handed to everyone they
+ * recommend the site to. The envelope stays ours so that a reply goes nowhere
+ * surprising and so this cannot be used to forge mail from a stranger.
+ *
+ * It says how the recipient got here and how to stop, because an email somebody
+ * did not ask for owes them both.
+ */
+export async function sendInviteEmail({ email, url, from }) {
+  if (!config.mail.enabled) throw new Error('RESEND_API_KEY not configured');
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${config.mail.resendKey}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: config.mail.from,
+      to: email,
+      subject: `${from} thinks you would like GenreWatch`,
+      text:
+        `${from} uses GenreWatch to know before things drop — shows, films, albums, rocket launches.\n\n` +
+        `Have a look:\n\n${url}\n\n` +
+        'It is free, there are no ads, and it works as a plain calendar feed if you would rather not be notified at all.\n\n' +
+        'You received this because somebody typed your address into an invite form. ' +
+        'We have not created an account for you and will not email you again about it.',
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`resend ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return true;
+}
+
 export async function sendLoginLink({ email, url }) {
   if (!config.mail.enabled) throw new Error('RESEND_API_KEY not configured');
   const res = await fetch('https://api.resend.com/emails', {

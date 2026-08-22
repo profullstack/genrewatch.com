@@ -50,7 +50,13 @@ export async function findOrCreateUser(email) {
   const [row] = await sql`
     insert into users ${sql({ email })}
     on conflict (email) do update set last_seen_at = now()
-    returning *, email::text as email
+    -- Whether this row was inserted or updated, which upsert otherwise hides.
+    -- xmax is the transaction that deleted the tuple; an INSERT leaves it zero and
+    -- the ON CONFLICT update leaves it set. It is the only way to tell the two
+    -- apart in one statement, and the alternative -- comparing created_at to now --
+    -- is a guess with a clock in it. Used by the invite flow, which must credit an
+    -- inviter for a new account and not for somebody who already had one.
+    returning *, email::text as email, (xmax = 0) as created
   `;
   return row;
 }
@@ -122,6 +128,100 @@ export async function pruneLoginAttempts({ days = 30 } = {}) {
     returning id
   `;
   return rows.length;
+}
+
+/* --------------------------------------------------------------- invites -- */
+
+/**
+ * The reader's own invite code, minted on first use.
+ *
+ * `where invite_code is null` makes this safe to call on every page load: the second
+ * call updates nothing and the select returns what the first one wrote. Two requests
+ * racing cannot produce two codes for one account, because only one of them matches
+ * the null.
+ */
+export async function ensureInviteCode({ userId, code }) {
+  await sql`update users set invite_code = ${code} where id = ${userId} and invite_code is null`;
+  const [row] = await sql`select invite_code from users where id = ${userId}`;
+  return row?.invite_code ?? null;
+}
+
+export async function getUserByInviteCode(code) {
+  const [row] = await sql`
+    select id, display_name, handle::text as handle
+    from users where invite_code = ${code}
+  `;
+  return row ?? null;
+}
+
+/**
+ * Record who brought whom.
+ *
+ * `on conflict do nothing` because the invited user is the primary key: being
+ * invited twice, or by two people, resolves to whoever got there first rather than
+ * to an error the sign-in path would have to handle.
+ */
+export async function recordInviteClaim({ inviterId, invitedUserId }) {
+  if (!inviterId || !invitedUserId || inviterId === invitedUserId) return false;
+  const rows = await sql`
+    insert into invite_claims (invited_user_id, inviter_id)
+    values (${invitedUserId}, ${inviterId})
+    on conflict do nothing
+    returning invited_user_id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Who accepted, for the inviter's own page.
+ *
+ * Deliberately does NOT select an email address. The inviter knows who they sent a
+ * link to, but that is not the same as us confirming which addresses have accounts
+ * -- and an invited person never agreed to have their sign-up reported back. A
+ * chosen name is something they published themselves; anything else is just a date.
+ */
+export async function invitesAccepted(inviterId, { limit = 100 } = {}) {
+  return sql`
+    select c.claimed_at, u.display_name, u.handle::text as handle
+    from invite_claims c
+    join users u on u.id = c.invited_user_id
+    where c.inviter_id = ${inviterId}
+    order by c.claimed_at desc
+    limit ${limit}
+  `;
+}
+
+export async function recordInviteSend({ inviterId, email }) {
+  await sql`
+    insert into invite_sends (inviter_id, email)
+    values (${inviterId}, ${String(email).trim().toLowerCase()})
+  `;
+}
+
+/** How many this account has sent recently, which is what the cap is applied to. */
+export async function invitesSentSince(inviterId, { hours = 24 } = {}) {
+  const [row] = await sql`
+    select count(*)::int as n from invite_sends
+    where inviter_id = ${inviterId} and sent_at > now() - (${`${hours} hours`})::interval
+  `;
+  return row.n;
+}
+
+/**
+ * Has anybody already invited this address?
+ *
+ * Not scoped to the inviter on purpose. The question is whether the person on the
+ * other end has already had one of these, and being emailed the same pitch by three
+ * different people is exactly what makes an invite feature feel like spam to the
+ * only party who did not opt into it.
+ */
+export async function invitedRecently({ email, days = 30 }) {
+  const [row] = await sql`
+    select count(*)::int as n from invite_sends
+    where email = ${String(email).trim().toLowerCase()}
+      and sent_at > now() - (${`${days} days`})::interval
+  `;
+  return row.n > 0;
 }
 
 export async function insertLoginToken({ tokenHash, email, expiresAt }) {

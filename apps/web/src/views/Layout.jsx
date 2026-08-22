@@ -143,6 +143,7 @@ export const Layout = (props) => (
           <a href="/genres">Genres</a>
           <a href="/feeds">Feeds</a>
           {props.user ? <a href="/following">My calendar</a> : null}
+          {props.user ? <a href="/invite">Invite</a> : null}
           {props.user ? (
             <a href="/settings">Settings</a>
           ) : (

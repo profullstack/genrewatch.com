@@ -8,7 +8,7 @@ import {
 } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
-import { sendLoginLink } from '@genre/notify';
+import { sendInviteEmail, sendLoginLink } from '@genre/notify';
 import {
   firstLiveChannel,
   importPlaylist,
@@ -30,6 +30,7 @@ import {
   Following,
   GenrePage,
   GenresIndex,
+  Invite,
   Landing,
   NotFound,
   PushCheck,
@@ -599,7 +600,29 @@ app.get('/auth/magic', async (c) => {
   if (!token) return c.redirect('/login', 303);
   const result = await auth.consumeLoginLink(token, { userAgent: c.req.header('user-agent') });
   if (!result) return c.html(await render(<SignIn mode="login" next="/following" />), 400);
+
+  /*
+   * Credit whoever invited them, if this link just created the account.
+   *
+   * Only for a genuinely new account -- somebody who already had one and happened to
+   * open a friend's link was not invited by them, and counting them would make the
+   * number on the inviter's page untrue. `created` comes back from the upsert
+   * itself; see findOrCreateUser.
+   *
+   * The cookie is cleared either way, so a stale code cannot follow somebody around
+   * for a month attaching itself to accounts.
+   */
+  const inviteCode = getCookie(c, INVITE_COOKIE);
+  if (inviteCode) {
+    await auth.claimInvite({ code: inviteCode, user: result.user, created: result.user?.created });
+  }
+
+  // The session header goes on first and the invite is cleared after, because
+  // c.header REPLACES set-cookie while the setCookie helper appends. The other order
+  // silently drops one of the two, and the one it drops is the clear.
   c.header('set-cookie', auth.sessionCookie(result.sessionId));
+  if (inviteCode) setCookie(c, INVITE_COOKIE, '', { path: '/', maxAge: 0 });
+
   return c.redirect(c.req.query('next') ?? '/following', 303);
 });
 
@@ -679,6 +702,99 @@ app.post('/api/auth/password/set', async (c) => {
     });
   }
   return respond(c, { json: { ok: true }, redirectTo: '/settings?password=set' });
+});
+
+/* --------------------------------------------------------------- invites -- */
+
+/** How long an opened invite link is remembered while somebody signs up. */
+const INVITE_COOKIE = 'gw_invite';
+const INVITE_COOKIE_DAYS = 30;
+
+/**
+ * Opening somebody's invite link.
+ *
+ * The code goes into a cookie rather than through the sign-up form, because the way
+ * in is an emailed link: the person leaves the site, opens their mail, and comes
+ * back through a URL that carries nothing of where they started. The cookie is the
+ * only thing that survives that round trip.
+ *
+ * An unknown code still lands on the sign-up page. Whether a code is real is not
+ * worth telling a stranger, and turning somebody away over a typo in a link they
+ * were sent would be a strange way to greet them.
+ */
+app.get('/i/:code', (c) => {
+  const code = c.req.param('code');
+  if (/^[A-Za-z0-9_-]{6,64}$/.test(code)) {
+    setCookie(c, INVITE_COOKIE, code, {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'Lax',
+      secure: config.isProd,
+      maxAge: INVITE_COOKIE_DAYS * 86400,
+    });
+  }
+  return c.redirect('/signup', 302);
+});
+
+/** Your link, who has accepted it, and the form that mails it for you. */
+app.get('/invite', async (c) => {
+  const user = requireUser(c);
+  const [code, accepted, sentToday] = await Promise.all([
+    auth.inviteCodeFor(user.id),
+    q.invitesAccepted(user.id),
+    q.invitesSentSince(user.id, { hours: 24 }),
+  ]);
+
+  return c.html(
+    await render(
+      <Invite
+        user={user}
+        url={auth.inviteUrl(code)}
+        accepted={accepted}
+        remaining={Math.max(0, auth.INVITE_DAILY_LIMIT - sentToday)}
+        dailyLimit={auth.INVITE_DAILY_LIMIT}
+        maxPerSubmission={auth.INVITE_MAX_PER_SUBMISSION}
+        notice={c.req.query('sent') ? `Sent ${c.req.query('sent')}.` : null}
+        error={c.req.query('invite_error') ?? null}
+      />,
+    ),
+  );
+});
+
+/**
+ * Mail the link to a few addresses.
+ *
+ * The reply counts rather than naming per-address outcomes. "Skipped, they already
+ * have an account" would make this the address checker that the sign-in page is
+ * careful not to be, so an address that was skipped and one that was mailed are
+ * reported the same way.
+ */
+app.post('/api/invite/email', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+
+  const result = await auth.sendInvites({
+    user,
+    raw: body.emails,
+    send: sendInviteEmail,
+  });
+
+  if (!result.ok) {
+    return respond(c, {
+      json: { error: result.error },
+      status: 400,
+      redirectTo: `/invite?invite_error=${encodeURIComponent(result.error)}`,
+    });
+  }
+
+  const summary =
+    result.skipped > 0
+      ? `${result.sent}, and skipped ${result.skipped}`
+      : `${result.sent === 1 ? '1 invite' : `${result.sent} invites`}`;
+  return respond(c, {
+    json: { sent: result.sent, skipped: result.skipped },
+    redirectTo: `/invite?sent=${encodeURIComponent(summary)}`,
+  });
 });
 
 app.post('/api/auth/logout', async (c) => {
