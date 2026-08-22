@@ -2,6 +2,7 @@ import { syncAll, syncBackCatalogue, syncDetail } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendEmail, sendPush } from '@genre/notify';
+import { refreshDuePlaylists } from '@genre/playlists';
 import { Worker } from 'bullmq';
 import { connection, QUEUES, queues } from './index.js';
 
@@ -242,6 +243,14 @@ async function dropPageCache(results) {
 export function startWorkers({ concurrency = {} } = {}) {
   const workers = [
     new Worker(QUEUES.scan, runScan, { connection, concurrency: 1 }),
+
+    // Concurrency 1, and the poller itself is sequential inside. These are other
+    // people's subscriptions: several ~800KB pulls at once from one datacenter IP
+    // is the traffic pattern that gets a line cut off.
+    new Worker(QUEUES.playlists, () => refreshDuePlaylists({ log }), {
+      connection,
+      concurrency: 1,
+    }),
 
     /*
      * Concurrency 1, always.

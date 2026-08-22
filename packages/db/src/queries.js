@@ -1365,10 +1365,61 @@ export async function deletePlaylist(userId) {
   await sql`delete from user_playlists where user_id = ${userId}`;
 }
 
+/**
+ * Record a failure, and back off before trying again.
+ *
+ * Exponential to a ceiling of an hour. There is nothing to gain from pulling 800KB
+ * every five minutes from something answering 404, and hammering a dead line is how
+ * the subscription behind it gets noticed. The streak is capped so it cannot
+ * overflow the exponent on a provider that has been down for a week.
+ */
 export async function markPlaylistError({ userId, error }) {
   await sql`
-    update user_playlists set last_error = ${error}, last_synced_at = now()
+    update user_playlists set
+      last_error = ${String(error).slice(0, 300)},
+      last_synced_at = now(),
+      error_streak = least(error_streak + 1, 8),
+      refresh_after = now() + (least(power(2, least(error_streak + 1, 6))::int, 60) || ' minutes')::interval
     where user_id = ${userId}
+  `;
+}
+
+/** A successful poll: clear the error state and book the next one. */
+export async function markPlaylistFresh({ userId, contentHash, nextAt }) {
+  await sql`
+    update user_playlists set
+      last_synced_at = now(),
+      last_error = null,
+      error_streak = 0,
+      content_hash = ${contentHash},
+      refresh_after = ${nextAt}
+    where user_id = ${userId}
+  `;
+}
+
+/**
+ * Which lists may be fetched now.
+ *
+ * `refresh_after is null` is the never-polled case and sorts first, so a list added
+ * a minute ago is picked up on the next tick rather than waiting out an interval it
+ * was never scheduled into.
+ */
+export async function playlistsDueForRefresh({ limit = 25 } = {}) {
+  return sql`
+    select user_id, source_url, label, content_hash
+    from user_playlists
+    where refresh_after is null or refresh_after <= now()
+    order by refresh_after nulls first, last_synced_at nulls first
+    limit ${Math.min(Math.max(Number(limit) || 25, 1), 200)}
+  `;
+}
+
+/** For the idle log line: when the poller expects to have something to do. */
+export async function nextPlaylistRefreshAt() {
+  return sql`
+    select min(coalesce(refresh_after, now())) as next_at,
+           count(*)::int as lists
+    from user_playlists
   `;
 }
 

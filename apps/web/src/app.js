@@ -9,12 +9,12 @@ import {
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendLoginLink } from '@genre/notify';
+import { importPlaylist, ownChannelsForEvent, refreshPlaylist } from '@genre/playlists';
 import { connection } from '@genre/queue';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { buildCalendar } from './lib/ics.js';
-import { importPlaylist, ownChannelsForEvent, refreshPlaylist } from './lib/playlist.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
 import {

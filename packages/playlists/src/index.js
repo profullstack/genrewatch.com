@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { open, seal } from '@genre/auth';
 import { MAX_CHANNELS, normaliseTitle, parseM3u, rankChannelsForTitle } from '@genre/catalog';
 import { config } from '@genre/config';
@@ -22,7 +23,7 @@ import * as q from '@genre/db/queries';
  * trace, because every one of them is something they can act on: a typo in the URL,
  * an expired line, a provider that is down.
  */
-export async function importPlaylist({ userId, url, label }) {
+export async function importPlaylist({ userId, url, label, knownHash = null }) {
   if (!config.playlists.enabled) throw new Error('playlists are not configured');
 
   let parsed;
@@ -61,6 +62,17 @@ export async function importPlaylist({ userId, url, label }) {
     throw new Error(`Could not read that list: ${message}`);
   }
 
+  // Hash the body before parsing it. The provider offers no conditional request --
+  // no ETag, no Last-Modified, and If-Modified-Since is answered with a full 200 --
+  // so the download cannot be avoided, but the rewrite behind it can. Most polls see
+  // a byte-identical file: a provider rewrites the handful of slots that changed and
+  // leaves the other several thousand entries sitting still.
+  const contentHash = createHash('sha256').update(text).digest('hex');
+  if (knownHash && knownHash === contentHash) {
+    await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt() });
+    return { channels: null, unchanged: true };
+  }
+
   const channels = parseM3u(text).map((c) => ({
     title: c.title,
     // The provider's own group-title, verbatim. This is what makes a reader's own
@@ -78,16 +90,77 @@ export async function importPlaylist({ userId, url, label }) {
   }
 
   await q.replacePlaylistChannels({ userId, channels });
-  return { channels: channels.length, truncated: channels.length >= MAX_CHANNELS };
+  await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt() });
+  return {
+    channels: channels.length,
+    truncated: channels.length >= MAX_CHANNELS,
+    unchanged: false,
+  };
+}
+
+/**
+ * When this list may next be polled.
+ *
+ * Jittered by up to a quarter of the interval so that a hundred accounts added on
+ * the same afternoon do not all fetch on the same tick forever after -- which is
+ * the shape of traffic a provider notices.
+ */
+function nextRefreshAt() {
+  const base = config.playlists.refreshMinutes * 60_000;
+  return new Date(Date.now() + base + Math.floor(Math.random() * base * 0.25));
 }
 
 /** Re-read the stored URL. Same import path, so the same limits apply. */
-export async function refreshPlaylist(userId) {
+export async function refreshPlaylist(userId, { knownHash = null } = {}) {
   const row = await q.getPlaylist(userId);
   if (!row) throw new Error('You have not added a list.');
   const url = open(row.source_url);
   if (!url) throw new Error('That stored list could not be read. Please add it again.');
-  return importPlaylist({ userId, url, label: row.label });
+  return importPlaylist({ userId, url, label: row.label, knownHash });
+}
+
+/**
+ * Poll every list that is due, one at a time.
+ *
+ * Sequential rather than fanned out on purpose: these are other people's
+ * subscriptions, and several ~800KB pulls at once from one datacenter IP is the
+ * traffic pattern that gets a line cut off.
+ */
+export async function refreshDuePlaylists({ log = console.log, limit = 25 } = {}) {
+  const due = await q.playlistsDueForRefresh({ limit });
+  if (due.length === 0) {
+    /*
+     * Say so out loud, rather than returning in silence.
+     *
+     * A tick that logs nothing when there is nothing due makes an idle poller
+     * indistinguishable from one that was never registered -- and that is exactly
+     * the question asked of it. "Is the refresh actually running?" cannot be
+     * answered from the logs when the healthy state and the broken state both
+     * print nothing. The next due time comes with it, so one line answers both
+     * "is it alive" and "why has it not fetched".
+     */
+    const [next] = await q.nextPlaylistRefreshAt();
+    log(
+      `[playlists] nothing due${next?.next_at ? `, next at ${new Date(next.next_at).toISOString()}` : ' (no lists stored)'}`,
+    );
+    return { checked: 0, changed: 0, failed: 0 };
+  }
+
+  let changed = 0;
+  let failed = 0;
+  for (const row of due) {
+    try {
+      const r = await refreshPlaylist(row.user_id, { knownHash: row.content_hash });
+      if (!r.unchanged) changed++;
+    } catch {
+      // markPlaylistError has already recorded it and set the back-off; a provider
+      // being down must not stop the other lists being polled.
+      failed++;
+    }
+  }
+
+  log(`[playlists] ${due.length} due, ${changed} changed, ${failed} failed`);
+  return { checked: due.length, changed, failed };
 }
 
 /**

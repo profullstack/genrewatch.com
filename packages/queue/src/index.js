@@ -23,6 +23,8 @@ export const QUEUES = {
   fanout: 'reminder-fanout',
   /** One job per page of followers. Claims and sends. */
   batch: 'reminder-batch',
+  /** Re-fetches readers' own channel lists from their providers. */
+  playlists: 'playlist-refresh',
 };
 
 const defaults = {
@@ -47,7 +49,7 @@ export const queues = Object.fromEntries(
  * every boot makes the code the single source of truth for what is scheduled.
  */
 export async function installSchedules({ log = console.log } = {}) {
-  for (const queue of [queues.scan, queues.sync]) {
+  for (const queue of [queues.scan, queues.sync, queues.playlists]) {
     for (const r of await queue.getRepeatableJobs()) await queue.removeRepeatableByKey(r.key);
   }
 
@@ -81,6 +83,22 @@ export async function installSchedules({ log = console.log } = {}) {
    * sweep that is deliberately slow.
    */
   await queues.sync.add('detail', { kind: 'detail' }, { repeat: { every: 30 * 60_000 } });
+
+  /*
+   * Readers' own channel lists, on their own clock.
+   *
+   * Not folded into the sync tick: this polls other people's subscriptions rather
+   * than our providers, it runs far more often, and the interval is an env var
+   * precisely so it can be raised without a deploy if a provider objects. The
+   * per-list schedule lives in the database (refresh_after), so this tick only
+   * asks "is anything due" -- which is why re-adding it on every boot is harmless
+   * here in a way the trap below describes for the catalogue sweep.
+   */
+  await queues.playlists.add(
+    'playlists',
+    {},
+    { repeat: { every: config.playlists.refreshMinutes * 60_000 }, jobId: 'playlists' },
+  );
 
   /*
    * A repeatable first fires one interval from NOW, not immediately.

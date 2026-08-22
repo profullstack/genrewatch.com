@@ -12,6 +12,7 @@ COPY packages/auth/package.json packages/auth/
 COPY packages/config/package.json packages/config/
 COPY packages/db/package.json packages/db/
 COPY packages/notify/package.json packages/notify/
+COPY packages/playlists/package.json packages/playlists/
 COPY packages/queue/package.json packages/queue/
 COPY packages/catalog/package.json packages/catalog/
 RUN bun install --frozen-lockfile || bun install

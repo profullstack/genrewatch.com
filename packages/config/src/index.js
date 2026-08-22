@@ -152,6 +152,22 @@ export const config = {
     },
     /** Refuse a list bigger than this, in bytes. A real provider list is ~800KB. */
     maxBytes: num('PLAYLIST_MAX_BYTES', 8 * 1024 * 1024),
+    /**
+     * How often each list is re-fetched, in minutes.
+     *
+     * Five, because providers rewrite their numbered event slots close to airtime
+     * and a stale title is a missed match. Know what it costs before lowering it
+     * further: the measured provider supports no conditional request at all (no
+     * ETag, no Last-Modified, If-Modified-Since answered with a full 200), so every
+     * poll downloads the whole file. At five minutes that is 288 fetches and
+     * roughly 230MB a day PER LIST, pulled from the reader's own subscription by a
+     * datacenter IP. Content hashing spares the database but cannot spare the
+     * download.
+     *
+     * Raise it if a provider starts objecting; that is the lever, and it needs no
+     * deploy.
+     */
+    refreshMinutes: num('PLAYLIST_REFRESH_MINUTES', 5),
   },
 
   push: {

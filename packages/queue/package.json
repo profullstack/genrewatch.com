@@ -12,6 +12,7 @@
     "@genre/db": "workspace:*",
     "@genre/catalog": "workspace:*",
     "@genre/notify": "workspace:*",
+    "@genre/playlists": "workspace:*",
     "bullmq": "^5.63.0",
     "ioredis": "^5.9.0"
   }
