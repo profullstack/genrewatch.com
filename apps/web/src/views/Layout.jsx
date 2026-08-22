@@ -143,6 +143,9 @@ export const Layout = (props) => (
           <a href="/genres">Genres</a>
           <a href="/feeds">Feeds</a>
           {props.user ? <a href="/following">My calendar</a> : null}
+          {/* Only once there is a handle: without one there is no page to link to,
+              and an item that 404s is worse than no item. */}
+          {props.user?.handle ? <a href={`/u/${props.user.handle}`}>Profile</a> : null}
           {props.user ? <a href="/invite">Invite</a> : null}
           {props.user ? (
             <a href="/settings">Settings</a>

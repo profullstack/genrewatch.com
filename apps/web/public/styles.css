@@ -2049,3 +2049,13 @@ li.result img {
   font: inherit;
   resize: vertical;
 }
+
+/* A comment author who has a public profile. Coloured only on hover so a thread
+   does not turn into a wall of links. */
+.comment-author {
+  color: inherit;
+  text-decoration: none;
+}
+.comment-author:hover {
+  color: var(--accent);
+}

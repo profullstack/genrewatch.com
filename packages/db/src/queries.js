@@ -130,6 +130,53 @@ export async function pruneLoginAttempts({ days = 30 } = {}) {
   return rows.length;
 }
 
+/**
+ * A profile by its handle.
+ *
+ * Returns the row whether or not it is public: the ROUTE decides what to do with a
+ * private one, because the owner is allowed to look at their own. Doing that
+ * filtering here would make "private" and "does not exist" the same answer, and then
+ * the owner could not see their own page either.
+ */
+export async function getUserByHandle(handle) {
+  const [row] = await sql`
+    select id, handle::text as handle, display_name, bio, profile_public, created_at
+    from users where handle = ${String(handle ?? '').trim()}
+  `;
+  return row ?? null;
+}
+
+/**
+ * Public profiles worth submitting to a search engine.
+ *
+ * Three filters, and the third is the one that matters. A handle and profile_public
+ * are the obvious ones. But an account that has picked a name and done nothing else
+ * is a thin page -- no bio, no follows, nothing to read -- and submitting thousands
+ * of those is how a site teaches a crawler that most of it is empty. So a profile has
+ * to have SOMETHING on it: a bio, a display name, or something followed.
+ *
+ * Upstream also counts following other PEOPLE; there is no user_follows table here,
+ * so that clause is dropped rather than faked.
+ *
+ * A profile turned private, or emptied, simply stops appearing; the sitemap is
+ * generated per request rather than stored, so removal needs no cleanup.
+ */
+export async function publicProfiles({ limit = 45000 } = {}) {
+  return sql`
+    select u.handle::text as handle, u.created_at
+    from users u
+    where u.handle is not null
+      and u.profile_public
+      and (
+        u.bio is not null
+        or u.display_name is not null
+        or exists (select 1 from follows f where f.user_id = u.id)
+      )
+    order by u.created_at desc
+    limit ${limit}
+  `;
+}
+
 /* --------------------------------------------------------------- invites -- */
 
 /**
@@ -342,6 +389,11 @@ const RESERVED_HANDLES = new Set([
   'health',
   'healthz',
   'help',
+  // Not because they would shadow a page -- profiles live under /u/ -- but because
+  // @invite reads as something the site said rather than something a person chose.
+  'i',
+  'invite',
+  'invites',
   'login',
   'logout',
   'me',

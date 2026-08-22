@@ -33,6 +33,7 @@ import {
   Invite,
   Landing,
   NotFound,
+  ProfilePage,
   PushCheck,
   SearchPage,
   Settings,
@@ -704,6 +705,49 @@ app.post('/api/auth/password/set', async (c) => {
   return respond(c, { json: { ok: true }, redirectTo: '/settings?password=set' });
 });
 
+/**
+ * Somebody's profile: what they follow, and what is coming up because of it.
+ *
+ * Two gates, and the first one is why this can be added without exposing anybody.
+ * A profile exists only for an account that CHOSE a handle, and handle is null until
+ * somebody types one -- so no existing reader wakes up with a public page. The second
+ * is profile_public, which 404s the page to everyone but its owner.
+ *
+ * 404 rather than 403 on a private profile, because "you are not allowed to see this"
+ * confirms the handle is taken, and a private profile that announces itself is only
+ * half private.
+ *
+ * Not Redis-cached: it differs for the owner, and one reader's private profile served
+ * to the next visitor is exactly the failure the cache helper warns about.
+ */
+app.get('/u/:handle', async (c) => {
+  const viewer = c.get('user');
+  const profile = await q.getUserByHandle(c.req.param('handle'));
+  if (!profile) return c.html(await render(<NotFound user={viewer} />), 404);
+
+  const isOwner = viewer?.id === profile.id;
+  if (!profile.profile_public && !isOwner) {
+    return c.html(await render(<NotFound user={viewer} />), 404);
+  }
+
+  const [follows, upcoming] = await Promise.all([
+    q.listFollows(profile.id),
+    q.upcomingForUser(profile.id, { limit: 20 }),
+  ]);
+
+  return c.html(
+    await render(
+      <ProfilePage
+        user={viewer}
+        profile={profile}
+        follows={follows}
+        upcoming={upcoming}
+        isOwner={isOwner}
+      />,
+    ),
+  );
+});
+
 /* --------------------------------------------------------------- invites -- */
 
 /** How long an opened invite link is remembered while somebody signs up. */
@@ -1330,6 +1374,7 @@ app.get('/sitemap.xml', async (c) => {
     `<sitemap><loc>${config.siteUrl}/sitemaps/genres.xml</loc></sitemap>`,
     `<sitemap><loc>${config.siteUrl}/sitemaps/subjects.xml</loc></sitemap>`,
     `<sitemap><loc>${config.siteUrl}/sitemaps/feeds.xml</loc></sitemap>`,
+    `<sitemap><loc>${config.siteUrl}/sitemaps/profiles.xml</loc></sitemap>`,
     ...months.map(
       (m) =>
         `<sitemap><loc>${config.siteUrl}/sitemaps/events-${m.month}.xml</loc>` +
@@ -1406,6 +1451,33 @@ app.get('/sitemaps/subjects.xml', async (c) => {
         (x) =>
           `<url><loc>${config.siteUrl}/subjects/${x.slug}</loc>` +
           (x.updated_at ? `<lastmod>${iso(x.updated_at)}</lastmod>` : '') +
+          '</url>',
+      )
+      .join('')}</urlset>`,
+  );
+});
+
+/**
+ * Public profiles.
+ *
+ * Priority is left off deliberately: a profile is not more or less important than a
+ * release, and every search engine that ever used the field ignores it now. lastmod
+ * is the account's creation, which is the only timestamp a profile row actually has
+ * -- claiming a fresher one on every crawl would be a lie that teaches the crawler to
+ * stop trusting the field.
+ *
+ * The query filters out thin profiles; see publicProfiles. Removal needs no cleanup,
+ * because this is generated per request rather than stored.
+ */
+app.get('/sitemaps/profiles.xml', async (c) => {
+  const people = await q.publicProfiles();
+  c.header('content-type', 'application/xml');
+  return c.body(
+    `${xmlHeader}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${people
+      .map(
+        (p) =>
+          `<url><loc>${config.siteUrl}/u/${encodeURIComponent(p.handle)}</loc>` +
+          (p.created_at ? `<lastmod>${iso(p.created_at)}</lastmod>` : '') +
           '</url>',
       )
       .join('')}</urlset>`,

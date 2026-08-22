@@ -672,7 +672,18 @@ export const EventPage = ({
                     the local part of an address was publishing something nobody
                     chose to publish; a display name or handle replaces it the
                     moment one is set. */}
-                <span class="who">{commenterName(c)}</span>
+                {/* Linked only when there is a handle AND the profile is public.
+                    A private profile 404s to everyone but its owner, so a link
+                    there is a link to a dead page -- and the name still shows,
+                    because being named on your own comment is not the same as
+                    having a profile people can open. */}
+                {c.handle && c.profile_public ? (
+                  <a class="who comment-author" href={`/u/${c.handle}`}>
+                    {commenterName(c)}
+                  </a>
+                ) : (
+                  <span class="who">{commenterName(c)}</span>
+                )}
                 <LocalTime at={c.created_at} />
                 <p>{c.body}</p>
               </li>
@@ -1000,6 +1011,98 @@ export const Channels = ({ user, playlist, groups }) => (
     )}
   </Layout>
 );
+
+/**
+ * Somebody's profile.
+ *
+ * What is on it is exactly what a follow list already implies: the genres and names
+ * they follow, and the schedule that falls out of following them. Nothing here is
+ * derived from anything they did not choose to put on the account -- no email, no
+ * activity, no counts of what they clicked.
+ *
+ * The owner sees the same page everyone else does, plus a line saying whether anyone
+ * else can. That is deliberate: a privacy switch you cannot see the effect of is a
+ * privacy switch nobody trusts.
+ */
+export const ProfilePage = ({ user, profile, follows, upcoming, isOwner }) => {
+  const name = profile.display_name || `@${profile.handle}`;
+  const genres = follows.filter((f) => f.subject_type === 'genre');
+  const subjects = follows.filter((f) => f.subject_type === 'subject');
+
+  return (
+    <Layout
+      title={name}
+      user={user}
+      canonical={profile.profile_public ? `/u/${profile.handle}` : undefined}
+    >
+      <div class="page-head">
+        <h1>{name}</h1>
+        {profile.display_name ? <p class="muted">@{profile.handle}</p> : null}
+      </div>
+
+      {isOwner ? (
+        <p class="feedback info" role="status">
+          {profile.profile_public
+            ? 'This is your profile as everyone else sees it.'
+            : 'Only you can see this. Turn on a public profile in Settings to share it.'}{' '}
+          <a href="/settings">Settings</a>
+        </p>
+      ) : null}
+
+      {profile.bio ? <p class="bio">{profile.bio}</p> : null}
+
+      <h2>Coming up</h2>
+      <EventList
+        events={upcoming}
+        emptyText={
+          isOwner
+            ? 'Nothing coming up for what you follow yet.'
+            : `Nothing coming up for what ${name} follows.`
+        }
+      />
+
+      <h2>Following ({follows.length})</h2>
+      {follows.length === 0 ? (
+        <p class="empty">
+          {isOwner ? (
+            <>
+              You're not following anything yet. <a href="/genres">Browse by genre</a>.
+            </>
+          ) : (
+            'Nothing yet.'
+          )}
+        </p>
+      ) : (
+        <>
+          {genres.length > 0 ? (
+            <>
+              <h3>Genres</h3>
+              <ul class="chips">
+                {genres.map((f) => (
+                  <li class="chip">
+                    <a href={`/genres/${f.slug}`}>{f.label}</a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {subjects.length > 0 ? (
+            <>
+              <h3>Names</h3>
+              <ul class="chips">
+                {subjects.map((f) => (
+                  <li class="chip">
+                    <a href={`/subjects/${f.slug}`}>{f.label}</a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </>
+      )}
+    </Layout>
+  );
+};
 
 /**
  * What an invited person is called back to the inviter.
@@ -1357,6 +1460,16 @@ export const Settings = ({
           Save name
         </button>
       </form>
+      {/* The switch above is abstract until you can see what it produces, so the
+          page it controls is one click away. Only once a handle exists, because
+          without one there is no page. */}
+      {user.handle ? (
+        <p class="muted small">
+          Your profile is at <a href={`/u/${user.handle}`}>/u/{user.handle}</a> — it shows what you
+          follow and what is coming up{' '}
+          {user.profile_public === false ? 'and only you can see it.' : 'to anyone who opens it.'}
+        </p>
+      ) : null}
     </section>
 
     <section>
