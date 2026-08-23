@@ -117,7 +117,16 @@ export const Landing = ({ user, today, vapidKey }) => (
 );
 
 /** Every genre we carry, grouped by category. */
-export const GenresIndex = ({ user, categories, genres, genreCounts, upcoming }) => {
+export const GenresIndex = ({
+  user,
+  categories,
+  genres,
+  genreCounts,
+  upcoming,
+  soon = [],
+  soonTotal = 0,
+  soonHours = 4,
+}) => {
   const byCategory = new Map();
   for (const g of genres) {
     if (!byCategory.has(g.category)) byCategory.set(g.category, []);
@@ -192,6 +201,40 @@ export const GenresIndex = ({ user, categories, genres, genreCounts, upcoming })
           </ul>
         </section>
       ))}
+
+      {/*
+        What is out in the next few hours.
+
+        Ported from the sibling brand, where it sits under the categories for the
+        same reason: this page's job is to get somebody to a genre, and this is the
+        shortcut for the reader who does not want to pick one.
+
+        Only rows with a real clock time can appear, which on this site is a
+        minority -- most releases carry a date and nothing finer. That is stated
+        rather than hidden, because a short list here is a fact about what is
+        announced, not about the site.
+      */}
+      <section class="live-now">
+        <div class="live-head">
+          <h2>Out in the next few hours</h2>
+          {soonTotal > 0 ? (
+            <span class="live-count num" title={`${soonTotal} in the next ${soonHours} hours`}>
+              {soonTotal.toLocaleString('en-US')}
+            </span>
+          ) : null}
+        </div>
+        {soon.length > 0 ? (
+          <p class="muted small">
+            Anything with a real start time landing in the next {soonHours} hours, soonest first.
+            Releases carrying only a date are not here — they have no hour to count down to.
+            {soonTotal > soon.length ? ` Showing the first ${soon.length}.` : ''}
+          </p>
+        ) : null}
+        <EventList
+          events={soon}
+          emptyText="Nothing with a start time lands in the next few hours."
+        />
+      </section>
     </Layout>
   );
 };

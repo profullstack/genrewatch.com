@@ -190,8 +190,21 @@ app.get('/genres', async (c) => {
     ? await Promise.all([q.genreFollowCounts(user.id), q.upcomingEventCount()])
     : [null, null];
 
-  return cached(c, 'page:genres', 300, async () => {
-    const [categories, genres] = await Promise.all([q.listCategories(), q.listGenres({})]);
+  /*
+   * Sixty seconds, down from five minutes, and the soon list is the reason.
+   *
+   * Genres change about never, so five minutes was free. A four-hour window is
+   * not: it moves by a minute in a minute, and the tail of it is the part anybody
+   * is reading. Sixty seconds is what the sibling brand settled on for the same
+   * list for the same reason.
+   */
+  return cached(c, 'page:genres', 60, async () => {
+    const [categories, genres, soon, soonTotal] = await Promise.all([
+      q.listCategories(),
+      q.listGenres({}),
+      q.outSoon({ hours: config.catalog.soonWindowHours, viewerId: user?.id ?? null }),
+      q.outSoonCount({ hours: config.catalog.soonWindowHours }),
+    ]);
     return render(
       <GenresIndex
         user={user}
@@ -199,6 +212,9 @@ app.get('/genres', async (c) => {
         genres={genres}
         genreCounts={counts}
         upcoming={upcoming}
+        soon={soon}
+        soonTotal={soonTotal}
+        soonHours={config.catalog.soonWindowHours}
       />,
     );
   });

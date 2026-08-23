@@ -117,6 +117,17 @@ export const config = {
      */
     backCataloguePages: num('BACK_CATALOGUE_PAGES', 200),
 
+    /**
+     * How far ahead the "out in the next few hours" list on /genres reaches.
+     *
+     * Nothing to do with syncing -- purely how much of the front of the calendar
+     * that page shows. Four hours is roughly "the rest of an evening": long enough
+     * to be worth checking before you settle down, short enough that the list is
+     * still a list. Only rows with a real clock time are eligible, which on this
+     * site is a minority (see time_known).
+     */
+    soonWindowHours: num('CATALOG_SOON_WINDOW_HOURS', 4),
+
     /*
      * The IMDb backfill.
      *

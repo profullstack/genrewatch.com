@@ -2307,3 +2307,44 @@ li.result img {
 .kind-count.kind-series strong {
   color: var(--accent);
 }
+
+/* ==================================== what is out in the next few hours ==
+   Under the genre grid on /genres. A different question from the rest of the page
+   -- "what can I watch tonight" rather than "what do I want to follow" -- so it is
+   separated by a rule rather than by space alone.
+
+   Ported from the sibling brand's Live now block. The count is deliberately NOT
+   given that block's red live dot: nothing here is happening yet, and a live
+   marker on a countdown would be a small lie repeated on every row. */
+.live-now {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+.live-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+.live-now h2 {
+  margin: 0;
+}
+.live-count {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.live-count::before {
+  content: "○";
+  margin-right: 0.35rem;
+  font-size: 0.7em;
+  vertical-align: 0.1em;
+}
+.live-now .empty {
+  color: var(--muted);
+}

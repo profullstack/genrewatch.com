@@ -1065,6 +1065,48 @@ export async function genresForEvent(eventId) {
 }
 
 /**
+ * What is out in the next few hours.
+ *
+ * Ported from the sibling brand's category page, where the gap it fills is the
+ * same: between "coming up" over a fortnight and a whole day's schedule there was
+ * nothing, and about-to-drop is the most actionable state there is.
+ *
+ * `time_known` is not optional here and this site is why the column exists. TMDB
+ * and MusicBrainz rows are ALWAYS date-only, padded to noon UTC -- so without this
+ * filter every album with a month and every film with just a year would appear in
+ * a list counting down to an hour nobody chose. On the sports side that filter is
+ * a precaution; here it is the difference between a useful list and a wrong one.
+ */
+export async function outSoon({ hours = 4, limit = 30, viewerId = null } = {}) {
+  return sql`
+    select ${EVENT_COLUMNS},
+           (${viewerId}::uuid is not null and f.user_id is not null) as following
+    from events e
+    join subjects s on s.id = e.subject_id
+    left join follows f
+      on f.subject_type = 'subject' and f.subject_id = s.id and f.user_id = ${viewerId}::uuid
+    where e.state = 'upcoming'
+      and e.time_known
+      and e.starts_at > now()
+      and e.starts_at <= now() + (${hours} * interval '1 hour')
+    order by e.starts_at
+    limit ${limit}
+  `;
+}
+
+/** How many are due inside the window, whether or not they all fit in the list. */
+export async function outSoonCount({ hours = 4 } = {}) {
+  const [row] = await sql`
+    select count(*)::int as n from events
+    where state = 'upcoming'
+      and time_known
+      and starts_at > now()
+      and starts_at <= now() + (${hours} * interval '1 hour')
+  `;
+  return row?.n ?? 0;
+}
+
+/**
  * Search the whole catalogue, past and future.
  *
  * Deliberately unbounded by date. Every other read on this site filters to what
