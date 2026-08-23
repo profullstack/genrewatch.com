@@ -270,6 +270,7 @@ export async function anythingStale() {
   return false;
 }
 
+export { candidateFrom, matchKey, syncImdb } from './imdb.js';
 export {
   channelsForTitle,
   entryKind,

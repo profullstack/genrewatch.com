@@ -535,6 +535,26 @@ export async function upsertSubjects(subjects) {
       // Lowercased once here rather than per query: a trigram index cannot be
       // built over an expression, and matching has to be case-insensitive.
       search_text: String(s.displayName ?? s.name ?? '').toLowerCase(),
+      /*
+       * The linking key for the IMDb backfill, written on every upsert.
+       *
+       * Produced by the caller through @genre/catalog's normaliseTitle -- the same
+       * function that normalises a channel title in somebody's playlist -- because
+       * the two sides of a match have to agree about punctuation and accents.
+       * Falls back to the lowercased name for callers that predate the column, so
+       * an adapter that has not been updated writes something usable rather than
+       * a null that the backfill would then have to repair.
+       */
+      norm_title:
+        s.normTitle ??
+        String(s.displayName ?? s.name ?? '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim(),
+      year: s.year ?? null,
+      imdb_id: s.imdbId ?? null,
+      rating: s.rating ?? null,
+      rating_count: s.ratingCount ?? null,
       url: s.url ?? null,
     }));
     return sql`
@@ -550,6 +570,14 @@ export async function upsertSubjects(subjects) {
         backdrop_url = coalesce(excluded.backdrop_url, subjects.backdrop_url),
         popularity = coalesce(excluded.popularity, subjects.popularity),
         search_text = excluded.search_text,
+        norm_title = excluded.norm_title,
+        year = coalesce(subjects.year, excluded.year),
+        -- Never reassigned by an ordinary sync: a tconst is established by the
+        -- backfill's linking pass, and an adapter that does not know one must not
+        -- be able to clear it.
+        imdb_id = coalesce(subjects.imdb_id, excluded.imdb_id),
+        rating = coalesce(excluded.rating, subjects.rating),
+        rating_count = coalesce(excluded.rating_count, subjects.rating_count),
         url = coalesce(excluded.url, subjects.url)
       returning id, provider_key
     `;
@@ -888,7 +916,27 @@ const EVENT_COLUMNS = sql`
   e.venue, e.venue_region, e.tagline, e.rating, e.rating_count, e.trailer_url,
   e.detail, e.season, e.number, e.runtime_min,
   s.slug as subject_slug, s.display_name as subject_name, s.kind as subject_kind,
-  s.image_url as subject_image, s.backdrop_url as subject_backdrop
+  s.image_url as subject_image, s.backdrop_url as subject_backdrop,
+  /*
+   * The one genre a row is tagged with.
+   *
+   * A thing belongs to five genres at once -- that is the entire reason
+   * event_genres is a join table -- but a row in a list has space for one word,
+   * and "which of these is a horror film" is the first question a mixed list has
+   * to answer. So: the highest-priority genre, deterministically, with the slug
+   * beside it so the tag can be a link.
+   *
+   * Two correlated subqueries rather than a join, because a join here would
+   * multiply every event row by its genre count and every caller would then need
+   * a distinct. They are cheap: event_genres is keyed on (event_id, genre_id) and
+   * these lists are hundreds of rows, not millions.
+   */
+  (select g.name from event_genres eg_t join genres g on g.id = eg_t.genre_id
+    where eg_t.event_id = e.id and g.active
+    order by g.priority, g.name limit 1) as genre_name,
+  (select g.slug from event_genres eg_t join genres g on g.id = eg_t.genre_id
+    where eg_t.event_id = e.id and g.active
+    order by g.priority, g.name limit 1) as genre_slug
 `;
 
 export async function upcomingForGenre(genreId, { limit = 200, viewerId = null } = {}) {
@@ -1760,6 +1808,180 @@ export async function getPlaylist(userId) {
 
 export async function deletePlaylist(userId) {
   await sql`delete from user_playlists where user_id = ${userId}`;
+}
+
+/* ------------------------------------------------------- the IMDb backfill -- */
+
+/**
+ * Where the last IMDb pass got to.
+ *
+ * One row, enforced by a check constraint rather than by everyone remembering to
+ * pass the same id. A missing row means it has never run.
+ */
+export async function imdbProgress() {
+  const [row] = await sql`select * from imdb_progress where id = 1`;
+  return row ?? null;
+}
+
+/** Stamp the start, creating the row on the first ever pass. */
+export async function startImdbPass() {
+  await sql`
+    insert into imdb_progress (id, started_at) values (1, now())
+    on conflict (id) do update set started_at = now()
+  `;
+}
+
+/**
+ * Record what a pass did, and where to resume.
+ *
+ * `cursor` is null when the pass reached the end of the file, which is what makes
+ * the next one start from the top. A non-null cursor with no completed_at is the
+ * normal state for the first few days: eleven and a half million rows do not fit
+ * in one wall-clock budget.
+ *
+ * The counters are per-pass rather than cumulative, because the question a human
+ * asks of this row is "what happened last night", and a running total answers a
+ * different one badly.
+ */
+export async function finishImdbPass({ cursor, completed, seen, linked, created, note }) {
+  await sql`
+    update imdb_progress set
+      cursor = ${cursor ?? null},
+      completed_at = case when ${Boolean(completed)} then now() else completed_at end,
+      seen = ${seen ?? 0},
+      linked = ${linked ?? 0},
+      created = ${created ?? 0},
+      note = ${note ?? null}
+    where id = 1
+  `;
+}
+
+/**
+ * Subjects that have never been through the title normaliser.
+ *
+ * Only ever the rows that predate the column: every upsert writes one from here
+ * on. Ordered by id so repeated calls walk forward rather than re-reading the same
+ * page when two run concurrently.
+ */
+export async function subjectsMissingNormTitle({ limit = 2000 } = {}) {
+  return sql`
+    select id, name, display_name from subjects
+    where norm_title is null
+    order by id
+    limit ${limit}
+  `;
+}
+
+/** Write back what the normaliser produced. */
+export async function setSubjectNormTitles(rows) {
+  const usable = (rows ?? []).filter((r) => r.id && r.normTitle);
+  if (usable.length === 0) return 0;
+
+  /*
+   * unnest over two parallel arrays, not a VALUES list.
+   *
+   * A JS array handed to Bun's parameter serialiser arrives as `a,b` and is
+   * rejected as a malformed array literal -- the trap pgArray exists for, and the
+   * one that silently broke passkey registration and the reminder fan-out before
+   * it was found. Building the literals here is the pattern the rest of this file
+   * already uses, and it does not depend on how the driver encodes anything.
+   */
+  for (let i = 0; i < usable.length; i += 500) {
+    const chunk = usable.slice(i, i + 500);
+    await sql`
+      update subjects s set norm_title = v.norm_title
+      from (
+        select unnest(${pgArray(chunk.map((r) => Number(r.id)))}::bigint[]) as id,
+               unnest(${pgArray(chunk.map((r) => String(r.normTitle)))}::text[]) as norm_title
+      ) v
+      where s.id = v.id
+    `;
+  }
+  return usable.length;
+}
+
+/**
+ * Which of these titles do we already hold?
+ *
+ * Keyed on (category, normalised title, year) -- the same key the importer builds
+ * -- and answered for a whole batch in one statement, because the alternative is a
+ * query per candidate and there are a million candidates.
+ *
+ * A row whose year we do not know is matched on title alone within its category.
+ * That is looser than it sounds in practice: our own rows almost always have a
+ * year, so this only fires for the handful IMDb gives no start year for.
+ */
+export async function subjectsByNormTitle(keys) {
+  const usable = (keys ?? []).filter((k) => k.normTitle);
+  if (usable.length === 0) return new Map();
+
+  const norms = [...new Set(usable.map((k) => k.normTitle))];
+  const rows = await sql`
+    select id, category, norm_title, year from subjects
+    where norm_title = any(${pgArray(norms)}::text[])
+  `;
+
+  const out = new Map();
+  for (const r of rows) {
+    // Last write wins, and the ordering is arbitrary -- two of our own rows with
+    // the same title, year and category are already a duplicate, and picking
+    // either of them is better than creating a third.
+    out.set(`${r.category} ${r.norm_title} ${r.year ?? ''}`, r.id);
+  }
+  return out;
+}
+
+/**
+ * Attach an IMDb id, and whatever it knows, to a row we already had.
+ *
+ * Everything except the id is coalesced: TMDB's own artwork, description and
+ * popularity are better than IMDb's absence of them, and a linking pass must never
+ * make an existing page worse. The id itself is assigned, because that is the
+ * whole point of the pass and re-running it has to be idempotent.
+ *
+ * `where s.imdb_id is null or s.imdb_id = excluded` is not expressible in this
+ * shape, so the guard is on the unique index instead: a second tconst claiming a
+ * subject that already has a different one silently loses rather than raising,
+ * which is the right outcome for a heuristic match.
+ */
+export async function linkImdbToSubjects(rows) {
+  const usable = (rows ?? []).filter((r) => r.subjectId && r.tconst);
+  if (usable.length === 0) return 0;
+
+  for (let i = 0; i < usable.length; i += 500) {
+    const chunk = usable.slice(i, i + 500);
+    /*
+     * unnest over parallel arrays, for the reason above: a VALUES list built from
+     * JS arrays is exactly the shape Bun's serialiser mangles. Nulls travel as
+     * real SQL NULLs because pgArray writes them unquoted, so the coalesces below
+     * mean what they say rather than comparing against the string "null".
+     */
+    await sql`
+      update subjects s set
+        -- Assigned only when there is nothing there. An established id wins over a
+        -- heuristic match, which is what this pass produces.
+        imdb_id = coalesce(s.imdb_id, v.imdb_id),
+        year = coalesce(s.year, v.year),
+        rating = coalesce(s.rating, v.rating),
+        rating_count = coalesce(s.rating_count, v.rating_count),
+        -- IMDb's vote count as a stand-in for fame, but never over a figure another
+        -- provider already gave us: a linking pass must not make a page worse.
+        popularity = coalesce(s.popularity, v.rating_count::numeric)
+      from (
+        select unnest(${pgArray(chunk.map((r) => Number(r.subjectId)))}::bigint[]) as id,
+               unnest(${pgArray(chunk.map((r) => String(r.tconst)))}::text[]) as imdb_id,
+               unnest(${pgArray(chunk.map((r) => r.year ?? null))}::int[]) as year,
+               unnest(${pgArray(chunk.map((r) => r.rating ?? null))}::numeric[]) as rating,
+               unnest(${pgArray(chunk.map((r) => r.ratingCount ?? null))}::int[]) as rating_count
+      ) v
+      where s.id = v.id
+        -- Another subject already claims this tconst. Leaving it alone is right:
+        -- the unique index would reject the write anyway, and a heuristic match
+        -- losing to an established one is the outcome we want.
+        and not exists (select 1 from subjects o where o.imdb_id = v.imdb_id and o.id <> s.id)
+    `;
+  }
+  return usable.length;
 }
 
 /* ----------------------------------------------------- sharing a playlist -- */

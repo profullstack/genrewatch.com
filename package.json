@@ -16,7 +16,8 @@
     "sync": "bun apps/worker/src/sync-cli.js",
     "test": "bun test",
     "lint": "bun run --bun biome check .",
-    "format": "bun run --bun biome format --write ."
+    "format": "bun run --bun biome format --write .",
+    "imdb": "bun apps/worker/src/imdb-cli.js"
   },
   "engines": {
     "bun": ">=1.3.0"

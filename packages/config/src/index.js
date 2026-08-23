@@ -116,6 +116,51 @@ export const config = {
      * is worth holding, not about coverage.
      */
     backCataloguePages: num('BACK_CATALOGUE_PAGES', 200),
+
+    /*
+     * The IMDb backfill.
+     *
+     * A different kind of source from the five adapters above: they answer "what
+     * is coming", this answers "what exists". It is what makes a reader's own VOD
+     * folder resolvable -- a film released last month is in their folder and, until
+     * this ran, in no table here.
+     *
+     * On by default and free: datasets.imdbws.com needs no key and no account.
+     * IMDB_BACKFILL=0 turns it off without a deploy.
+     */
+    imdbEnabled: opt('IMDB_BACKFILL', '1') !== '0',
+
+    /**
+     * How many votes a title needs before its age stops mattering.
+     *
+     * IMDb has ratings for about 1.5 million titles and the great majority have
+     * single-digit vote counts -- student films, local television, things nobody
+     * will search for. A hundred is a low bar that still removes the tail. Lower
+     * it to hold more; the cost is rows, not requests.
+     */
+    imdbMinVotes: num('IMDB_MIN_VOTES', 100),
+
+    /**
+     * How many years back count as "new", regardless of votes.
+     *
+     * This is the half of the filter that exists for the actual problem. A film
+     * released last month has almost no votes and would fail the threshold above,
+     * and it is exactly the film sitting unmatched in somebody's VOD folder. Two
+     * years is generous enough to cover a slow rating curve.
+     */
+    imdbRecentYears: num('IMDB_RECENT_YEARS', 2),
+
+    /**
+     * Wall-clock ceiling on one pass, in milliseconds.
+     *
+     * title.basics is eleven and a half million rows and does not fit in one
+     * budget on a small container. A pass stops here and records the tconst it
+     * reached; the next resumes from it. Fifteen minutes gets through a large
+     * slice without holding a worker for an hour, and the first full walk takes a
+     * few days of nightly runs -- after which each pass is a cheap re-read that
+     * only writes what changed.
+     */
+    imdbDeadlineMs: num('IMDB_DEADLINE_MS', 15 * 60_000),
   },
 
   /**

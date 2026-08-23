@@ -1,4 +1,4 @@
-import { syncAll, syncBackCatalogue, syncDetail } from '@genre/catalog';
+import { syncAll, syncBackCatalogue, syncDetail, syncImdb } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendEmail, sendPush } from '@genre/notify';
@@ -278,6 +278,38 @@ export function startWorkers({ concurrency = {} } = {}) {
         const back = await syncBackCatalogue({ log });
         await dropPageCache(results);
         return { results, detail, back };
+      },
+      { connection, concurrency: 1 },
+    ),
+
+    /*
+     * The IMDb backfill, alone on its own worker.
+     *
+     * Concurrency 1 for the obvious reason -- two passes would walk the same file
+     * and fight over the same cursor -- and a separate queue so a fifteen-minute
+     * walk cannot sit in front of a catalogue sweep with a rate-limited provider
+     * behind it.
+     *
+     * The cadence check lives here rather than in the schedule. A repeatable fires
+     * one interval from now and is reset by every deploy, so the tick is
+     * deliberately more frequent than the work: the pass reads its own progress row
+     * and returns immediately when a complete pass has already run today. The dumps
+     * are rebuilt daily, so more often than that is transfer for no new rows.
+     */
+    new Worker(
+      QUEUES.imdb,
+      async (job) => {
+        if (!job.data?.force) {
+          const progress = await q.imdbProgress();
+          const done = progress?.completed_at ? new Date(progress.completed_at).getTime() : 0;
+          // A cursor means the last pass ran out of its deadline partway through,
+          // and the next slice should start now rather than waiting a day.
+          const partial = Boolean(progress?.cursor);
+          if (!partial && done && Date.now() - done < 20 * 3600_000) {
+            return { skipped: 'a full pass completed within the day' };
+          }
+        }
+        return syncImdb({ log });
       },
       { connection, concurrency: 1 },
     ),

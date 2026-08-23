@@ -184,6 +184,49 @@ export const FollowButton = ({ user, subjectType, subjectId, following, next, la
   );
 };
 
+/**
+ * Which genre a row is, as a tag rather than as more grey text.
+ *
+ * A list on this site mixes five categories and a few hundred genres, so "is this
+ * a horror film or a documentary" is the first question a row has to answer -- and
+ * it was not answered anywhere on the row at all. The subject's name was there,
+ * the venue was there, the genre was not.
+ *
+ * The genre where the row carries one, and the category otherwise: an event with
+ * no genre edges yet (a freshly ingested title, a launch) still belongs to
+ * something, and a blank where every neighbouring row has a tag reads as missing
+ * data rather than as an absence of genre.
+ */
+export const GenreTag = ({ event }) => {
+  const label = event.genre_name ?? CATEGORY_NAME[event.category] ?? event.category;
+  if (!label) return null;
+  const tag = <span class="genre-tag">{label}</span>;
+  // Linked only where the slug came back with the row. A chip that navigates on
+  // some rows and not others is worse than one that never does.
+  return event.genre_slug ? (
+    <a class="genre-tag-link" href={`/genres/${event.genre_slug}`}>
+      {tag}
+    </a>
+  ) : (
+    tag
+  );
+};
+
+/**
+ * Category names, for the fallback above.
+ *
+ * Deliberately not imported from pages.jsx's CATEGORY_LABEL: that module imports
+ * this one, and reaching back would be a cycle. Five words is cheaper than
+ * restructuring both files, and a test pins the two lists together.
+ */
+const CATEGORY_NAME = {
+  tv: 'Television',
+  film: 'Film',
+  anime: 'Anime',
+  music: 'Music',
+  space: 'Spaceflight',
+};
+
 export const EventRow = ({ event }) => (
   <li class={`event ${event.category}${event.following ? ' followed' : ''}`}>
     <LocalTime at={event.starts_at} event={event} />
@@ -201,6 +244,7 @@ export const EventRow = ({ event }) => (
         {event.name}
       </a>
       <span class="meta">
+        <GenreTag event={event} />
         <a class="subject-link" href={`/subjects/${event.subject_slug}`}>
           {event.subject_name}
         </a>

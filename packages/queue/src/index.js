@@ -25,6 +25,14 @@ export const QUEUES = {
   batch: 'reminder-batch',
   /** Re-fetches readers' own channel lists from their providers. */
   playlists: 'playlist-refresh',
+  /**
+   * Walks IMDb's daily dumps and fills in what the five providers never mentioned.
+   *
+   * Its own queue rather than a job kind on `sync`, because it is long, bounded by
+   * wall clock, and must not sit in front of a catalogue sweep that has a
+   * rate-limited provider waiting behind it.
+   */
+  imdb: 'imdb-backfill',
 };
 
 const defaults = {
@@ -49,7 +57,7 @@ export const queues = Object.fromEntries(
  * every boot makes the code the single source of truth for what is scheduled.
  */
 export async function installSchedules({ log = console.log } = {}) {
-  for (const queue of [queues.scan, queues.sync, queues.playlists]) {
+  for (const queue of [queues.scan, queues.sync, queues.playlists, queues.imdb]) {
     for (const r of await queue.getRepeatableJobs()) await queue.removeRepeatableByKey(r.key);
   }
 
@@ -99,6 +107,23 @@ export async function installSchedules({ log = console.log } = {}) {
     {},
     { repeat: { every: config.playlists.refreshMinutes * 60_000 }, jobId: 'playlists' },
   );
+
+  /*
+   * The IMDb backfill, nightly, on its own clock.
+   *
+   * A different kind of job from the sync tick and it must not ride on one. The
+   * dumps are rebuilt once a day, so asking more often than that is pure transfer
+   * for no new rows; and a pass is bounded by a wall-clock deadline and resumable
+   * from a cursor, so "nightly" means "another slice each night" until the first
+   * full walk is done rather than "the whole thing or nothing".
+   *
+   * Six-hourly rather than daily on the repeatable, and deliberately: a repeatable
+   * fires one interval from NOW and is reset by every deploy (the trap below), so a
+   * daily one on a busy week may never fire at all. The pass itself is what
+   * enforces the cadence -- it reads its own progress row and returns immediately
+   * if a pass completed within the day.
+   */
+  await queues.imdb.add('imdb', {}, { repeat: { every: 6 * 3600_000 }, jobId: 'imdb' });
 
   /*
    * A repeatable first fires one interval from NOW, not immediately.
