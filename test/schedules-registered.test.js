@@ -72,4 +72,30 @@ describe('the refresh that went missing upstream', () => {
     const clearLine = INDEX.slice(from, INDEX.indexOf('])', from) + 2);
     expect(clearLine).toContain('queues.playlists');
   });
+
+  /*
+   * The backfill has to start on the deploy that ships it.
+   *
+   * A repeatable first fires one INTERVAL from now, so a six-hourly job on a fresh
+   * deployment does nothing for six hours -- and on a day of frequent deploys the
+   * timer is reset each time and it may never fire at all. That is the trap this
+   * file exists to guard, and the IMDb pass is the newest thing to fall into it.
+   *
+   * Enqueuing unconditionally is safe because the WORKER decides: it reads the
+   * progress row and returns immediately when a full pass completed within the day.
+   */
+  test('an IMDb pass is enqueued on boot, not only on the repeatable', () => {
+    expect(INDEX).toContain("queues.imdb.add('imdb', {}, { jobId: `imdb-");
+    expect(INDEX).toContain("queues.imdb.add('imdb', {}, { repeat:");
+  });
+
+  /*
+   * A BullMQ job id containing a colon is parsed as a structured key and crashes at
+   * runtime rather than at deploy. Every id built here uses '-'.
+   */
+  test('no scheduled job id contains a colon', () => {
+    for (const m of INDEX.matchAll(/jobId: `([^`]+)`/g)) {
+      expect(m[1]).not.toContain(':');
+    }
+  });
 });

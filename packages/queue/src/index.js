@@ -155,6 +155,22 @@ export async function installSchedules({ log = console.log } = {}) {
     { jobId: `detail-${minuteStamp()}`, delay: 25_000 },
   );
 
+  /*
+   * And one IMDb pass on boot, for the same reason.
+   *
+   * A repeatable first fires one interval from NOW, so without this a fresh
+   * deployment waits six hours before the backfill starts -- and on a day of
+   * frequent deploys it is pushed forward every time and may never run at all.
+   * That is trap 4 from the sibling repo, reached from the other direction.
+   *
+   * Safe to enqueue unconditionally because the WORKER decides whether to do
+   * anything: it reads the progress row and returns immediately when a full pass
+   * completed within the day. The delay lets the web role finish booting first --
+   * the pass streams a couple of hundred megabytes and there is no reason for it
+   * to compete with the first requests after a deploy.
+   */
+  await queues.imdb.add('imdb', {}, { jobId: `imdb-${minuteStamp()}`, delay: 90_000 });
+
   if (stale || empty || config.sync.onBoot) {
     log(`[queue] syncing now (stale: ${stale}, empty: ${empty}, forced: ${config.sync.onBoot})`);
     /*
