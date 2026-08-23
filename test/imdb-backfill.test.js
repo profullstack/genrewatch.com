@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { citext } from '@electric-sql/pglite/contrib/citext';
@@ -370,5 +371,53 @@ describe('what the writes do to a real database', () => {
     // The NULL travelled as a real SQL null, not as the string "NULL" -- which is
     // what makes the coalesces above mean what they say.
     expect(after[1]).toMatchObject({ imdb_id: 'tt222', year: null, rating_count: 9000 });
+  });
+});
+
+/* ------------------------------------------- the title that will not normalise -- */
+
+describe('a title with no Latin characters', () => {
+  /*
+   * The bug this section exists for, found running in production.
+   *
+   * normaliseTitle keeps [a-z0-9] and folds accents, so a title written in another
+   * script reduces to an empty string -- and this site carries anime, so every
+   * AniList title does. setSubjectNormTitles filtered those out as FALSY, the rows
+   * kept norm_title NULL, subjectsMissingNormTitle handed the same 2,000 back on
+   * the next turn, and the loop ran forever: it logged 13,020,000 "normalised"
+   * rows against a table of 5,133 while the IMDb pass behind it never started.
+   */
+  test('normalises to an empty string, which is a value and not an absence', () => {
+    expect(normaliseTitle('君の名は。')).toBe('');
+    expect(normaliseTitle('ワンピース')).toBe('');
+    expect(normaliseTitle('!!!')).toBe('');
+    // And a Latin title with accents still survives, so the fold is not the problem.
+    expect(normaliseTitle('Amélie')).toBe('amelie');
+  });
+
+  test('is kept by the write filter rather than dropped as falsy', () => {
+    const queries = readFileSync(
+      new URL('../packages/db/src/queries.js', import.meta.url).pathname,
+      'utf8',
+    );
+    const fn = queries.slice(queries.indexOf('export async function setSubjectNormTitles'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    // `r.normTitle` alone is the bug; the null check is the fix.
+    expect(body).toContain('r.normTitle != null');
+    expect(body).not.toMatch(/filter\(\(r\) => r\.id && r\.normTitle\)/);
+  });
+
+  test('and the loop stops itself if a batch ever writes nothing again', () => {
+    const imdb = readFileSync(
+      new URL('../packages/catalog/src/imdb.js', import.meta.url).pathname,
+      'utf8',
+    );
+    const fn = imdb.slice(imdb.indexOf('async function backfillNormTitles'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    // The loop counts what was WRITTEN, not what was read -- counting reads is
+    // what made the log claim thirteen million rows.
+    expect(body).toContain('const written = await q.setSubjectNormTitles');
+    expect(body).toContain('if (written === 0)');
+    expect(body).toContain('total += written');
   });
 });

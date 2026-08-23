@@ -1916,9 +1916,23 @@ export async function subjectsMissingNormTitle({ limit = 2000 } = {}) {
   `;
 }
 
-/** Write back what the normaliser produced. */
+/**
+ * Write back what the normaliser produced.
+ *
+ * `''` is a legitimate answer and MUST be stored.
+ *
+ * normaliseTitle keeps `[a-z0-9]` and folds accents, so any title with no Latin
+ * characters at all reduces to an empty string -- and this site carries anime, so
+ * "君の名は。" and every other AniList title does exactly that. Filtering those out
+ * as falsy left their norm_title NULL, which put them straight back in the next
+ * batch of subjectsMissingNormTitle: an infinite loop that logged thirteen million
+ * "normalised" rows against a table of five thousand and never let the IMDb pass
+ * start. Empty is the correct value -- it matches no IMDb candidate, which is the
+ * right outcome for a title written in another script -- and, crucially, it is not
+ * null, so the row leaves the queue.
+ */
 export async function setSubjectNormTitles(rows) {
-  const usable = (rows ?? []).filter((r) => r.id && r.normTitle);
+  const usable = (rows ?? []).filter((r) => r.id != null && r.normTitle != null);
   if (usable.length === 0) return 0;
 
   /*

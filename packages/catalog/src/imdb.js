@@ -320,12 +320,31 @@ async function backfillNormTitles({ log }) {
   for (;;) {
     const rows = await q.subjectsMissingNormTitle({ limit: 2000 });
     if (rows.length === 0) break;
-    await q.setSubjectNormTitles(
+
+    const written = await q.setSubjectNormTitles(
       rows.map((r) => ({ id: r.id, normTitle: normaliseTitle(r.display_name ?? r.name) })),
     );
-    total += rows.length;
-    if (total % 20000 === 0)
+
+    /*
+     * A batch that wrote nothing means the same rows are coming back forever.
+     *
+     * Not hypothetical: normaliseTitle returns '' for any title with no Latin
+     * characters -- every AniList title -- the write filtered '' out as falsy, the
+     * rows stayed NULL, and this loop logged thirteen million normalised rows
+     * against a table of five thousand while the IMDb pass behind it never
+     * started. The cause is fixed in setSubjectNormTitles; this is the guard that
+     * turns a repeat into a log line rather than a worker pinned until the next
+     * deploy.
+     */
+    if (written === 0) {
+      log(`[imdb] ${rows.length} rows will not normalise; leaving them and moving on`);
+      break;
+    }
+
+    total += written;
+    if (total % 20_000 === 0) {
       log(`[imdb] normalised ${total.toLocaleString('en-US')} existing rows`);
+    }
   }
   return total;
 }
