@@ -4,17 +4,21 @@ import {
   channelsForTitle,
   EXTERNAL_CATEGORIES,
   oneChannelM3u,
+  searchEverything,
   searchWithFallthrough,
 } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendInviteEmail, sendLoginLink } from '@genre/notify';
 import {
+  claimStreamSlot,
   firstLiveChannel,
   importPlaylist,
+  openStream,
   ownChannelsForEvent,
   probeStream,
   refreshPlaylist,
+  streamSlotsOpen,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
 import { Hono } from 'hono';
@@ -297,10 +301,10 @@ app.get('/search', async (c) => {
   const term = (c.req.query('q') ?? '').trim();
   const category = CATEGORIES.includes(c.req.query('category')) ? c.req.query('category') : null;
 
-  const results = term.length >= 2 ? await searchWithFallthrough(term, { category }) : [];
+  const results = await searchEverything(term, { userId: user?.id, category });
   // Whether the reader already has each of these, which is the whole point of
   // searching a back catalogue.
-  const owned = await ownedTitles({ userId: user?.id, results });
+  const owned = await ownedTitles({ userId: user?.id, results: results.subjects });
 
   return c.html(
     await render(
@@ -316,6 +320,16 @@ app.get('/api/v1/search', async (c) => {
   const limit = Math.min(Number(c.req.query('limit') ?? 20) || 20, 50);
 
   const results = (await searchWithFallthrough(term, { category, limit })).slice(0, limit);
+  /*
+   * Subjects only, deliberately.
+   *
+   * The header box searches five sources including the caller's OWN channel list,
+   * and this endpoint is public, cached and unauthenticated. Widening it to match
+   * the page would either serve one reader's private list from a shared cache or
+   * quietly return nothing for the sources that need a session -- both worse than
+   * an endpoint that says what it covers.
+   */
+  const genres = await q.searchGenres(term, { category });
   c.header('cache-control', 'public, max-age=60');
   return c.json({
     query: term,
@@ -329,6 +343,13 @@ app.get('/api/v1/search', async (c) => {
       released: r.starts_at ?? null,
       upcoming: r.upcoming > 0,
       url: `${config.siteUrl}/subjects/${r.slug}`,
+    })),
+    genres: genres.map((g) => ({
+      slug: g.slug,
+      name: g.name,
+      category: g.category,
+      upcoming: g.upcoming,
+      url: `${config.siteUrl}/genres/${g.slug}`,
     })),
   });
 });
@@ -541,6 +562,17 @@ app.get('/events/:id/channel-check', async (c) => {
   const event = await q.getEvent(Number(c.req.param('id')));
   if (!event) return c.notFound();
 
+  /*
+   * Never while something is playing.
+   *
+   * A probe is a second connection, and on a line that permits one it is the
+   * connection that gets the subscription suspended -- or, since a new claim
+   * evicts the old, it would be the reader's own film being taken off them by a
+   * background check. The page skips the sweep while it is playing; this is the
+   * half that does not depend on the page behaving.
+   */
+  if (streamSlotsOpen(user.id) > 0) return c.json({ skipped: 'watching' });
+
   const own = await ownChannelsForEvent({ userId: user.id, event });
   const { list, asked } = pickOwnChannel(c, own);
   const pick = list[asked];
@@ -560,6 +592,135 @@ app.get('/events/:id/channel-check', async (c) => {
   }
 
   return c.json(result);
+});
+
+/**
+ * The same entry, for a device with no player to hand it to.
+ *
+ * A television is the case this exists for. A Fire TV, an Android TV box or a
+ * games console has a browser and nothing else: no VLC to deep-link into, no
+ * Infuse, no filesystem to drop an .m3u onto. "Open it in another app" is not an
+ * answer there, and a film is watched on exactly that screen.
+ *
+ * So the bytes come through this server -- the only route on the site that does
+ * that, and see packages/playlists/src/proxy.js for why a browser leaves no other
+ * option. What it is NOT is a restream: the response is one reader's own
+ * subscription played back to that reader's own session, never cached, never
+ * shared, and never reachable without the cookie of the account that supplied the
+ * list.
+ *
+ * `.ts` in the path rather than a query flag, because what comes back really is a
+ * transport stream and some clients decide how to treat a URL by looking at it.
+ *
+ * Ported from tipoffwatch, where every line of it was paid for once already.
+ */
+app.get('/events/:id/stream.ts', async (c) => {
+  const user = requireUser(c);
+  if (!config.playlists.proxy.enabled) return c.json({ error: 'player is off' }, 404);
+
+  const event = await q.getEvent(Number(c.req.param('id')));
+  if (!event) return c.notFound();
+
+  const own = await ownChannelsForEvent({ userId: user.id, event });
+  const { list, asked } = pickOwnChannel(c, own);
+  const pick = list[asked];
+  if (!pick) return c.json({ error: 'no channel' }, 404);
+
+  /*
+   * Two ways this stream can be told to stop, and it has to obey both.
+   *
+   * The reader leaving is `c.req.raw.signal`. The other is this account starting
+   * a different entry -- pressing Play elsewhere means they want that one now, so
+   * the older stream is evicted rather than the new one being refused. Both end up
+   * on one controller, because everything downstream takes a single signal and
+   * neither reason to stop is more real than the other.
+   */
+  const stop = new AbortController();
+  const signal = stop.signal;
+  const abortOnLeave = () => stop.abort();
+  if (c.req.raw.signal?.aborted) stop.abort();
+  else c.req.raw.signal?.addEventListener('abort', abortOnLeave, { once: true });
+
+  /*
+   * Claimed before the upstream is touched, not after.
+   *
+   * A reader with two connections open on a line that allows one is how a
+   * subscription gets suspended, so the slot is taken first and the previous
+   * stream is aborted here -- before the replacement connects, not alongside it.
+   */
+  const release = claimStreamSlot(user.id, {
+    max: config.playlists.proxy.maxPerUser,
+    evict: () => stop.abort(),
+  });
+  if (!release) return c.json({ error: 'player is off' }, 404);
+
+  let result;
+  try {
+    result = await openStream(pick.url, { signal });
+  } catch (err) {
+    // openStream answers rather than throws for everything it anticipates, so
+    // this is the unanticipated one -- and a slot that leaks here is the reader's
+    // only connection, held by nothing, until the container restarts.
+    release();
+    throw err;
+  }
+
+  if (!result.ok) {
+    release();
+    // Remembered, so the page stops offering a slot that is not there -- the same
+    // verdict the probe writes, from the same headers. Not for a reader who simply
+    // closed the tab: that says nothing about the entry.
+    if (!result.silent && pick.id) {
+      await q
+        .markChannelChecked({ userId: user.id, channelId: pick.id, live: false, note: result.note })
+        .catch(() => {});
+    }
+    return c.json({ error: result.note }, result.status === 499 ? 499 : result.status);
+  }
+
+  if (pick.id) {
+    await q
+      .markChannelChecked({ userId: user.id, channelId: pick.id, live: true, note: result.note })
+      .catch(() => {});
+  }
+
+  /*
+   * Give the slot back when the stream ends, however it ends.
+   *
+   * Two ways out and both are wired, because missing either leaks the reader's
+   * only connection until the process restarts: `flush` is the upstream reaching
+   * its end, and the abort is the reader closing the tab -- which is by far the
+   * commoner one and never touches the transform at all. Releasing twice is
+   * harmless by construction; releasing never is a feature that works once per
+   * deploy.
+   */
+  signal.addEventListener('abort', release, { once: true });
+  const body = result.body.pipeThrough(
+    new TransformStream({
+      flush: release,
+      cancel: release,
+    }),
+  );
+
+  return new Response(body, {
+    headers: {
+      // What the provider called it, unless it declined to say. mpegts.js reads
+      // the bytes rather than the header, but a bare octet-stream tells an
+      // intermediary nothing about whether it may buffer.
+      'content-type': /^video\/|^audio\//i.test(result.contentType)
+        ? result.contentType
+        : 'video/mp2t',
+      // The body is somebody's own subscription. Nothing may hold a copy.
+      'cache-control': 'no-store, private',
+      // No length, no ranges: a live channel has no end and cannot be seeked.
+      // Saying so stops a client asking for byte ranges the provider will not
+      // honour.
+      'accept-ranges': 'none',
+      // Ask intermediaries to pass it through rather than accumulate it; a proxy
+      // that buffers a live stream adds its buffer to the latency, permanently.
+      'x-accel-buffering': 'no',
+    },
+  });
 });
 
 app.get('/events/:id/playlist.m3u', async (c) => {
@@ -1613,6 +1774,10 @@ const STATIC_FILES = [
   ['/app.js', 'app.js', 'text/javascript'],
   ['/push-check.js', 'push-check.js', 'text/javascript'],
   ['/vendor-webauthn.js', 'vendor-webauthn.js', 'text/javascript'],
+  // The transport-stream demuxer. Served like the others but never linked from
+  // the layout: it is a few hundred kilobytes and app.js injects the tag only
+  // when somebody actually presses Play.
+  ['/vendor-mpegts.js', 'vendor-mpegts.js', 'text/javascript'],
   ['/sw.js', 'sw.js', 'text/javascript'],
   ['/logo.png', 'logo.png', 'image/png'],
   // Header logo, in two shapes. The originals are 436KB and 722KB -- fine as

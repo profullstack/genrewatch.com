@@ -113,8 +113,10 @@ describe('what gets rendered, and where', () => {
   test('a search with no results shows no unit', async () => {
     const pages = await readFile(PAGES, 'utf8');
     // Guarded on there being results, or the ad is the only thing on an empty
-    // page -- and billed the same as one under a full list.
-    expect(pages).toMatch(/results\.length > 0 \? <Ad/);
+    // page -- and billed the same as one under a full list. `total` rather than
+    // `length` since the page became five sections: a search that matched only a
+    // genre still has something for the unit to sit under.
+    expect(pages).toMatch(/results\.total > 0 \? <Ad/);
   });
 });
 

@@ -168,6 +168,41 @@ export const config = {
      * deploy.
      */
     refreshMinutes: num('PLAYLIST_REFRESH_MINUTES', 5),
+
+    /**
+     * Playing a channel in the page itself, rather than handing it to an app.
+     *
+     * Ported from the sibling site, which is where the whole player comes from.
+     * On by default, because the devices that most need it are the ones with no
+     * app to hand a file to: a Fire TV, an Android TV, a desktop browser at work.
+     * It has a switch anyway, and the switch is about MONEY rather than
+     * correctness -- this is the only route on the site where a request costs
+     * bandwidth by the gigabyte. A single 1080p stream runs 4-6 Mbps, so one
+     * viewer watching one film moves roughly 2.5GB, and it is billed twice: in
+     * from the provider and out to the reader. Everything else here is a byte
+     * pipe by design precisely so that this is the only cost it can have.
+     *
+     * Set STREAM_PROXY=0 to take it away without a deploy; the VLC, Infuse and
+     * .m3u buttons keep working, because they never went through us.
+     */
+    proxy: {
+      get enabled() {
+        return opt('STREAM_PROXY', '1') !== '0';
+      },
+      /**
+       * Concurrent in-page streams per account.
+       *
+       * One, matching what a typical line permits. This exists to protect the
+       * READER's subscription, not our capacity -- a provider that sees two
+       * simultaneous connections from one credential suspends the account.
+       *
+       * At the ceiling the OLDEST stream is dropped, not the newest: pressing
+       * Play on another channel says which channel is wanted now, so it takes the
+       * line over. Raising this above 1 only makes sense for a line that really
+       * permits more; it does not make the player better behaved.
+       */
+      maxPerUser: num('STREAM_PROXY_MAX_PER_USER', 1),
+    },
   },
 
   push: {

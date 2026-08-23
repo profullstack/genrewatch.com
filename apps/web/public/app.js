@@ -636,6 +636,10 @@ function initNavigation() {
         location.href = url;
         return;
       }
+      // Before the swap: the player lives inside <main>, and removing its <video>
+      // does not stop it -- it keeps pulling the stream and holding the one
+      // connection the reader's line allows until the tab closes.
+      window.__genreStopPlayer?.();
       main().replaceWith(next);
       document.title = doc.title;
       if (push) history.pushState({}, '', url);
@@ -646,7 +650,10 @@ function initNavigation() {
       // The swapped-in <main> carries its own channel list, which has had neither
       // the phone hand-off treatment nor a single check run against it.
       initOwnChannelActions();
-      checkOwnChannels();
+      // initInlinePlayer starts the check sweep itself -- it has to own it, so
+      // that pressing Play can abort a probe that would otherwise be a second
+      // connection on a line that permits one.
+      initInlinePlayer();
     } catch {
       location.href = url;
     } finally {
@@ -680,7 +687,7 @@ function initNavigation() {
 localiseTimes();
 reportTimezone();
 initOwnChannelActions();
-checkOwnChannels();
+initInlinePlayer();
 initPush();
 initPasskeys();
 // Before initFollowForms: it must be able to cancel a submit that handler would
@@ -740,79 +747,202 @@ function initOwnChannelActions(root = document) {
 /* ------------------------------------------- checking before offering -- */
 
 /**
+ * Playing an entry in the page, for the screens that have nowhere else to play it.
+ *
+ * The VLC and Infuse buttons assume a device with apps on it. A Fire TV, an
+ * Android TV box or a locked-down desktop has a browser and nothing else, and
+ * "install VLC" is not an answer on a television. This is that answer.
+ *
+ * It is strictly an addition. The deep links stay exactly where they were, the
+ * button ships disabled, and it is enabled only after the browser has been asked
+ * whether it can do the job -- so the failure mode of every check below is the
+ * page exactly as it was before this existed.
+ */
+
+/**
+ * The two pieces of state this needs, on `window` rather than in module scope.
+ *
+ * Not a stylistic choice. This section sits below the block that calls
+ * initInlinePlayer() at boot, and a `let` at the bottom of the file is in its
+ * temporal dead zone when that call runs -- so the first reader with a channel
+ * list would get a ReferenceError instead of a player. Function declarations
+ * hoist and bindings do not, which is why every other late section here gets away
+ * with holding no state at all. `window.__genrePlayer` is already the handoff
+ * between the two files, so this stays beside it.
+ *
+ * `__genrePlayerLoading` is the in-flight bundle fetch: two presses must not
+ * pull a quarter of a megabyte twice.
+ *
+ * `__genreStopPlayer` is how anything else stops playback, and the navigation
+ * handler is what needs it: it replaces <main> wholesale, and a player whose
+ * <video> has been removed from the document does not stop -- it keeps pulling
+ * the stream, holding the one connection the reader's line allows, until the tab
+ * closes. The symptom is the next channel refusing to start with "you are already
+ * watching", on a page showing no player at all.
+ */
+
+function loadPlayerBundle(src) {
+  if (window.__genrePlayer) return Promise.resolve(window.__genrePlayer);
+  if (window.__genrePlayerLoading) return window.__genrePlayerLoading;
+  window.__genrePlayerLoading = new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = () =>
+      window.__genrePlayer ? resolve(window.__genrePlayer) : reject(new Error('no player'));
+    el.onerror = () => {
+      // Cleared, so a reader on a flaky connection can press again rather than
+      // being left holding a promise that will never settle.
+      window.__genrePlayerLoading = null;
+      reject(new Error('could not load the player'));
+    };
+    document.head.append(el);
+  });
+  return window.__genrePlayerLoading;
+}
+
+/**
+ * Can this browser transmux at all?
+ *
+ * Asked WITHOUT loading the bundle, which is the whole point of asking here: an
+ * iPhone would otherwise download 270KB of demuxer to be told it cannot use it.
+ * MediaSource with an H.264/AAC fragment is precisely what the library needs, so
+ * a yes here and a yes from the library agree in practice -- and the library is
+ * asked again anyway before anything is attached.
+ */
+function canTransmux() {
+  try {
+    return Boolean(
+      window.MediaSource?.isTypeSupported?.('video/mp4; codecs="avc1.42E01E,mp4a.40.2"'),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Ask the provider whether each listed entry is actually there.
  *
- * A provider playlist is mostly aspirational: the slot exists, the title matches,
- * and a large share of them answer with an HTML error page rather than video.
- * Offering those and letting the reader find out by opening one is how being
- * handed a dead link became a routine outcome of using the feature as intended --
- * the .m3u route has probed since it was written, and the page had no way to.
+ * A provider playlist is mostly aspirational: the slot exists, the title matches
+ * the fixture, and a large share of them answer with an HTML error page rather
+ * than video. Offering those and letting the reader find out by pressing Play is
+ * how "Your provider did not send a stream for that channel" became a routine
+ * outcome of using the feature as intended -- the .m3u route has probed since it
+ * was written, and the page had no way to.
  *
  * Sequential, one row at a time, and that is not a detail. These are one
- * subscriber's own connections on a line that usually permits very few, so five
- * checks at once is how an account gets flagged. A row clears the moment its own
- * answer arrives rather than when the slowest of five has timed out.
+ * subscriber's own connections on a line that usually permits exactly one, so
+ * five checks at once is how an account gets flagged. A row clears the moment its
+ * own answer arrives rather than when the slowest of five has timed out.
  *
  * Rows that fail are removed outright. Greying one out leaves the reader deciding
  * whether to try it anyway, and the answer is no.
  *
- * Nothing here runs without JavaScript, and that is the right failure: the page
- * then behaves exactly as it did before any of this, with every listed row
- * offered and the .m3u route still probing behind whichever one is opened.
+ * @param section  the .own-line section
+ * @param onLive   called with each row that came back streaming
+ * @param signal   aborts the sweep -- pressing Play must not leave a probe
+ *                 competing with the stream it just started
  */
-async function checkOwnChannels(root = document) {
-  const section = root.querySelector('.own-line');
-  if (!section || section.dataset.checking) return;
-  section.dataset.checking = '1';
-
+async function checkOwnChannels(section, onLive, signal) {
   const rows = [...section.querySelectorAll('li[data-check]')];
-  const pending = rows.filter((li) => !li.dataset.verified);
-  if (pending.length === 0) {
-    section.dataset.checking = '';
-    return;
-  }
+  if (rows.length === 0) return;
 
+  // Already confirmed by the server, within the ten minutes a verdict is worth
+  // trusting. Reopening a page must not re-probe a line that counts connections.
+  for (const li of rows.filter((li) => li.dataset.verified)) onLive(li);
+
+  const pending = rows.filter((li) => !li.dataset.verified);
+  if (pending.length === 0) return;
+
+  for (const li of pending) li.classList.add('checking');
   const say = (li, text) => {
     const slot = li.querySelector('.own-channel-state');
     if (slot) slot.textContent = text;
   };
-  for (const li of pending) {
-    li.classList.add('checking');
-    say(li, 'checking…');
-  }
+  for (const li of pending) say(li, 'checking…');
 
   let dropped = 0;
   for (const li of pending) {
+    if (signal?.aborted) {
+      for (const rest of pending.slice(pending.indexOf(li))) {
+        rest.classList.remove('checking');
+        say(rest, '');
+      }
+      return;
+    }
+
     let verdict;
     try {
-      const res = await fetch(li.dataset.check, { headers: { accept: 'application/json' } });
+      const res = await fetch(li.dataset.check, {
+        headers: { accept: 'application/json' },
+        signal,
+      });
       verdict = await res.json();
     } catch {
-      // A network failure here says nothing about the entry, so the row is left
-      // usable rather than removed. Better an unchecked row than one wrongly
-      // deleted because our own connection dropped.
+      /*
+       * An abort is not a verdict.
+       *
+       * The reader pressed Play, and this row is simply unchecked -- it must not
+       * be enabled on the strength of a check that never finished, and it must
+       * not be left saying "checking" with nothing checking it. The sweep is
+       * restarted when playback stops, and the row gets its answer then.
+       */
+      if (signal?.aborted) {
+        for (const rest of pending.slice(pending.indexOf(li))) {
+          rest.classList.remove('checking');
+          say(rest, '');
+        }
+        return;
+      }
+
+      // A genuine network failure here says nothing about the entry, so the row
+      // is left usable rather than removed. Better an unchecked row than one
+      // wrongly deleted because our own connection dropped.
       li.classList.remove('checking');
       say(li, '');
+      onLive(li);
       continue;
+    }
+
+    /*
+     * The line is busy: this account is watching something, here or in another
+     * tab. The check cannot run without becoming a second connection on a line
+     * that permits one, so it does not run.
+     *
+     * The remaining rows are left usable rather than disabled. Nothing has
+     * vouched for them -- pressing one is exactly the gamble it was before any of
+     * this -- but a row that can never be re-enabled from this tab is worse: the
+     * sweep restarts when playback stops HERE, and a stream stopped in another
+     * tab would never reach it.
+     */
+    if (verdict?.skipped) {
+      for (const rest of pending.slice(pending.indexOf(li))) {
+        rest.classList.remove('checking');
+        say(rest, '');
+        onLive(rest);
+      }
+      return;
     }
 
     li.classList.remove('checking');
     if (verdict?.live) {
       li.dataset.verified = '1';
       say(li, '');
+      onLive(li);
       continue;
     }
 
+    // Named, not silent. "returned a web page, not a stream" tells you the slot is
+    // empty; "timed out" tells you it is not. The row goes, and the note goes with
+    // it into the summary rather than being lost.
     dropped += 1;
     li.remove();
   }
 
-  section.dataset.checking = '';
   if (dropped === 0) return;
 
-  // Every list that lost all its rows goes with them. There are three -- on
-  // demand, matches, and the genre channels -- and an emptied <ul> left behind is
-  // a gap where a list used to be, under a heading that now names nothing.
+  // Every list that lost all its rows goes with them. There are three -- on demand,
+  // the matches, and the genre channels -- and an emptied <ul> left behind is a
+  // gap where a list used to be, under a heading that now names nothing.
   for (const ul of section.querySelectorAll('ul.channels')) {
     if (!ul.querySelector('li')) {
       // The heading and blurb above it describe a list that is no longer there.
@@ -830,4 +960,201 @@ async function checkOwnChannels(root = document) {
     : 'None of your matching entries are there right now. Your provider lists them, but the slots are empty.';
   section.querySelector('.channels-dropped')?.remove();
   section.appendChild(note);
+}
+
+function initInlinePlayer(root = document) {
+  const section = root.querySelector('.own-line[data-player-src]');
+  if (!section || section.dataset.player) return;
+  section.dataset.player = '1';
+
+  const buttons = [...section.querySelectorAll('button[data-play]')];
+
+  /*
+   * The sweep aborts when a stream starts.
+   *
+   * A probe is a connection like any other, and the line permits one. Pressing
+   * Play while the sweep is still walking the list would put a background check
+   * alongside the reader's own film -- which, now that a new claim evicts the
+   * old, is not merely rude but would take their film off them.
+   */
+  let sweep = new AbortController();
+
+  /*
+   * A browser that cannot play these loses the button rather than keeping a dead
+   * one.
+   *
+   * iPhone Safari is the case: no Media Source Extensions, so there is nothing to
+   * push fragments into, and no header or container that changes it. It already
+   * has the right answer on the page -- VLC, which demuxes TS natively -- and a
+   * "Play here" that silently failed would pull people away from the button that
+   * works.
+   *
+   * The check sweep still runs there. VLC and .m3u are handed the same channels,
+   * and a dead slot is just as dead in VLC.
+   */
+  if (!canTransmux() || buttons.length === 0) {
+    for (const b of buttons) b.remove();
+    checkOwnChannels(section, () => {}, sweep.signal);
+    return;
+  }
+
+  const src = section.dataset.playerSrc;
+  let stop = null;
+  let stage = null;
+
+  /*
+   * Which press is the live one.
+   *
+   * Starting a player is not instant -- the bundle has to arrive on the first
+   * press -- and a second press during that wait used to run the whole handler a
+   * second time. Both then reached `stop = player.attach(...)`, the later one
+   * overwrote the earlier handle, and the earlier player kept running with
+   * nothing left that could destroy it: two <video> elements, two connections on
+   * a line that permits one, and a stray one that only a reload could stop.
+   *
+   * A press that is no longer the newest abandons itself rather than racing.
+   */
+  let generation = 0;
+
+  /** One at a time, because the reader's line allows one. */
+  const teardown = () => {
+    if (stop) stop();
+    stop = null;
+    stage?.remove();
+    stage = null;
+  };
+  window.__genreStopPlayer = teardown;
+
+  const fail = (message) => {
+    teardown();
+    for (const b of buttons) {
+      b.dataset.playing = '';
+      b.textContent = 'Play here';
+      // Only rows the provider has confirmed. Re-enabling everything after an
+      // error would quietly undo the check and put the unverified ones back.
+      b.disabled = !b.closest('li')?.dataset.verified;
+    }
+    section.querySelector('.player-error')?.remove();
+    const p = document.createElement('p');
+    p.className = 'feedback error player-error';
+    p.textContent = message;
+    section.prepend(p);
+    // Nothing is playing after a failure, so the line is free and the rows the
+    // sweep abandoned when Play was pressed can be finished off.
+    startSweep();
+  };
+
+  /*
+   * Play is offered per row, once that row's channel has answered.
+   *
+   * The button ships disabled from the server for a different reason -- this
+   * browser might have no Media Source Extensions -- and now stays disabled for a
+   * second one: nothing has established that the provider is actually sending
+   * this channel. Both are answered before it lights up, so a button that can be
+   * pressed is one that works.
+   */
+  const enableRow = (li) => {
+    const button = li.querySelector('button[data-play]');
+    if (button) button.disabled = false;
+  };
+
+  /*
+   * Restartable, because the sweep is abandoned every time playback starts.
+   *
+   * Without this, a reader who presses Play while the list is still being checked
+   * leaves every unchecked row disabled for the life of the page -- the buttons
+   * would never be handed their answer, and stopping the stream would not bring
+   * them back.
+   */
+  const startSweep = () => {
+    sweep = new AbortController();
+    checkOwnChannels(section, enableRow, sweep.signal);
+  };
+  startSweep();
+
+  for (const button of buttons) {
+    button.addEventListener('click', async () => {
+      // Whatever is left of the sweep stops here: the line permits one connection
+      // and the reader has just said what they want it used for.
+      sweep.abort();
+      section.querySelector('.player-error')?.remove();
+
+      // Pressing the channel that is already playing stops it. Without this the
+      // only way to release the connection is to leave the page.
+      if (button.dataset.playing) {
+        generation += 1;
+        button.dataset.playing = '';
+        button.textContent = 'Play here';
+        teardown();
+        // The line is free again, so anything the sweep never reached can be
+        // checked now.
+        startSweep();
+        return;
+      }
+
+      generation += 1;
+      const mine = generation;
+
+      // The old channel goes before the new one is asked for: its <video> comes
+      // out of the page and its connection is dropped here rather than being left
+      // for the server to evict, which it now would.
+      teardown();
+      for (const b of buttons) {
+        b.dataset.playing = '';
+        b.textContent = 'Play here';
+      }
+
+      button.disabled = true;
+      button.textContent = 'Starting…';
+
+      let player;
+      try {
+        player = await loadPlayerBundle(src);
+      } catch {
+        button.disabled = false;
+        button.textContent = 'Play here';
+        fail('The player could not be loaded. Try VLC, or reload the page.');
+        return;
+      }
+
+      // Somebody pressed a different channel while the bundle was arriving. That
+      // press owns the player now; this one puts its own button back and leaves.
+      if (mine !== generation) {
+        button.disabled = false;
+        button.textContent = 'Play here';
+        return;
+      }
+
+      button.disabled = false;
+
+      if (!player.supported()) {
+        for (const b of buttons) b.remove();
+        fail('This browser cannot play these streams. Open the channel in VLC instead.');
+        return;
+      }
+
+      stage = document.createElement('div');
+      stage.className = 'player-stage';
+      const video = document.createElement('video');
+      video.controls = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      // Muted, and not as a preference. Every browser refuses to autoplay audible
+      // video without a gesture, and the refusal arrives as a rejected play() that
+      // leaves a black rectangle -- which reads as a broken stream rather than a
+      // blocked one. The reader unmutes with the control.
+      video.muted = true;
+      stage.append(video);
+      button.closest('li')?.after(stage);
+
+      stop = player.attach(video, button.dataset.play, fail);
+      button.dataset.playing = '1';
+      button.textContent = 'Stop';
+    });
+  }
+
+  // Leaving the page must drop the provider connection rather than wait for a
+  // socket to time out. pagehide rather than unload: it is the one that fires on
+  // iOS and on a back/forward navigation.
+  window.addEventListener('pagehide', teardown);
 }

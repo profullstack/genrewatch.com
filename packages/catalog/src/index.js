@@ -18,6 +18,7 @@ import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import * as anilist from './anilist.js';
 import * as musicbrainz from './musicbrainz.js';
+import { normaliseTitle } from './slug.js';
 import * as spacedevs from './spacedevs.js';
 import * as tmdb from './tmdb.js';
 import * as tvmaze from './tvmaze.js';
@@ -280,6 +281,56 @@ export {
   rankChannelsForTitle,
 } from './m3u.js';
 export { keyFor, normaliseTitle, slugify } from './slug.js';
+
+/**
+ * One box, every kind of row.
+ *
+ * The site had a search that looked in exactly one table. That is the right answer
+ * for a follow picker and the wrong one for a box in the header, where whatever
+ * somebody types is whatever they were looking at a second ago -- a genre they saw
+ * on a chip, an episode title, the name of a channel in their own list.
+ *
+ * Five sources, run together and each allowed to fail on its own. A search box
+ * must not go blank because one query was slow or one table was locked, so a
+ * rejected source contributes nothing and the rest of the page still renders.
+ * Subject search keeps its fallthrough to TMDB, so this is also the path by which
+ * a title nobody has ever asked for enters the catalogue.
+ *
+ * @param {string} term
+ * @param {{userId?: string|null, category?: string|null, limit?: number}} [opts]
+ */
+export async function searchEverything(term, { userId = null, category = null, limit = 30 } = {}) {
+  const clean = String(term ?? '').trim();
+  const empty = { term: clean, subjects: [], genres: [], events: [], channels: [], people: [] };
+  if (clean.length < 2) return { ...empty, total: 0 };
+
+  const settled = await Promise.allSettled([
+    searchWithFallthrough(clean, { limit, category }),
+    q.searchGenres(clean, { category }),
+    q.searchEvents(clean, { category }),
+    // The needle goes through the same normaliser that wrote norm_title at import.
+    // Passing the raw term instead silently matches nothing the moment a title has
+    // a colon in it.
+    q.searchOwnChannels(userId, { normTerm: normaliseTitle(clean) }),
+    // People are not a category of content, so a category filter must not hide
+    // them -- somebody narrowing to Film is narrowing the catalogue, not the site.
+    category ? Promise.resolve([]) : q.searchProfiles(clean),
+  ]);
+
+  const [subjects, genres, events, channels, people] = settled.map((s) =>
+    s.status === 'fulfilled' ? (s.value ?? []) : [],
+  );
+
+  return {
+    term: clean,
+    subjects,
+    genres,
+    events,
+    channels,
+    people,
+    total: subjects.length + genres.length + events.length + channels.length + people.length,
+  };
+}
 
 /**
  * Fill in the detail that costs a request per title.

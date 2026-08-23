@@ -148,6 +148,39 @@ export const Layout = (props) => (
             />
           </picture>
         </a>
+
+        {/*
+          The search box, in the header, on every page.
+
+          A plain GET form pointed at the page that already existed. No script, no
+          suggestion dropdown, no fetch on keypress: it works before app.js loads,
+          it works with app.js blocked, and the browser's own history gives back
+          the last thing typed for free. `type="search"` is what puts the clear
+          button in it on iOS.
+
+          `props.q` puts the current query back in the box on the results page, so
+          refining a search means editing what you typed rather than retyping it.
+        */}
+        <search class="topsearch">
+          <form class="topsearch-form" method="get" action="/search">
+            <label class="visually-hidden" for="topsearch-q">
+              Search
+            </label>
+            <input
+              id="topsearch-q"
+              type="search"
+              name="q"
+              value={props.q ?? ''}
+              placeholder="Search everything"
+              autocomplete="off"
+              enterkeyhint="search"
+            />
+            <button type="submit" class="ghost">
+              Go
+            </button>
+          </form>
+        </search>
+
         <nav>
           <a href="/genres">Genres</a>
           <a href="/feeds">Feeds</a>

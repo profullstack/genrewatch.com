@@ -15,8 +15,14 @@
  * lingers is a probe that competes with the reader's own playback.
  */
 
-/** What a working stream looks like coming back. */
-const PLAYABLE = [
+/**
+ * What a working stream looks like coming back.
+ *
+ * Exported because the browser proxy has to make the same judgement from the same
+ * headers, and two lists that drift apart would mean an entry the probe calls
+ * live and the player calls broken.
+ */
+export const PLAYABLE_TYPE = [
   /^video\//i,
   /^audio\//i,
   // MPEG-TS, which is what most of these actually serve.
@@ -59,7 +65,7 @@ export async function probeStream(url, { signal } = {}) {
       return { live: false, note: `provider answered ${res.status}` };
     }
 
-    if (PLAYABLE.some((re) => re.test(type))) {
+    if (PLAYABLE_TYPE.some((re) => re.test(type))) {
       return { live: true, note: type || 'video' };
     }
 

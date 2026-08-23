@@ -106,17 +106,21 @@ describe('how the sweep behaves', () => {
   test('the sweep runs again after a client-side navigation', () => {
     // <main> is replaced wholesale, so a page reached by a link had never been
     // checked at all -- and, as it turns out, had never had the phone hand-off
-    // treatment either.
+    // treatment either. The sweep is started by initInlinePlayer rather than
+    // called directly: pressing Play has to be able to abort it, which means one
+    // thing has to own both.
     const nav = client.slice(client.indexOf('initPasskeys();'));
-    expect(nav.slice(0, 600)).toContain('checkOwnChannels();');
+    expect(nav.slice(0, 700)).toContain('initInlinePlayer();');
   });
 
   test('the check and the download share one tier picker', () => {
     // Duplicating it is how the two drift into disagreeing about which entry ?n=0
     // means.
     expect(app).toContain('function pickOwnChannel(c, own)');
-    // Its definition plus exactly two call sites: the check and the download.
-    expect(app.match(/pickOwnChannel\(c, own\)/g).length).toBe(3);
+    // Its definition plus three call sites: the check, the download, and the
+    // in-page player. All three reach for a channel by index, and a picker they
+    // did not share is how a probe clears one entry and the player opens another.
+    expect(app.match(/pickOwnChannel\(c, own\)/g).length).toBe(4);
   });
 
   test('the verdict is written back for the next reader', () => {

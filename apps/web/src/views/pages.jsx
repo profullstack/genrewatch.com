@@ -351,6 +351,33 @@ export const SubjectPage = ({ user, subject, events, genres, following }) => (
  * The state span ships empty. Everything it ever says is a fact the page did not
  * have when it was rendered.
  */
+/**
+ * The Play button, which is not an anchor and not always usable.
+ *
+ * Rendered as a disabled button and enabled by app.js once two things have been
+ * established: that this browser has Media Source Extensions, and that the
+ * provider is actually sending this entry. Both are facts the server does not
+ * have -- the first is about the device and this page is served identically to
+ * every device, the second needs a probe -- so the safe direction is upward. A
+ * reader whose scripting is off, or whose browser cannot transmux, sees a control
+ * that plainly cannot be pressed next to two that can, rather than a live-looking
+ * button that does nothing.
+ *
+ * `data-play` carries the route rather than the stream. The provider URL is in
+ * the VLC and Infuse hrefs because an external app cannot hold our session; the
+ * page can, so nothing here needs the credential.
+ */
+const PlayButton = ({ eventId, query }) => (
+  <button
+    type="button"
+    class="ghost small-btn play-btn"
+    disabled
+    data-play={`/events/${eventId}/stream.ts?${query}`}
+  >
+    Play here
+  </button>
+);
+
 export const ChannelRow = ({ event, ch, index, tier = null }) => {
   const query = `${tier ? `tier=${tier}&` : ''}n=${index}`;
   return (
@@ -358,9 +385,22 @@ export const ChannelRow = ({ event, ch, index, tier = null }) => {
       data-check={`/events/${event.id}/channel-check?${query}`}
       data-verified={ch.verified ? '1' : null}
     >
-      <span>{ch.title}</span>
+      <span class="own-channel-name">
+        {ch.title || 'Untitled entry'}
+        {/* What the provider files this entry under, and whether it is a channel
+            or a file. Both come straight from the playlist rather than from us: a
+            reader looking at ten near-identical rows needs the same words their
+            own player shows them, not our guess at what they mean. */}
+        {ch.group ? <span class="genre-tag channel-tag">{ch.group}</span> : null}
+        {ch.kind && ch.kind !== 'live' ? (
+          <span class="genre-tag channel-tag kind" title="A file, not a live channel">
+            {ch.kind === 'series' ? 'Series' : 'On demand'}
+          </span>
+        ) : null}
+      </span>
       <span class="own-channel-state" />
       <span class="own-channel-actions">
+        <PlayButton eventId={event.id} query={query} />
         <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
           VLC
         </a>
@@ -586,9 +626,15 @@ export const EventPage = ({
         The empty state is not decoration. Rendering nothing when a list is present
         but nothing matched is indistinguishable from the feature being broken --
         which is how it read before the count was carried back.
+
+        data-player-src rather than a script tag in the Layout: the bundle is a
+        quarter of a megabyte of demuxer, and app.js fetches it on the first press
+        of Play. Versioned here because only the server knows the hash -- an
+        unversioned URL is served with a sixty-second cache, so a deploy would
+        take an hour to reach anyone.
       */}
       {ownChannels?.hasList ? (
-        <section class="own-line">
+        <section class="own-line" data-player-src={assetUrl('vendor-mpegts.js')}>
           <h2>In your list</h2>
 
           {/* Why the last attempt handed back nothing, in the words of the probe.
@@ -619,8 +665,10 @@ export const EventPage = ({
             <>
               <p class="muted small">
                 From the playlist you added. Each one is checked against your provider before it is
-                offered — a slot can be listed and still be empty. Opening one hands a file to your
-                own player; nothing is streamed through GenreWatch.
+                offered — a slot can be listed and still be empty. VLC, Infuse and .m3u hand the
+                entry straight to your own player and never touch our servers. “Play here” is the
+                exception, for a television or a locked-down desktop with no app to hand it to: it
+                passes through us, to your session only, and is never cached or shared.
               </p>
               <ul class="channels">
                 {ownChannels.matches.map((ch, i) => (
@@ -708,14 +756,20 @@ export const EventPage = ({
 };
 
 /**
- * Search results, past and future together.
+ * One page for every kind of row the site holds.
  *
- * The one page here that is not a calendar. A film from 1999 and one out next
- * month are equally good answers to "do you have this", so nothing is filtered by
- * date and the year is shown instead -- which is what tells them apart.
+ * Grouped rather than interleaved. A show, a genre, an episode, a channel on your
+ * own line and a person are five different KINDS of answer, and a single ranked
+ * list has to pretend they are comparable -- there is no honest way to say whether
+ * the Horror genre beats a horror film called what you typed. Sections say what
+ * each thing is and let the reader pick the row they meant.
+ *
+ * Titles go first because they are what the box is mostly used for. Your own
+ * channels go second when there are any, because somebody with a subscription
+ * asking "do you have this" is asking about their line, not about our catalogue.
  */
 export const SearchPage = ({ user, term, category, results, owned }) => (
-  <Layout title={term ? `${term} — search` : 'Search'} user={user}>
+  <Layout title={term ? `${term} — search` : 'Search'} user={user} q={term}>
     <h1>Search</h1>
 
     <form method="get" action="/search" class="searchbar">
@@ -745,44 +799,136 @@ export const SearchPage = ({ user, term, category, results, owned }) => (
 
     {!term ? (
       <p class="muted">
-        Everything we know about, whether it is out yet or not. If you have added a channel list,
-        results say which ones you already have.
+        Everything we know about, whether it is out yet or not — titles, genres, episodes and
+        releases, and the people here. If you have added a channel list, your own line is searched
+        too, and results say which ones you already have.
       </p>
-    ) : results.length === 0 ? (
+    ) : results.total === 0 ? (
       <p class="empty">Nothing matched “{term}”.</p>
     ) : (
-      <ul class="results">
-        {results.map((r) => (
-          <li class="result">
-            {r.image_url ? (
-              <img src={r.image_url} alt="" loading="lazy" width="60" height="90" />
-            ) : (
-              <span class="subject-blank" />
-            )}
-            <div class="result-main">
-              <a href={`/subjects/${r.slug}`}>{r.display_name}</a>
-              <span class="meta">
-                {CATEGORY_LABEL[r.category]?.name ?? r.category}
-                {r.starts_at ? ` · ${new Date(r.starts_at).getUTCFullYear()}` : ''}
-                {r.upcoming > 0 ? ' · coming up' : ''}
-              </span>
-              {r.description ? <p class="result-blurb">{r.description}</p> : null}
-            </div>
-            {/* The answer to the question that brought them here. */}
-            {owned?.has?.(r.id) ? (
-              <span class="badge owned" title="Found in your channel list">
-                In your list
-              </span>
-            ) : null}
-          </li>
-        ))}
-      </ul>
+      <>
+        {results.subjects.length > 0 ? (
+          <section class="results-group">
+            <h2>Titles</h2>
+            <ul class="results">
+              {results.subjects.map((r) => (
+                <li class="result">
+                  {r.image_url ? (
+                    <img src={r.image_url} alt="" loading="lazy" width="60" height="90" />
+                  ) : (
+                    <span class="subject-blank" />
+                  )}
+                  <div class="result-main">
+                    <a href={`/subjects/${r.slug}`}>{r.display_name}</a>
+                    <span class="meta">
+                      {CATEGORY_LABEL[r.category]?.name ?? r.category}
+                      {r.starts_at ? ` · ${new Date(r.starts_at).getUTCFullYear()}` : ''}
+                      {r.upcoming > 0 ? ' · coming up' : ''}
+                    </span>
+                    {r.description ? <p class="result-blurb">{r.description}</p> : null}
+                  </div>
+                  {/* The answer to the question that brought them here. */}
+                  {owned?.has?.(r.id) ? (
+                    <span class="badge owned" title="Found in your channel list">
+                      In your list
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {/* Only for the account that owns them, and only titles -- never a URL.
+            The stream URL is a credential and it belongs to the download route. */}
+        {results.channels.length > 0 ? (
+          <section class="results-group">
+            <h2>On your line</h2>
+            <p class="muted">From the channel list on your account. Nobody else can see these.</p>
+            <ul class="results">
+              {results.channels.map((ch) => (
+                <li class="result">
+                  <span class="subject-blank" />
+                  <div class="result-main">
+                    <span class="result-name">{ch.title}</span>
+                    <span class="meta">
+                      {ch.group_title ? ch.group_title : 'Ungrouped'}
+                      {ch.is_live === false ? ' · did not answer last time' : ''}
+                    </span>
+                  </div>
+                  <a class="link-quiet" href="/my/channels">
+                    Your channels
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {results.genres.length > 0 ? (
+          <section class="results-group">
+            <h2>Genres</h2>
+            <ul class="chips">
+              {results.genres.map((g) => (
+                <li>
+                  <a class="chip" href={`/genres/${g.slug}`}>
+                    {g.name}
+                    {g.upcoming > 0 ? <span class="chip-count">{g.upcoming}</span> : null}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {results.events.length > 0 ? (
+          <section class="results-group">
+            <h2>Episodes &amp; releases</h2>
+            <ul class="results">
+              {results.events.map((e) => (
+                <li class="result">
+                  {e.image_url ? (
+                    <img src={e.image_url} alt="" loading="lazy" width="60" height="90" />
+                  ) : (
+                    <span class="subject-blank" />
+                  )}
+                  <div class="result-main">
+                    <a href={`/events/${e.id}`}>{e.name}</a>
+                    <span class="meta">
+                      <a href={`/subjects/${e.subject_slug}`}>{e.subject_name}</a>
+                      {' · '}
+                      {whenLabel(e)}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {results.people.length > 0 ? (
+          <section class="results-group">
+            <h2>People</h2>
+            <ul class="results">
+              {results.people.map((p) => (
+                <li class="result">
+                  <span class="subject-blank" />
+                  <div class="result-main">
+                    <a href={`/u/${p.handle}`}>{p.display_name || `@${p.handle}`}</a>
+                    {p.display_name ? <span class="meta">@{p.handle}</span> : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </>
     )}
 
     {/* Only once there is something to sit under. An ad above an empty result
         set is the only thing on the page, which is both worse to read and
         billed identically. */}
-    {term && results.length > 0 ? <Ad format="text_link" /> : null}
+    {term && results.total > 0 ? <Ad format="text_link" /> : null}
   </Layout>
 );
 

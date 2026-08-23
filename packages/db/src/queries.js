@@ -1051,6 +1051,127 @@ export async function searchSubjects(term, limit = 25) {
   `;
 }
 
+/**
+ * Genres whose name looks like what was typed.
+ *
+ * No index and none wanted: there are a few dozen active genres, so a sequential
+ * scan with a similarity call on each is cheaper than maintaining a trigram index
+ * that would never be large enough to earn its write cost.
+ */
+export async function searchGenres(term, { limit = 8, category = null } = {}) {
+  const q = String(term ?? '')
+    .trim()
+    .toLowerCase();
+  if (q.length < 2) return [];
+
+  return sql`
+    select g.id, g.slug, g.name, g.category, g.image_url,
+           (select count(*) from event_genres eg
+              join events e on e.id = eg.event_id
+             where eg.genre_id = g.id and e.starts_at > now())::int as upcoming
+    from genres g
+    where g.active
+      and (${category}::text is null or g.category = ${category})
+      and (lower(g.name) % ${q} or lower(g.name) like ${`%${q}%`})
+    order by similarity(lower(g.name), ${q}) desc, g.priority, g.name
+    limit ${limit}
+  `;
+}
+
+/**
+ * Dated things by their own name, rather than by the name of what they belong to.
+ *
+ * An episode is called "The Constant" and its show is called "Lost"; a release is
+ * called "Deluxe Edition" and its artist is not. searchCatalogue can only ever
+ * find the second of each pair, so a search box that stops there cannot find the
+ * thing somebody actually remembers the name of.
+ *
+ * Ordered by nearness to now in either direction rather than by date: for a title
+ * with two hundred episodes the interesting ones are the next and the last, and
+ * neither end of a plain date sort gives you both.
+ */
+export async function searchEvents(term, { limit = 10, category = null } = {}) {
+  const q = String(term ?? '')
+    .trim()
+    .toLowerCase();
+  if (q.length < 2) return [];
+
+  return sql`
+    select e.id, e.name, e.short_name, e.starts_at, e.time_known, e.precision,
+           e.state, e.category, e.kind, e.image_url, e.season, e.number,
+           s.slug as subject_slug, s.display_name as subject_name
+    from events e
+    join subjects s on s.id = e.subject_id
+    where (${category}::text is null or e.category = ${category})
+      and lower(e.name) like ${`%${q}%`}
+      -- The subject's own name is already the first section of the results page.
+      -- Without this, searching "severance" returns the show and then fifty of its
+      -- episodes, which pushes everything else off the screen.
+      and lower(s.display_name) not like ${`%${q}%`}
+    order by abs(extract(epoch from (e.starts_at - now()))), e.starts_at desc
+    limit ${limit}
+  `;
+}
+
+/**
+ * A reader's own channel list.
+ *
+ * The one search that is not about our catalogue at all, and the reason the box
+ * says "everything": somebody with a subscription is asking whether THEY have it,
+ * and until now the only way to find out was to open a film we happened to hold
+ * and read the panel at the bottom of its page.
+ *
+ * `normTerm` is pre-normalised by the caller rather than here. norm_title is
+ * written by @genre/catalog's normaliseTitle at import, and the needle has to go
+ * through the same function or the two disagree about punctuation -- but this
+ * module cannot import that package, because that package imports this one.
+ *
+ * Scoped by user_id through the playlist join, like every other read of this
+ * table: the URLs are credentials and they only ever travel back to the account
+ * that supplied them. Stream URLs are deliberately NOT selected -- this is a
+ * "you have this" answer, and the sealed URL belongs to the download route.
+ */
+export async function searchOwnChannels(userId, { normTerm, limit = 12 } = {}) {
+  const needle = String(normTerm ?? '').trim();
+  if (!userId || needle.length < 2) return [];
+
+  return sql`
+    select c.id, c.title, c.group_title, c.is_live, c.checked_at
+    from user_playlist_channels c
+    join user_playlists p on p.id = c.playlist_id
+    where p.user_id = ${userId}
+      and (c.norm_title like ${`%${needle}%`} or lower(c.group_title) like ${`%${needle}%`})
+    -- A slot known to be dead sinks; unchecked stays where it is, because
+    -- unchecked is not the same as dead. Then the plainest title, which is the
+    -- primary rather than a regional alternate or a replay with a date in it.
+    order by (c.is_live is false), length(c.title), c.position
+    limit ${limit}
+  `;
+}
+
+/**
+ * People, by handle or by the name they chose.
+ *
+ * Only public profiles and only accounts that picked a handle: a row with no
+ * handle has no page to link to, and profile_public is an explicit opt-out that
+ * has to be honoured everywhere something is listed.
+ */
+export async function searchProfiles(term, { limit = 6 } = {}) {
+  const q = String(term ?? '').trim();
+  if (q.length < 2) return [];
+  const like = `%${q}%`;
+
+  return sql`
+    select u.handle::text as handle, u.display_name
+    from users u
+    where u.handle is not null
+      and u.profile_public
+      and (u.handle::text ilike ${like} or u.display_name ilike ${like})
+    order by (u.handle::text ilike ${q}) desc, u.handle::text
+    limit ${limit}
+  `;
+}
+
 export async function catalogueStats() {
   const [row] = await sql`
     select

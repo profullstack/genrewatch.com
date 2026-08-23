@@ -2086,3 +2086,199 @@ li.result img {
 .channels-dropped {
   margin-top: 0.6rem;
 }
+
+/* ==================================================================== search ==
+   The box in the header, and the grouped results page behind it.
+
+   The bar is a three-part flex row (brand, search, nav) rather than the two it was.
+   The search takes the slack -- `flex: 1 1 12rem` with a max -- so it stretches on
+   a desktop and gives way to the nav on a phone rather than pushing the links onto
+   a second row. Below the phone breakpoint it drops to its own full-width line,
+   which is the only arrangement where the input is still wide enough to read what
+   you typed. */
+.topsearch {
+  display: flex;
+  flex: 1 1 12rem;
+  max-width: 26rem;
+  /* The bar's own padding-bottom is 0.35rem and the logo sets its height, so the
+     box is centred against the logo rather than against the nav links. */
+  margin: 0 0.5rem;
+}
+/* The form carries the layout, the <search> element carries the meaning. Splitting
+   them is what lets the landmark exist without a wrapper that also has to be a flex
+   container in two different breakpoints. */
+.topsearch-form {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  width: 100%;
+}
+.topsearch input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.95rem;
+  /* 44px, the same floor the nav links were given. A header search that is 30px
+     tall is the control people miss on a phone. */
+  min-height: 44px;
+  padding: 0.35rem 0.7rem;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  /* iOS draws its own rounded, inset search field otherwise, which ignores every
+     colour above and renders black-on-black in this palette. */
+  -webkit-appearance: none;
+  appearance: none;
+}
+.topsearch input[type="search"]::placeholder {
+  color: var(--muted);
+}
+.topsearch input[type="search"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.topsearch .ghost {
+  flex: none;
+  min-height: 44px;
+}
+
+@media (max-width: 48rem) {
+  /* The button is redundant once the keyboard shows a Go key, and it is the first
+     thing worth spending on the input instead. enterkeyhint on the input is what
+     makes that key say "search". */
+  .topsearch .ghost {
+    display: none;
+  }
+}
+
+@media (max-width: 34rem) {
+  .topbar {
+    flex-wrap: wrap;
+  }
+  .topsearch {
+    /* Its own row, after the brand and the nav, at full width. Ordered last so the
+       nav keeps its place beside the logo. */
+    order: 3;
+    flex-basis: 100%;
+    max-width: none;
+    margin: 0 0 0.35rem;
+  }
+}
+
+/* Results, in sections by kind. The heading is the whole reason the page reads:
+   without it, a genre, an episode and a channel on your own line are five rows
+   that look identical and mean different things. */
+.results-group {
+  margin: 1.5rem 0;
+}
+.results-group h2 {
+  font-size: 1.05rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+.results-group > .muted {
+  margin: -0.25rem 0 0.6rem;
+  font-size: 0.875rem;
+}
+/* A channel row has no page to link to, so its name is a span. Matched to the
+   size of the links beside it so the sections do not look like different pages. */
+.result-name {
+  font-family: var(--disp);
+  font-size: 1.2rem;
+}
+.chip-count {
+  margin-left: 0.4rem;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================== the player ==
+   Playing an entry in the page, for the screens with nowhere else to play it.
+
+   Ported from tipoffwatch along with the rest of the player. Everything here is
+   an addition: with scripting off, or on a browser with no Media Source
+   Extensions, the Play button stays disabled and the VLC / Infuse / .m3u links
+   are exactly what they were. */
+
+/* Play here ships disabled and is enabled by app.js once two things are known:
+   that the browser can transmux, and that the provider is really sending this
+   entry. Styled so the difference is visible -- an indistinguishable dead button
+   is worse than no button. */
+.play-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The video, inserted after the row that started it.
+
+   aspect-ratio rather than a fixed height: the box is the right shape before a
+   single frame has arrived, so the page does not jump when playback starts. Black
+   because it is letterboxed -- these are whatever shape the provider sent, and
+   4:3 inside 16:9 is ordinary on a back catalogue. */
+.player-stage {
+  margin: 0.6rem 0 0.2rem;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+}
+.player-stage video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* contain, not cover: cover crops, and cropping the top off a film is exactly
+     the wrong thing to do here. */
+  object-fit: contain;
+  background: #000;
+}
+.player-error {
+  margin-bottom: 0.8rem;
+}
+
+/* The name column on a channel row, now that it carries tags as well as a title. */
+.own-channel-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* What the provider files an entry under, and whether it is a file or a channel.
+   The provider's own words, so it is muted: it reads as a label the reader
+   brought with them rather than as something we decided. */
+.genre-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1.6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  margin-right: 0.4rem;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.genre-tag-link {
+  text-decoration: none;
+}
+.genre-tag-link:hover .genre-tag {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.channel-tag {
+  color: var(--muted);
+  margin-left: 0.45rem;
+  margin-right: 0;
+}
+.channel-tag.kind {
+  border-color: var(--accent);
+  color: var(--accent);
+}

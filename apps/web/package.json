@@ -10,13 +10,14 @@
   },
   "dependencies": {
     "@genre/auth": "workspace:*",
+    "@genre/catalog": "workspace:*",
     "@genre/config": "workspace:*",
     "@genre/db": "workspace:*",
     "@genre/notify": "workspace:*",
     "@genre/playlists": "workspace:*",
     "@genre/queue": "workspace:*",
-    "@genre/catalog": "workspace:*",
+    "@simplewebauthn/browser": "^13.2.0",
     "hono": "^4.10.3",
-    "@simplewebauthn/browser": "^13.2.0"
+    "mpegts.js": "1.8.2"
   }
 }

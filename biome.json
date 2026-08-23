@@ -1,7 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.9/schema.json",
   "files": {
-    "includes": ["**", "!**/node_modules", "!**/public/vendor-webauthn.js"]
+    "includes": ["**", "!**/node_modules", "!**/public/vendor-*.js"]
   },
   "formatter": {
     "enabled": true,

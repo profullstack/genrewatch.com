@@ -5,6 +5,7 @@ import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 
 export { firstLiveChannel, probeStream } from './probe.js';
+export { claimStreamSlot, openStream, streamSlotsOpen } from './proxy.js';
 
 /**
  * Importing and reading a reader's own channel list.
