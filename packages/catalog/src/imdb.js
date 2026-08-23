@@ -373,7 +373,25 @@ async function writeBatch(candidates, { thisYear }) {
   if (toLink.length) await q.linkImdbToSubjects(toLink);
 
   let created = 0;
-  if (toCreate.length) created = await insertNew(toCreate, { thisYear });
+  if (toCreate.length) {
+    try {
+      created = await insertNew(toCreate, { thisYear });
+    } catch (err) {
+      /*
+       * One bad batch must not end an unattended overnight walk.
+       *
+       * It did: a slug collision in a single row raised, took its chunk, took the
+       * pass, and left the cursor unwritten -- so the retry started from the same
+       * place and failed the same way, five times, and the catalogue stopped
+       * growing. The cause is fixed above; this is what keeps the shape of that
+       * failure from recurring for some reason nobody has thought of yet.
+       *
+       * Logged loudly rather than swallowed, and the cursor still advances, so the
+       * next pass moves past it instead of retrying it forever.
+       */
+      console.error(`[imdb] batch of ${toCreate.length} failed, skipping it: ${err?.message}`);
+    }
+  }
 
   return { linked: toLink.length, created };
 }
@@ -412,13 +430,27 @@ async function insertNew(candidates, { thisYear }) {
     provider: 'imdb',
     providerKey: c.tconst,
     /*
-     * The year is the discriminator, not the id.
+     * The tconst in full, and NOT through slugify's discriminator.
      *
-     * "the-matrix-1999" is readable and stable; "the-matrix-t0133093" is neither.
-     * Two titles sharing a name AND a year fall back to the id, which is rare
-     * enough to be worth the ugliness when it happens.
+     * The first version used the year -- "the-matrix-1999" -- which is prettier and
+     * is not unique: IMDb carries several different titles sharing a name and a
+     * year, and the first production run died on
+     * `duplicate key value violates unique constraint "subjects_slug_key"` after
+     * about a thousand rows. `slug` is globally unique, and a collision raises
+     * rather than skipping, so it takes the whole chunk and the whole pass with it.
+     *
+     * Passing the tconst to slugify as a discriminator does not fix it either:
+     * that keeps only the LAST EIGHT characters, so tt12345678 and tt112345678
+     * both reduce to "12345678". IMDb is well into ten-digit ids.
+     *
+     * So the id is appended whole. A tconst is unique by definition, which makes
+     * the slug unique by construction rather than by luck, and it stays readable:
+     * "the-matrix-tt0133093".
+     *
+     * Rows already written under the old scheme keep their slug -- upsertSubjects
+     * does not update it -- so no URL that has been handed out changes.
      */
-    slug: c.year ? slugify(c.title, String(c.year)) : slugify(c.title, c.tconst),
+    slug: `${slugify(c.title).slice(0, 60).replace(/-+$/, '')}-${c.tconst}`,
     name: c.title,
     displayName: c.title,
     normTitle: c.norm,

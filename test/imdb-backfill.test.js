@@ -421,3 +421,62 @@ describe('a title with no Latin characters', () => {
     expect(body).toContain('total += written');
   });
 });
+
+/* --------------------------------------------------------------- the slug -- */
+
+describe('the slug a new title gets', () => {
+  const { slugify } = require('../packages/catalog/src/slug.js');
+  const mk = (title, tconst) => `${slugify(title).slice(0, 60).replace(/-+$/, '')}-${tconst}`;
+
+  /*
+   * The first production run died here, after about a thousand rows:
+   * `duplicate key value violates unique constraint "subjects_slug_key"`.
+   * The slug was `slugify(title, year)` -- "the-gift-2015" -- and IMDb carries
+   * several different titles sharing a name and a year. slug is globally unique
+   * and a collision RAISES rather than skipping, so one row took the chunk, the
+   * chunk took the pass, and the retry failed identically.
+   */
+  test('two titles sharing a name and a year do not collide', () => {
+    expect(mk('The Gift', 'tt3450958')).not.toBe(mk('The Gift', 'tt4178092'));
+  });
+
+  /*
+   * And passing the tconst through slugify's discriminator does not fix it: that
+   * keeps only the last EIGHT characters, so tt12345678 and tt112345678 both
+   * reduce to "12345678". IMDb is well into ten-digit ids.
+   */
+  test('the id is used whole, not through the eight-character tail', () => {
+    expect(slugify('A', 'tt12345678')).toBe(slugify('A', 'tt112345678'));
+    expect(mk('A', 'tt12345678')).not.toBe(mk('A', 'tt112345678'));
+  });
+
+  test('a title that normalises to nothing still gets a usable slug', () => {
+    expect(mk('君の名は。', 'tt5311514')).toBe('x-tt5311514');
+  });
+
+  test('and the slug stays readable', () => {
+    expect(mk('The Matrix', 'tt0133093')).toBe('the-matrix-tt0133093');
+  });
+
+  test('the source uses the whole tconst rather than a discriminator', () => {
+    const imdb = readFileSync(
+      new URL('../packages/catalog/src/imdb.js', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(imdb).toContain('}-${c.tconst}`');
+    // The shape that collided must not come back.
+    expect(imdb).not.toContain('slugify(c.title, String(c.year))');
+  });
+
+  /* An unattended overnight walk must survive one bad row. */
+  test('a failed batch is logged and skipped rather than ending the pass', () => {
+    const imdb = readFileSync(
+      new URL('../packages/catalog/src/imdb.js', import.meta.url).pathname,
+      'utf8',
+    );
+    const fn = imdb.slice(imdb.indexOf('async function writeBatch'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toContain('catch (err)');
+    expect(body).toContain('skipping it');
+  });
+});
