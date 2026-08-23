@@ -2318,6 +2318,34 @@ export async function playlistChannels(userId, { limit = 20000 } = {}) {
 }
 
 /**
+ * Do this reader's stored rows predate a column a fresh parse would fill?
+ *
+ * The refresh short-circuits on an unchanged content hash, which is right --
+ * re-writing several thousand identical rows every five minutes is pure churn, and
+ * most polls DO see a byte-identical file. What it also does is freeze the schema
+ * those rows were imported under: `kind` arrived in 0013 and, for anybody whose
+ * provider had not touched their playlist since, never got written at all. Their
+ * films therefore kept falling back to the sealed-url guess and landing in the
+ * generic tier instead of "Available on demand" -- which is exactly the bug 0013
+ * was supposed to fix, surviving in the data.
+ *
+ * So the hash is only allowed to skip a rewrite when the rows are current. A
+ * future column added to this table gets its own clause here, and the same
+ * self-healing on the next poll.
+ */
+export async function playlistNeedsReparse(userId) {
+  const [row] = await sql`
+    select exists (
+      select 1
+      from user_playlist_channels c
+      join user_playlists p on p.id = c.playlist_id
+      where p.user_id = ${userId} and c.kind is null
+    ) as stale
+  `;
+  return Boolean(row?.stale);
+}
+
+/**
  * One of the reader's own entries, by id.
  *
  * Scoped through the playlist join like every other read of this table, so an id

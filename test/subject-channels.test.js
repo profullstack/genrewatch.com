@@ -4,7 +4,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { citext } from '@electric-sql/pglite/contrib/citext';
 import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
-import { entryKind, rankChannelsForTitle } from '../packages/catalog/src/m3u.js';
+import { entryKind, parseM3u, rankChannelsForTitle } from '../packages/catalog/src/m3u.js';
+import { normaliseTitle } from '../packages/catalog/src/slug.js';
 
 /**
  * "I found Top Gun: Maverick in a search, but it didn't look in my stream."
@@ -196,5 +197,80 @@ describe('saying what is actually in a list', () => {
 
   test('rows of unknown kind are shown rather than folded into live', () => {
     expect(pages).toContain('not yet classified');
+  });
+});
+
+/* ------------------------------------------- the rows that never caught up -- */
+
+describe('a stable playlist still gets new columns', () => {
+  const playlists = readFileSync(
+    new URL('../packages/playlists/src/index.js', import.meta.url).pathname,
+    'utf8',
+  );
+  const queries = readFileSync(
+    new URL('../packages/db/src/queries.js', import.meta.url).pathname,
+    'utf8',
+  );
+
+  /*
+   * The bug behind "it clearly has Top Gun: Maverick as an mp4 and you are not
+   * finding it".
+   *
+   * The parser was fine -- the exact line parses to kind 'vod' and matches on
+   * title, which the tests below prove. What was not fine is that the refresh
+   * short-circuits on an unchanged content hash, and most polls DO see a
+   * byte-identical file. That froze the SCHEMA the stored rows were imported
+   * under: `kind` arrived in 0013 and never got written for anybody whose
+   * provider had not edited their playlist since, so their films kept falling
+   * back to the sealed-url guess and landing in the generic tier instead of
+   * "Available on demand" -- the exact bug 0013 fixed, surviving in the data.
+   */
+  test('an unchanged hash no longer skips a rewrite when rows are stale', () => {
+    expect(playlists).toContain('const stale = await q.playlistNeedsReparse(userId)');
+    expect(playlists).toContain('if (knownHash && knownHash === contentHash && !stale)');
+  });
+
+  test('staleness is one cheap exists(), not a scan of the list', () => {
+    const fn = queries.slice(queries.indexOf('export async function playlistNeedsReparse'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toContain('select exists (');
+    expect(body).toContain('c.kind is null');
+  });
+});
+
+describe('the exact line that was reported', () => {
+  /*
+   * "#EXTINF:-1,4K: Top Gun: Maverick (2022)" over a /movie/....mp4 url.
+   *
+   * Pinned verbatim because every part of it is a trap the parser has to survive:
+   * colons inside the title, a "4K" quality prefix, a bracketed year, and a path
+   * that is the only thing saying this is a file rather than a channel.
+   */
+  const LINE =
+    '#EXTM3U\n#EXTINF:-1,4K: Top Gun: Maverick (2022)\n' +
+    'http://198.51.100.7:80/movie/user/key/1644631.mp4\n';
+
+  test('parses to a VOD entry with the quality prefix and year stripped for matching', () => {
+    const [ch] = parseM3u(LINE);
+    expect(ch.title).toBe('4K: Top Gun: Maverick (2022)');
+    expect(ch.kind).toBe('vod');
+    expect(normaliseTitle(ch.title)).toBe('top gun maverick');
+  });
+
+  test('and lands in the on-demand tier against the subject name', () => {
+    const [ch] = parseM3u(LINE);
+    const ranked = rankChannelsForTitle([{ id: 1, ...ch }], { title: 'Top Gun: Maverick' });
+    expect(ranked.onDemand.map((c) => c.id)).toEqual([1]);
+    expect(ranked.certain).toEqual([]);
+  });
+
+  /* A series file is titled per episode; it has to match on the SHOW's name. */
+  test('a series file matches on the show title, not the episode line', () => {
+    const [ch] = parseM3u(
+      '#EXTINF:-1,Severance S02 E03\nhttp://198.51.100.7:80/series/user/key/99.mkv\n',
+    );
+    expect(ch.kind).toBe('series');
+    const ranked = rankChannelsForTitle([{ id: 2, ...ch }], { title: 'Severance' });
+    expect(ranked.onDemand.map((c) => c.id)).toEqual([2]);
   });
 });

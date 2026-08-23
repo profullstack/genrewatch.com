@@ -71,7 +71,18 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
   // a byte-identical file: a provider rewrites the handful of slots that changed and
   // leaves the other several thousand entries sitting still.
   const contentHash = createHash('sha256').update(text).digest('hex');
-  if (knownHash && knownHash === contentHash) {
+  /*
+   * ...unless the rows we already hold predate a column a fresh parse would fill.
+   *
+   * Skipping on an unchanged hash freezes the SCHEMA those rows were imported
+   * under, not just their content. `kind` arrived in 0013 and, for anybody whose
+   * provider had not touched their playlist since, never got written -- so their
+   * films kept falling back to the sealed-url guess and landing in the generic
+   * tier rather than "Available on demand", which is the exact bug 0013 fixed,
+   * surviving in the data. One cheap exists() per poll buys the self-heal.
+   */
+  const stale = await q.playlistNeedsReparse(userId);
+  if (knownHash && knownHash === contentHash && !stale) {
     await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt() });
     return { channels: null, unchanged: true };
   }
