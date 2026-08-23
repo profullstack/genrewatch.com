@@ -85,6 +85,16 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
     // the end, so a leak of any single row is a leak of the line.
     streamUrl: seal(c.url),
     normTitle: normaliseTitle(c.title),
+    /*
+     * Worked out once, here, and stored.
+     *
+     * It cannot be recomputed at match time: the URL it is read from is sealed at
+     * rest, so entryKind would be inspecting an encrypted blob. It did exactly
+     * that until 0013, found no "/movie/" in a base64 string, and answered 'live'
+     * for every entry on every list -- which is why "Available on demand" never
+     * appeared for anyone.
+     */
+    kind: c.kind ?? null,
   }));
 
   if (channels.length === 0) {
@@ -188,7 +198,7 @@ const VERDICT_TTL_MS = 10 * 60 * 1000;
 
 const freshEnough = (at) => Boolean(at) && Date.now() - new Date(at).getTime() < VERDICT_TTL_MS;
 
-export async function ownChannelsForEvent({ userId, event }) {
+export async function ownChannelsFor({ userId, title, genreName = null, categoryName = null }) {
   const none = { hasList: false, channelCount: 0, onDemand: [], matches: [], genre: [] };
   if (!config.playlists.enabled || !userId) return none;
 
@@ -196,18 +206,24 @@ export async function ownChannelsForEvent({ userId, event }) {
   if (rows.length === 0) return none;
 
   const ranked = rankChannelsForTitle(
-    // The row id travels with the channel so a probe verdict can be written back
-    // against the right one. It is an internal id and never reaches a page.
-    rows.map((r) => ({ id: r.id, title: r.title, url: r.stream_url })),
-    {
-      // The SUBJECT's name, never the event title -- that carries season and
-      // episode numbering no provider writes into a channel name.
-      title: event.subject_name,
-      // Carried so a 24/7 genre channel has something to match on when nothing
-      // matches the thing itself.
-      genreName: event.genre_name,
-      categoryName: event.category,
-    },
+    rows.map((r) => ({
+      // The row id travels with the channel so a probe verdict can be written back
+      // against the right one. It is an internal id and never reaches a page.
+      id: r.id,
+      title: r.title,
+      url: r.stream_url,
+      /*
+       * The stored kind and group, rather than letting the ranker work them out.
+       *
+       * It cannot: `url` here is the SEALED value, and entryKind reads a URL path.
+       * Handing it an encrypted blob is what made every entry look like a live
+       * channel and left the on-demand tier permanently empty. Both are columns
+       * now (0013), so this is a read rather than a guess.
+       */
+      kind: r.kind ?? null,
+      group: r.group_title ?? null,
+    })),
+    { title, genreName, categoryName },
   );
 
   // What we last learned about each slot, so the page does not re-probe something
@@ -219,6 +235,9 @@ export async function ownChannelsForEvent({ userId, event }) {
       .map((m) => ({
         id: m.id,
         title: m.title,
+        // The provider's own shelf for this entry, so a row can say what it is.
+        group: byId.get(m.id)?.group_title ?? null,
+        kind: byId.get(m.id)?.kind ?? null,
         url: open(m.url),
         verified: byId.get(m.id)?.is_live === true && freshEnough(byId.get(m.id)?.checked_at),
       }))
@@ -248,6 +267,42 @@ export async function ownChannelsForEvent({ userId, event }) {
 }
 
 /**
+ * The same question, asked from an event page.
+ *
+ * Matched on the SUBJECT's name, never the event title -- that carries season and
+ * episode numbering no provider writes into a channel name.
+ */
+export async function ownChannelsForEvent({ userId, event }) {
+  return ownChannelsFor({
+    userId,
+    title: event.subject_name,
+    // Carried so a 24/7 genre channel has something to match on when nothing
+    // matches the thing itself.
+    genreName: event.genre_name,
+    categoryName: event.category,
+  });
+}
+
+/**
+ * And from a subject page, which is where it was missing.
+ *
+ * A search result links to a SUBJECT, and until now that page never asked this
+ * question at all -- it listed upcoming events and nothing else. For a film from
+ * 2022 there are no upcoming events, so the page a reader reached by searching for
+ * something they wanted to watch was a title, a poster and "Nothing scheduled."
+ * Their own list was never consulted, which reads exactly like a provider that
+ * does not carry it.
+ */
+export async function ownChannelsForSubject({ userId, subject, genreName = null }) {
+  return ownChannelsFor({
+    userId,
+    title: subject.display_name ?? subject.name,
+    genreName,
+    categoryName: subject.category,
+  });
+}
+
+/**
  * Which of the SHARED lists is carrying this event.
  *
  * The same matching as ownChannelsForEvent, over other people's rows, and it
@@ -268,7 +323,12 @@ export async function ownChannelsForEvent({ userId, event }) {
  *
  * @param {{viewerId: string|null, event: object}} args
  */
-export async function sharedChannelsForEvent({ viewerId, event }) {
+export async function sharedChannelsFor({
+  viewerId,
+  title,
+  genreName = null,
+  categoryName = null,
+}) {
   const none = { channels: [], owners: 0 };
   if (!config.playlists.enabled || !viewerId) return none;
 
@@ -276,12 +336,15 @@ export async function sharedChannelsForEvent({ viewerId, event }) {
   if (rows.length === 0) return none;
 
   const ranked = rankChannelsForTitle(
-    rows.map((r) => ({ id: r.id, title: r.title, url: r.stream_url })),
-    {
-      title: event.subject_name,
-      genreName: event.genre_name,
-      categoryName: event.category,
-    },
+    rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      url: r.stream_url,
+      // Read, not guessed -- `url` is sealed here too. See ownChannelsFor.
+      kind: r.kind ?? null,
+      group: r.group_title ?? null,
+    })),
+    { title, genreName, categoryName },
   );
 
   const byId = new Map(rows.map((r) => [r.id, r]));
@@ -309,4 +372,24 @@ export async function sharedChannelsForEvent({ viewerId, event }) {
     .slice(0, 10);
 
   return { channels, owners: new Set(channels.map((c) => c.ownerId)).size };
+}
+
+/** From an event page. */
+export async function sharedChannelsForEvent({ viewerId, event }) {
+  return sharedChannelsFor({
+    viewerId,
+    title: event.subject_name,
+    genreName: event.genre_name,
+    categoryName: event.category,
+  });
+}
+
+/** And from a subject page, for the same reason as ownChannelsForSubject. */
+export async function sharedChannelsForSubject({ viewerId, subject, genreName = null }) {
+  return sharedChannelsFor({
+    viewerId,
+    title: subject.display_name ?? subject.name,
+    genreName,
+    categoryName: subject.category,
+  });
 }

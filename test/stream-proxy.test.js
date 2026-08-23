@@ -239,18 +239,22 @@ describe('what the page offers, and to whom', () => {
     'utf8',
   );
 
-  test('Play here is offered on every tier the page offers', () => {
+  test('Play here is offered on every tier, from one shared section', () => {
     /*
-     * Three lists here where the sibling site has two -- on demand, the matches,
-     * and the genre channels -- and they all render one component, so what matters
-     * is that each reaches it and that the tier travels with it. A tier that did
-     * not travel would mean ?n=0 selecting a row from the wrong list.
+     * Three lists -- on demand, the matches, the genre channels -- rendered by one
+     * component, which is now shared with the SUBJECT page. That sharing is the
+     * point: the matcher only ever ran on event pages, so a film with no upcoming
+     * event was never checked against a reader's list at all.
+     *
+     * The tier no longer travels with the row because it no longer needs to: rows
+     * are addressed by row id, so which list a row was ranked into cannot change
+     * what its links resolve to.
      */
-    expect(view).toContain('<ChannelRow event={event} ch={ch} index={i} tier="vod" />');
-    expect(view).toContain('<ChannelRow event={event} ch={ch} index={i} />');
-    expect(view).toContain('<ChannelRow event={event} ch={ch} index={i} tier="genre" />');
-    expect(view).toContain('<PlayButton eventId={event.id} query={query} />');
-    expect(view).toMatch(/stream\.ts\?\$\{query\}/);
+    expect(view).toContain('own.onDemand.map((ch) => (');
+    expect(view).toContain('own.matches.map((ch) => (');
+    expect(view).toContain('own.genre.map((ch) => (');
+    expect(view).toContain('<PlayButton channelId={mine} />');
+    expect(view).toMatch(/\/my\/channels\/\$\{channelId\}\/stream\.ts/);
   });
 
   test('the button ships disabled, so a browser that cannot play never shows a live one', () => {
@@ -261,7 +265,7 @@ describe('what the page offers, and to whom', () => {
     // The credential is in the VLC href because an external app holds no session
     // with us. The page does, so nothing here needs it -- and a URL in a
     // data-attribute would additionally sit in the DOM for any extension to read.
-    expect(view).toMatch(/data-play=\{`\/events\/\$\{eventId\}\/stream\.ts/);
+    expect(view).toMatch(/data-play=\{`\/my\/channels\/\$\{channelId\}\/stream\.ts`\}/);
     expect(view).not.toMatch(/data-play=\{playerLinks/);
   });
 

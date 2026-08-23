@@ -21,7 +21,6 @@ process.env.DATABASE_URL = 'postgres://localhost:5432/unused';
  */
 const { ChannelRow } = await import('../apps/web/src/views/pages.jsx');
 
-const event = { id: 428 };
 const render = (props) => ChannelRow(props).toString();
 
 describe('the row a reader is offered', () => {
@@ -29,34 +28,39 @@ describe('the row a reader is offered', () => {
     // The provider URL belongs in the VLC href, where an app that holds no session
     // with us needs it -- and nowhere else. In a data attribute it would sit in
     // the DOM for any extension to read.
-    const html = render({ event, ch: { title: 'Horror HD', url: 'http://line/1' }, index: 2 });
-    expect(html).toContain('data-check="/events/428/channel-check?n=2"');
+    const html = render({ ch: { id: 77, title: 'Horror HD', url: 'http://line/1' } });
+    expect(html).toContain('data-check="/my/channels/77/check"');
     expect(html).not.toContain('data-check="http://line/1"');
   });
 
-  test('each tier checks its own list', () => {
-    /*
-     * Three lists, three different claims -- "you already have this file", "this
-     * carries your show", "this carries the genre" -- indexed separately. A check
-     * that dropped the tier would verify one entry and offer another, which is
-     * worse than not checking at all.
-     */
-    const vod = render({ event, ch: { title: 'X', url: 'u' }, index: 0, tier: 'vod' });
-    expect(vod).toContain('data-check="/events/428/channel-check?tier=vod&amp;n=0"');
-
-    const genre = render({ event, ch: { title: 'X', url: 'u' }, index: 3, tier: 'genre' });
-    expect(genre).toContain('data-check="/events/428/channel-check?tier=genre&amp;n=3"');
+  /*
+   * Addressed by ROW ID, not by a position in a ranked list.
+   *
+   * The rows used to be `?tier=vod&n=0` -- an index into one of three lists ranked
+   * for one event. That could not work anywhere else, and "anywhere else" turned
+   * out to be the page a reader actually reaches: a search result links to a
+   * SUBJECT, which ranks the same entries against the same title with no event to
+   * index against. An id means the same thing on every page, and it cannot drift
+   * when a ranking changes between the check and the download.
+   */
+  test('is addressed by its row id, so any page can offer it', () => {
+    const html = render({ ch: { id: 512, title: 'X', url: 'u' } });
+    expect(html).toContain('data-check="/my/channels/512/check"');
+    expect(html).toContain('data-play="/my/channels/512/stream.ts"');
+    // No tier, no index: there is nothing left for the two to disagree about.
+    expect(html).not.toContain('tier=');
+    expect(html).not.toContain('&amp;n=');
   });
 
   test('the check and the download agree on which entry they mean', () => {
-    // They are built from one query string for exactly this reason.
-    const html = render({ event, ch: { title: 'X', url: 'u' }, index: 4, tier: 'genre' });
-    expect(html).toContain('/events/428/playlist.m3u?tier=genre&amp;n=4');
-    expect(html).toContain('channel-check?tier=genre&amp;n=4');
+    // Built from the same id, so they cannot disagree by construction.
+    const html = render({ ch: { id: 9, title: 'X', url: 'u' } });
+    expect(html).toContain('/my/channels/9/playlist.m3u');
+    expect(html).toContain('/my/channels/9/check');
   });
 
   test('nothing has vouched for it yet, so it says so in the markup', () => {
-    const html = render({ event, ch: { title: 'X', url: 'u' }, index: 0 });
+    const html = render({ ch: { id: 1, title: 'X', url: 'u' } });
     expect(html).toContain('own-channel-state');
     expect(html).not.toContain('data-verified');
   });
@@ -64,14 +68,14 @@ describe('the row a reader is offered', () => {
   test('a verdict the server already holds is carried, so the page does not re-probe', () => {
     // These lines cap concurrent connections. Opening a page twice must not cost
     // two probes of the same slot.
-    const html = render({ event, ch: { title: 'X', url: 'u', verified: true }, index: 0 });
+    const html = render({ ch: { id: 1, title: 'X', url: 'u', verified: true } });
     expect(html).toContain('data-verified="1"');
   });
 
   test('the app hand-offs are still there', () => {
     // VLC and Infuse are the point of the feature on a phone: they open an app
     // that can demux TS, which Safari cannot.
-    const html = render({ event, ch: { title: 'X', url: 'http://line/1' }, index: 0 });
+    const html = render({ ch: { title: 'X', url: 'http://line/1' }, index: 0 });
     expect(html).toContain('vlc-x-callback://x-callback-url/stream?url=');
     expect(html).toContain('infuse://x-callback-url/play?url=');
   });

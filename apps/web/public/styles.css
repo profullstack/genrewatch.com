@@ -2282,3 +2282,28 @@ li.result img {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* What kind of thing is on a reader's line: live channels, films, episode files.
+   A row of counts rather than a chart -- there are three or four of them and the
+   only question is which are zero. */
+.kind-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.2rem;
+  list-style: none;
+  padding: 0;
+  margin: 0.6rem 0;
+}
+.kind-count {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.kind-count strong {
+  font-family: var(--mono);
+  color: var(--fg);
+}
+/* The one that answers "can this line ever give me a film". */
+.kind-count.kind-vod strong,
+.kind-count.kind-series strong {
+  color: var(--accent);
+}

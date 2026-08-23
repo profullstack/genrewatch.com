@@ -969,6 +969,50 @@ export async function upcomingForSubject(subjectId, { limit = 60, viewerId = nul
 }
 
 /**
+ * What this subject has already put out, newest first.
+ *
+ * The page had only the query above, which is right for a calendar and leaves a
+ * back catalogue as a dead end: Top Gun: Maverick came out in 2022, so its page
+ * was a title, a poster and "Nothing scheduled." Somebody who searched for a film
+ * they wanted to watch reached a page with nothing on it and no event to open.
+ *
+ * Bounded tightly on purpose. A show with fourteen seasons has hundreds of these
+ * and the page is not an archive -- it is "what is this, and can I watch it".
+ */
+export async function pastForSubject(subjectId, { limit = 12, viewerId = null } = {}) {
+  return sql`
+    select ${EVENT_COLUMNS},
+           (${viewerId}::uuid is not null and f.user_id is not null) as following
+    from events e
+    join subjects s on s.id = e.subject_id
+    left join follows f
+      on f.subject_type = 'subject' and f.subject_id = s.id and f.user_id = ${viewerId}::uuid
+    where e.subject_id = ${subjectId} and e.starts_at <= now() - interval '24 hours'
+    order by e.starts_at desc
+    limit ${limit}
+  `;
+}
+
+/**
+ * How many entries of each kind are on a reader's list.
+ *
+ * The question this answers is "does my provider actually carry films", and until
+ * the kind column existed there was no way to ask it -- the URL that says so is
+ * sealed. A reader whose list is seven thousand live channels and no VOD should
+ * be told that plainly rather than concluding the matching is broken.
+ */
+export async function playlistKindCounts(userId) {
+  return sql`
+    select coalesce(c.kind, 'unknown') as kind, count(*)::int as count
+    from user_playlist_channels c
+    join user_playlists p on p.id = c.playlist_id
+    where p.user_id = ${userId}
+    group by coalesce(c.kind, 'unknown')
+    order by count desc
+  `;
+}
+
+/**
  * One day's calendar, optionally within a category.
  *
  * The day is a UTC day. Rendering it in the reader's zone is a client-side job --
@@ -2185,6 +2229,7 @@ export async function replacePlaylistChannels({ userId, channels }) {
         position: i + j,
         title: c.title,
         group_title: c.group ?? null,
+        kind: c.kind ?? null,
         stream_url: c.streamUrl,
         norm_title: c.normTitle,
       }));
@@ -2200,7 +2245,8 @@ export async function replacePlaylistChannels({ userId, channels }) {
 
 export async function playlistChannels(userId, { limit = 20000 } = {}) {
   return sql`
-    select c.id, c.title, c.group_title, c.stream_url, c.norm_title, c.is_live, c.checked_at
+    select c.id, c.title, c.group_title, c.kind, c.stream_url, c.norm_title,
+           c.is_live, c.checked_at
     from user_playlist_channels c
     join user_playlists p on p.id = c.playlist_id
     where p.user_id = ${userId}
@@ -2213,6 +2259,27 @@ export async function playlistChannels(userId, { limit = 20000 } = {}) {
     order by c.position
     limit ${limit}
   `;
+}
+
+/**
+ * One of the reader's own entries, by id.
+ *
+ * Scoped through the playlist join like every other read of this table, so an id
+ * from anywhere else returns nothing rather than somebody else's row.
+ *
+ * Exists because the ranked lists are addressed by (tier, INDEX), and an index
+ * only means something inside one ranked list on one page. A subject page ranks
+ * the same entries against the same title and has no event to hang an index off,
+ * so it needs a stable handle -- and the row id is the only one there is.
+ */
+export async function ownChannelById(userId, channelId) {
+  const [row] = await sql`
+    select c.id, c.title, c.group_title, c.kind, c.stream_url, c.is_live, c.checked_at
+    from user_playlist_channels c
+    join user_playlists p on p.id = c.playlist_id
+    where p.user_id = ${userId} and c.id = ${channelId}
+  `;
+  return row ?? null;
 }
 
 /**

@@ -195,8 +195,11 @@ describe('what a shared entry never gives away', () => {
    * list that also handed out the address would last exactly as long as it took
    * one person to paste one, and the owner's subscription with it.
    */
-  test('sharedChannelsForEvent returns no url at all', () => {
-    const fn = playlists.slice(playlists.indexOf('export async function sharedChannelsForEvent'));
+  test('sharedChannelsFor returns no url at all', () => {
+    // The ranking lives in sharedChannelsFor now; the Event and Subject variants
+    // are thin wrappers that only choose the title. This is the one that touches
+    // rows, so it is the one that must never unseal.
+    const fn = playlists.slice(playlists.indexOf('export async function sharedChannelsFor('));
     const body = fn.slice(0, fn.indexOf('\n}\n'));
     expect(body).toContain('ownerId: row.owner_id');
     // open() is how a sealed URL becomes a usable one. It must not appear here.

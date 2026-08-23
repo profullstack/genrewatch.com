@@ -16,9 +16,11 @@ import {
   importPlaylist,
   openStream,
   ownChannelsForEvent,
+  ownChannelsForSubject,
   probeStream,
   refreshPlaylist,
   sharedChannelsForEvent,
+  sharedChannelsForSubject,
   streamSlotsOpen,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
@@ -268,19 +270,46 @@ app.get('/subjects/:slug', async (c) => {
   const subject = await q.getSubjectBySlug(c.req.param('slug'));
   if (!subject) return c.html(await render(<NotFound user={user} />), 404);
 
-  const [events, genres, following] = await Promise.all([
+  const [events, past, genres, following] = await Promise.all([
     q.upcomingForSubject(subject.id, { viewerId: user?.id ?? null }),
+    // Without this a back-catalogue title is a dead end: a 2022 film has no
+    // upcoming event, so the page a reader reached by searching for something to
+    // watch said "Nothing scheduled" and offered nowhere to go.
+    q.pastForSubject(subject.id, { viewerId: user?.id ?? null }),
     q.genresForSubject(subject.id),
     q.isFollowing({ userId: user?.id, subjectType: 'subject', subjectId: subject.id }),
   ]);
+
+  /*
+   * The reader's own list, matched against THIS title.
+   *
+   * The whole reason this page exists for somebody who searched for a film is to
+   * answer "can I watch it", and it never asked. Matching only ever ran on event
+   * pages -- so a title with no upcoming event could never be checked against a
+   * list at all, which reads exactly like a provider that does not carry it.
+   *
+   * Per-viewer, and safe only because this page is not one of the cached() ones.
+   */
+  const [ownChannels, sharedChannels] = await Promise.all([
+    ownChannelsForSubject({ userId: user?.id, subject, genreName: genres[0]?.name ?? null }),
+    sharedChannelsForSubject({
+      viewerId: user?.id ?? null,
+      subject,
+      genreName: genres[0]?.name ?? null,
+    }),
+  ]);
+
   return c.html(
     await render(
       <SubjectPage
         user={user}
         subject={subject}
         events={events}
+        past={past}
         genres={genres}
         following={following}
+        ownChannels={ownChannels}
+        sharedChannels={sharedChannels}
       />,
     ),
   );
@@ -455,8 +484,17 @@ app.get('/events/:id', async (c) => {
  */
 app.get('/my/channels', async (c) => {
   const user = requireUser(c);
-  const [playlist, groups] = await Promise.all([q.getPlaylist(user.id), q.playlistGroups(user.id)]);
-  return c.html(await render(<Channels user={user} playlist={playlist} groups={groups} />));
+  const [playlist, groups, kinds] = await Promise.all([
+    q.getPlaylist(user.id),
+    q.playlistGroups(user.id),
+    // "Does my provider actually carry films" had no answer anywhere on the site,
+    // so a reader whose list is all live channels concluded the matching was
+    // broken. It is one group-by.
+    q.playlistKindCounts(user.id),
+  ]);
+  return c.html(
+    await render(<Channels user={user} playlist={playlist} groups={groups} kinds={kinds} />),
+  );
 });
 
 /* --------------------------------------------------------- own playlists -- */
@@ -938,6 +976,112 @@ app.get('/events/:id/playlist.m3u', async (c) => {
   c.header('content-disposition', `attachment; filename="${event.short_name ?? 'channel'}.m3u"`);
   c.header('cache-control', 'no-store, private');
   return c.body(oneChannelM3u(pick));
+});
+
+/* ------------------------------------------------- one entry, by its id -- */
+
+/**
+ * The reader's own entry, addressed by row id rather than by list position.
+ *
+ * The event routes resolve an entry by (tier, index) into a ranked list, which is
+ * the right handle when the page IS that ranked list. A subject page ranks the
+ * same entries against the same title with no event to hang an index off -- and
+ * that page is where somebody who searched for a film actually lands. So these
+ * take an id.
+ *
+ * Ownership is enforced by the query rather than by these handlers remembering
+ * to: ownChannelById joins through user_playlists on the session's user id, so an
+ * id from anywhere else comes back empty.
+ */
+async function ownEntryOr404(c, user) {
+  const row = await q.ownChannelById(user.id, Number(c.req.param('channelId')));
+  if (!row) return null;
+  const url = auth.open(row.stream_url);
+  return url ? { ...row, url } : null;
+}
+
+app.get('/my/channels/:channelId/check', async (c) => {
+  const user = requireUser(c);
+  // A probe is a connection, and the line permits one. Never while it is carrying
+  // something -- see the note on /events/:id/channel-check.
+  if (streamSlotsOpen(user.id) > 0) return c.json({ skipped: 'watching' });
+
+  const ch = await ownEntryOr404(c, user);
+  if (!ch) return c.json({ error: 'no channel' }, 404);
+
+  const result = await probeStream(ch.url, { signal: c.req.raw.signal });
+  await q
+    .markChannelChecked({ userId: user.id, channelId: ch.id, live: result.live, note: result.note })
+    .catch(() => {});
+  return c.json(result);
+});
+
+app.get('/my/channels/:channelId/playlist.m3u', async (c) => {
+  const user = requireUser(c);
+  const ch = await ownEntryOr404(c, user);
+  if (!ch) return c.notFound();
+
+  c.header('content-type', 'audio/x-mpegurl; charset=utf-8');
+  const name = (ch.title || 'channel').slice(0, 60);
+  c.header('content-disposition', `attachment; filename="${name}.m3u"`);
+  // The body is a credential.
+  c.header('cache-control', 'no-store, private');
+  return c.body(oneChannelM3u(ch));
+});
+
+app.get('/my/channels/:channelId/stream.ts', async (c) => {
+  const user = requireUser(c);
+  if (!config.playlists.proxy.enabled) return c.json({ error: 'player is off' }, 404);
+
+  const ch = await ownEntryOr404(c, user);
+  if (!ch) return c.json({ error: 'no channel' }, 404);
+
+  const stop = new AbortController();
+  const signal = stop.signal;
+  if (c.req.raw.signal?.aborted) stop.abort();
+  else c.req.raw.signal?.addEventListener('abort', () => stop.abort(), { once: true });
+
+  const release = claimStreamSlot(user.id, {
+    max: config.playlists.proxy.maxPerUser,
+    evict: () => stop.abort(),
+  });
+  if (!release) return c.json({ error: 'player is off' }, 404);
+
+  let result;
+  try {
+    result = await openStream(ch.url, { signal });
+  } catch (err) {
+    release();
+    throw err;
+  }
+
+  if (!result.ok) {
+    release();
+    if (!result.silent) {
+      await q
+        .markChannelChecked({ userId: user.id, channelId: ch.id, live: false, note: result.note })
+        .catch(() => {});
+    }
+    return c.json({ error: result.note }, result.status === 499 ? 499 : result.status);
+  }
+
+  await q
+    .markChannelChecked({ userId: user.id, channelId: ch.id, live: true, note: result.note })
+    .catch(() => {});
+
+  signal.addEventListener('abort', release, { once: true });
+  const body = result.body.pipeThrough(new TransformStream({ flush: release, cancel: release }));
+
+  return new Response(body, {
+    headers: {
+      'content-type': /^video\/|^audio\//i.test(result.contentType)
+        ? result.contentType
+        : 'video/mp2t',
+      'cache-control': 'no-store, private',
+      'accept-ranges': 'none',
+      'x-accel-buffering': 'no',
+    },
+  });
 });
 
 /* -------------------------------------------------------------------- auth -- */

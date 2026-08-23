@@ -286,7 +286,16 @@ export const GenrePage = ({ user, genre, subjects, events, following }) => (
   </Layout>
 );
 
-export const SubjectPage = ({ user, subject, events, genres, following }) => (
+export const SubjectPage = ({
+  user,
+  subject,
+  events,
+  past = [],
+  genres,
+  following,
+  ownChannels = null,
+  sharedChannels = null,
+}) => (
   <Layout title={subject.display_name} user={user}>
     <header class="page-head">
       <div class="subject-head">
@@ -315,10 +324,33 @@ export const SubjectPage = ({ user, subject, events, genres, following }) => (
     {subject.description ? <p class="blurb">{subject.description}</p> : null}
     <GenreChips genres={genres} />
 
+    {/*
+      The question somebody who searched for a film actually has.
+
+      This page used to be a title, a poster and "Nothing scheduled" -- it listed
+      upcoming events and never once looked at the reader's own list, so a film
+      from 2022 was a dead end that read exactly like a provider not carrying it.
+      It goes above the schedule because for a back catalogue title it IS the
+      answer, and the schedule is the empty part.
+    */}
+    <OwnLine own={ownChannels} shared={sharedChannels} title={subject.display_name} />
+
     <section>
       <h2>Coming up</h2>
-      <EventList events={events} emptyText="Nothing scheduled." />
+      <EventList
+        events={events}
+        emptyText={past.length > 0 ? 'Nothing new scheduled.' : 'Nothing scheduled.'}
+      />
     </section>
+
+    {/* Already out. Bounded to a dozen: this is "what is this and can I watch it",
+        not an archive of fourteen seasons. */}
+    {past.length > 0 ? (
+      <section>
+        <h2>Already out</h2>
+        <EventList events={past} emptyText="Nothing yet." />
+      </section>
+    ) : null}
 
     <p class="more">
       <a href={`/feeds/subject/${subject.slug}.xml`}>RSS</a>
@@ -367,22 +399,29 @@ export const SubjectPage = ({ user, subject, events, genres, following }) => (
  * the VLC and Infuse hrefs because an external app cannot hold our session; the
  * page can, so nothing here needs the credential.
  */
-const PlayButton = ({ eventId, query }) => (
+const PlayButton = ({ channelId }) => (
   <button
     type="button"
     class="ghost small-btn play-btn"
     disabled
-    data-play={`/events/${eventId}/stream.ts?${query}`}
+    data-play={`/my/channels/${channelId}/stream.ts`}
   >
     Play here
   </button>
 );
 
-export const ChannelRow = ({ event, ch, index, tier = null }) => {
-  const query = `${tier ? `tier=${tier}&` : ''}n=${index}`;
+export const ChannelRow = ({ ch }) => {
+  /*
+   * Every control that goes through this server needs the row id, and a row
+   * without one would render "/my/channels/undefined/check" -- a link that looks
+   * live and 404s. Rows come from the database and always have an id, so this is
+   * a guard rather than a case: without one the entry is still offered to the
+   * apps that take a URL, and nothing false is shown.
+   */
+  const mine = Number.isFinite(Number(ch.id)) ? Number(ch.id) : null;
   return (
     <li
-      data-check={`/events/${event.id}/channel-check?${query}`}
+      data-check={mine ? `/my/channels/${mine}/check` : null}
       data-verified={ch.verified ? '1' : null}
     >
       <span class="own-channel-name">
@@ -400,18 +439,130 @@ export const ChannelRow = ({ event, ch, index, tier = null }) => {
       </span>
       <span class="own-channel-state" />
       <span class="own-channel-actions">
-        <PlayButton eventId={event.id} query={query} />
+        {mine ? <PlayButton channelId={mine} /> : null}
         <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
           VLC
         </a>
         <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
           Infuse
         </a>
-        <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?${query}`}>
-          .m3u
-        </a>
+        {mine ? (
+          <a class="ghost small-btn" href={`/my/channels/${mine}/playlist.m3u`}>
+            .m3u
+          </a>
+        ) : null}
       </span>
     </li>
+  );
+};
+
+/**
+ * The reader's own list, matched against one title.
+ *
+ * One component rather than two, because this is the same question asked from two
+ * pages -- and it only ever ran on one of them. A search result links to a
+ * SUBJECT, and that page listed upcoming events and nothing else, so a film from
+ * 2022 gave "Nothing scheduled" and never consulted the reader's list at all.
+ * From the outside that is indistinguishable from a provider that does not carry
+ * it, which is exactly how it was read.
+ *
+ * Rows are addressed by their row id rather than by a position in a ranked list,
+ * so the same markup works wherever the ranking was done.
+ */
+export const OwnLine = ({ own, shared, streamDead, title }) => {
+  const hasOwn = own?.hasList;
+  const hasShared = shared?.channels?.length > 0;
+  if (!hasOwn && !hasShared) return null;
+
+  return (
+    <>
+      {hasOwn ? (
+        <section class="own-line" data-player-src={assetUrl('vendor-mpegts.js')}>
+          <h2>In your list</h2>
+
+          {/* Why the last attempt handed back nothing, in the words of the probe.
+              "returned a web page, not a stream" means the slot is empty;
+              "timed out" means it is not. */}
+          {streamDead ? (
+            <p class="feedback error" role="status">
+              That one did not play — {streamDead}. The others are still listed; a provider slot
+              often fills only once the thing is actually on.
+            </p>
+          ) : null}
+
+          {/* On demand first: it is there whenever they want it, where a channel
+              is a claim about right now. */}
+          {own.onDemand?.length > 0 ? (
+            <>
+              <h3>Available on demand</h3>
+              <ul class="channels">
+                {own.onDemand.map((ch) => (
+                  <ChannelRow ch={ch} />
+                ))}
+              </ul>
+            </>
+          ) : null}
+
+          {own.matches.length > 0 ? (
+            <>
+              <p class="muted small">
+                From the playlist you added. Each one is checked against your provider before it is
+                offered — a slot can be listed and still be empty. VLC, Infuse and .m3u hand the
+                entry straight to your own player and never touch our servers. “Play here” is the
+                exception, for a television or a locked-down desktop with no app to hand it to: it
+                passes through us, to your session only, and is never cached or shared.
+              </p>
+              <ul class="channels">
+                {own.matches.map((ch) => (
+                  <ChannelRow ch={ch} />
+                ))}
+              </ul>
+            </>
+          ) : own.onDemand?.length > 0 ? null : (
+            <p class="empty">
+              None of your {own.channelCount.toLocaleString('en-US')} entries look like they carry{' '}
+              {title ? <strong>{title}</strong> : 'this'}. Provider names vary a lot, so it may be
+              in there under a name we did not recognise —{' '}
+              <a href="/my/channels">browse your list</a> to see what you actually have.
+            </p>
+          )}
+
+          {/* A different claim, worded as one: a 24/7 genre channel carries
+              whatever is on, which is not the same as having this. */}
+          {own.genre?.length > 0 ? (
+            <>
+              <h3>Channels for this genre</h3>
+              <p class="muted small">
+                These carry the genre rather than this specific thing, so they may or may not be
+                showing it.
+              </p>
+              <ul class="channels">
+                {own.genre.map((ch) => (
+                  <ChannelRow ch={ch} />
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </section>
+      ) : null}
+
+      {hasShared ? (
+        <section class="own-line shared-line" data-player-src={assetUrl('vendor-mpegts.js')}>
+          <h2>Shared with you</h2>
+          <p class="muted small">
+            From {shared.owners === 1 ? 'a list' : `${shared.owners} lists`} other people have
+            opened to everyone signed in. These play here and nowhere else — you never get the
+            address — and one person at a time, because that is what a provider line allows. See{' '}
+            <a href="/shared">whose lists are open</a>.
+          </p>
+          <ul class="channels">
+            {shared.channels.map((ch) => (
+              <SharedChannelRow ch={ch} />
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </>
   );
 };
 
@@ -703,122 +854,18 @@ export const EventPage = ({
       <GenreChips genres={genres} />
 
       {/*
-        A reader's own channels, matched against their own list.
+        A reader's own list, and other people's open ones, matched against this
+        title. One component, shared with the subject page -- see OwnLine.
 
-        Nothing here is shared, pooled or relayed: these URLs came from this
-        account and go back only to this account. The page is deliberately not
-        cached in Redis for exactly this reason.
-
-        The empty state is not decoration. Rendering nothing when a list is present
-        but nothing matched is indistinguishable from the feature being broken --
-        which is how it read before the count was carried back.
-
-        data-player-src rather than a script tag in the Layout: the bundle is a
-        quarter of a megabyte of demuxer, and app.js fetches it on the first press
-        of Play. Versioned here because only the server knows the hash -- an
-        unversioned URL is served with a sixty-second cache, so a deploy would
-        take an hour to reach anyone.
+        The page is deliberately not cached in Redis, and that is what makes this
+        safe: the section carries one account's own entries.
       */}
-      {ownChannels?.hasList ? (
-        <section class="own-line" data-player-src={assetUrl('vendor-mpegts.js')}>
-          <h2>In your list</h2>
-
-          {/* Why the last attempt handed back nothing, in the words of the probe.
-              "returned a web page, not a stream" means the slot is empty;
-              "timed out" means it is not. "Something went wrong" would send
-              somebody off to check their own wifi. */}
-          {streamDead ? (
-            <p class="feedback error" role="status">
-              That one did not play — {streamDead}. The others are still listed; a provider slot
-              often fills only once the thing is actually on.
-            </p>
-          ) : null}
-
-          {/* On demand first: it is there whenever they want it, where a channel
-              is a claim about right now. */}
-          {ownChannels.onDemand?.length > 0 ? (
-            <>
-              <h3>Available on demand</h3>
-              <ul class="channels">
-                {ownChannels.onDemand.map((ch, i) => (
-                  <ChannelRow event={event} ch={ch} index={i} tier="vod" />
-                ))}
-              </ul>
-            </>
-          ) : null}
-
-          {ownChannels.matches.length > 0 ? (
-            <>
-              <p class="muted small">
-                From the playlist you added. Each one is checked against your provider before it is
-                offered — a slot can be listed and still be empty. VLC, Infuse and .m3u hand the
-                entry straight to your own player and never touch our servers. “Play here” is the
-                exception, for a television or a locked-down desktop with no app to hand it to: it
-                passes through us, to your session only, and is never cached or shared.
-              </p>
-              <ul class="channels">
-                {ownChannels.matches.map((ch, i) => (
-                  <ChannelRow event={event} ch={ch} index={i} />
-                ))}
-              </ul>
-            </>
-          ) : ownChannels.onDemand?.length > 0 ? null : (
-            <p class="empty">
-              None of your {ownChannels.channelCount.toLocaleString('en-US')} entries look like they
-              carry this. Provider names vary a lot, so it may still be in there under a name we did
-              not recognise.
-            </p>
-          )}
-
-          {/* A different claim, worded as one: a 24/7 genre channel carries
-              whatever is on, which is not the same as having this. */}
-          {ownChannels.genre?.length > 0 ? (
-            <>
-              <h3>Channels for this genre</h3>
-              <p class="muted small">
-                These carry the genre rather than this specific thing, so they may or may not be
-                showing it.
-              </p>
-              <ul class="channels">
-                {ownChannels.genre.map((ch, i) => (
-                  <ChannelRow event={event} ch={ch} index={i} tier="genre" />
-                ))}
-              </ul>
-            </>
-          ) : null}
-        </section>
-      ) : null}
-
-      {/*
-        Other people's lists, for the same thing.
-
-        A separate section rather than more rows in the one above, because it is a
-        different claim and carries a different set of controls. What is missing
-        here is the point: no VLC link, no Infuse link, no .m3u. Each of those
-        works by handing over the stream URL, and on somebody else's line that URL
-        is their provider username and password.
-
-        The whole section renders only when a shared list actually matched, and the
-        player section wrapper is duplicated deliberately -- a reader with no list
-        of their own still gets a player, which the `ownChannels.hasList` guard
-        above would otherwise deny them.
-      */}
-      {sharedChannels?.channels?.length > 0 ? (
-        <section class="own-line shared-line" data-player-src={assetUrl('vendor-mpegts.js')}>
-          <h2>Shared with you</h2>
-          <p class="muted small">
-            From {sharedChannels.owners === 1 ? 'a list' : `${sharedChannels.owners} lists`} other
-            people have opened to everyone signed in. These play here and nowhere else — you never
-            get the address — and one person at a time, because that is what a provider line allows.
-            See <a href="/shared">whose lists are open</a>.
-          </p>
-          <ul class="channels">
-            {sharedChannels.channels.map((ch) => (
-              <SharedChannelRow ch={ch} />
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      <OwnLine
+        own={ownChannels}
+        shared={sharedChannels}
+        streamDead={streamDead}
+        title={event.subject_name}
+      />
 
       <Ad />
 
@@ -1233,7 +1280,21 @@ export const Following = ({ user, events, follows, cleared, vapidKey, calendarUr
  * genre would be a guess that is wrong often enough to be misleading, and the
  * reader already recognises these strings from their own player.
  */
-export const Channels = ({ user, playlist, groups }) => (
+/**
+ * What each entry kind is called on a page.
+ *
+ * `unknown` is a real state, not a gap: rows imported before the kind was stored
+ * have none, and they repair themselves on the next refresh. Calling them "live"
+ * would assert the thing that was wrong in the first place.
+ */
+const KIND_WORD = {
+  live: 'live channels',
+  vod: 'films on demand',
+  series: 'episode files',
+  unknown: 'not yet classified',
+};
+
+export const Channels = ({ user, playlist, groups, kinds = [] }) => (
   <Layout title="Your channels" user={user}>
     <h1>Your channels</h1>
 
@@ -1255,6 +1316,38 @@ export const Channels = ({ user, playlist, groups }) => (
           ) : null}
         </p>
         {playlist.last_error ? <p class="feedback error">{playlist.last_error}</p> : null}
+
+        {/*
+          What KIND of thing is on this line.
+
+          The question behind this is "does my provider actually carry films", and
+          nothing on the site answered it -- so a reader whose list is seven
+          thousand live channels and no VOD had no way to tell that from the
+          matching being broken. They are very different problems and only one of
+          them is ours.
+
+          `unknown` is shown rather than hidden: it means those rows were imported
+          before the kind was stored, and they repair themselves on the next
+          refresh. Silently folding them into "live" is the exact mistake that
+          produced this section.
+        */}
+        {kinds.length > 0 ? (
+          <ul class="kind-counts">
+            {kinds.map((k) => (
+              <li class={`kind-count kind-${k.kind}`}>
+                <strong>{k.count.toLocaleString('en-US')}</strong> {KIND_WORD[k.kind] ?? k.kind}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {kinds.length > 0 && !kinds.some((k) => k.kind === 'vod' || k.kind === 'series') ? (
+          <p class="notice">
+            Nothing on this line looks like a film or an episode file — it is all live channels. We
+            can still tell you which channel is carrying something, but “Available on demand” will
+            stay empty, because there is nothing on demand in it to find.
+          </p>
+        ) : null}
+
         <p class="muted small">
           These are your provider's own groupings, shown exactly as they appear in your list.
           Nothing here is shared with anyone else or streamed through GenreWatch.

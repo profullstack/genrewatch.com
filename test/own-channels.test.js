@@ -46,28 +46,33 @@ describe("a reader's own channel list on an event page", () => {
     const out = await render({
       hasList: true,
       channelCount: 12,
-      matches: [{ title: 'Severance S02', url: 'http://x/1.ts' }],
+      matches: [{ id: 44, title: 'Severance S02', url: 'http://x/1.ts' }],
       genre: [],
     });
     expect(out).toContain('Severance S02');
-    expect(out).toContain('/events/7/playlist.m3u?n=0');
+    expect(out).toContain('/my/channels/44/playlist.m3u');
     expect(out).not.toMatch(/None of your/);
   });
 
   /*
    * A 24/7 genre channel is a DIFFERENT claim from "your show is on this", so it
-   * is a separate group with its own wording -- and its own tier in the link, or
-   * ?n=0 hands back the wrong channel.
+   * is a separate group with its own wording.
+   *
+   * It no longer needs its own tier in the link: rows are addressed by row id, so
+   * which list a row was ranked into cannot change what the link resolves to. That
+   * was the point of the change -- an index only means something inside one
+   * ranking on one page, and the subject page ranks the same entries with no event
+   * to index against.
    */
-  test('genre channels are a separate group, and link to their own tier', async () => {
+  test('genre channels are a separate group with their own wording', async () => {
     const out = await render({
       hasList: true,
       channelCount: 12,
       matches: [],
-      genre: [{ title: 'Horror HD', url: 'http://x/2.ts' }],
+      genre: [{ id: 31, title: 'Horror HD', url: 'http://x/2.ts' }],
     });
     expect(out).toContain('Horror HD');
-    expect(out).toContain('tier=genre');
+    expect(out).toContain('/my/channels/31/check');
     expect(out).toMatch(/may or may not be/);
   });
 
