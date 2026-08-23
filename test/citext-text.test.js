@@ -41,8 +41,18 @@ describe('citext never leaves the query layer as citext', () => {
        */
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '')
-      .replace(/\b\w*\.?email::text as email\b/g, '')
-      .replace(/\b\w*\.?handle::text as handle\b/g, '');
+      /*
+       * Any cast is a cast, not just the aliased form.
+       *
+       * These started as `x::text as x`, which is how the columns are usually
+       * selected -- but a handle also appears inside an expression, as
+       * `coalesce(p.shared_label, u.display_name, '@' || u.handle::text)`. That
+       * leaves as text just as surely, and requiring the alias form would have
+       * meant contorting a correct query to satisfy a regex. What the rule is
+       * actually about is an UNCAST select, and this still catches those.
+       */
+      .replace(/\b\w*\.?email::text(?:\s+as\s+\w+)?/g, '')
+      .replace(/\b\w*\.?handle::text(?:\s+as\s+\w+)?/g, '');
 
     const offenders = [];
     for (const m of stripped.matchAll(/\bselect\b[\s\S]{0,500}?`/g)) {

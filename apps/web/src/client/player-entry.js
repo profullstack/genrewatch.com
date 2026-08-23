@@ -111,6 +111,18 @@ function attach(video, url, onError) {
     // front of the app (a proxy, a WAF) can still say it, and "try again" is the
     // right advice for that, where "stop the other one" never was.
     if (code === 429) return onError('The line was busy. Try that again.');
+    /*
+     * Somebody else is watching a SHARED line.
+     *
+     * Only the shared route says this, and it says it rather than evicting. On a
+     * reader's own line eviction is right -- pressing Play elsewhere says which
+     * entry they want now. Taking a stranger's film off them because you clicked
+     * something is a different act, so the shared route refuses and this is the
+     * sentence that explains why.
+     */
+    if (code === 409) {
+      return onError('Somebody else is watching that line right now. Try again in a bit.');
+    }
     if (code === 404) return onError('That channel is no longer on your list.');
     if (code === 415) return onError('That channel needs a different player. Try VLC.');
     if (code === 502 || code === 504) {

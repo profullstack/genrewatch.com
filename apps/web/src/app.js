@@ -18,6 +18,7 @@ import {
   ownChannelsForEvent,
   probeStream,
   refreshPlaylist,
+  sharedChannelsForEvent,
   streamSlotsOpen,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
@@ -42,6 +43,7 @@ import {
   PushCheck,
   SearchPage,
   Settings,
+  SharedLists,
   SignIn,
   SubjectPage,
 } from './views/pages.jsx';
@@ -417,7 +419,14 @@ app.get('/events/:id', async (c) => {
    * If it is ever put behind Redis, this has to move out or one reader's channel
    * list -- credentials and all -- is served to the next visitor.
    */
-  const ownChannels = await ownChannelsForEvent({ userId: user?.id, event });
+  const [ownChannels, sharedChannels] = await Promise.all([
+    ownChannelsForEvent({ userId: user?.id, event }),
+    // Other people's open lists. Signed-in only, and it returns no URLs at all --
+    // a shared entry is playable through the proxy and nowhere else, because
+    // every other route hands over the address and the address is the owner's
+    // provider password.
+    sharedChannelsForEvent({ viewerId: user?.id ?? null, event }),
+  ]);
 
   return c.html(
     await render(
@@ -428,6 +437,7 @@ app.get('/events/:id', async (c) => {
         comments={comments}
         following={following}
         ownChannels={ownChannels}
+        sharedChannels={sharedChannels}
         streamDead={c.req.query('stream_dead') ?? null}
       />,
     ),
@@ -492,6 +502,159 @@ app.post('/api/playlist/refresh', async (c) => {
       redirectTo: `/settings?playlist_error=${encodeURIComponent(err.message)}`,
     });
   }
+});
+
+/**
+ * Open this account's list to everybody signed in, or close it again.
+ *
+ * Owner-only, and the query is keyed on the session's own user id rather than on
+ * anything the request supplies, so there is no id to tamper with.
+ *
+ * What the owner is agreeing to is stated on the form rather than here, because a
+ * consent nobody reads is not one: their provider line permits a small number of
+ * simultaneous connections, and other people watching it use them.
+ */
+app.post('/api/playlist/share', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const shared = String(body.shared ?? '') === '1';
+  const label = String(body.label ?? '').trim();
+
+  const row = await q.setPlaylistShared({ userId: user.id, shared, label: label || null });
+  if (!row) {
+    return respond(c, {
+      json: { error: 'no list to share' },
+      status: 400,
+      redirectTo: '/settings?playlist_error=There%20is%20no%20list%20on%20this%20account%20yet.',
+    });
+  }
+  return respond(c, { json: row, redirectTo: `/settings?shared=${row.shared ? '1' : '0'}` });
+});
+
+/**
+ * Whose lists are open, and how big they are.
+ *
+ * Signed-in only. Not because the fact is sensitive -- the owners chose to
+ * publish it -- but because there is nothing here for somebody who cannot play
+ * any of it, and a page listing other people's subscriptions to the open web is
+ * an invitation to scrape.
+ *
+ * Never a URL, never a channel title. This says who is sharing and how much;
+ * what is in a list is answered on an event page, against an event, one entry at
+ * a time.
+ */
+app.get('/shared', async (c) => {
+  const user = requireUser(c);
+  const owners = await q.sharedPlaylistOwners();
+  return c.html(await render(<SharedLists user={user} owners={owners} />));
+});
+
+/**
+ * Play an entry from somebody else's shared list.
+ *
+ * Separate from /events/:id/stream.ts rather than a flag on it, and the split is
+ * the point: that route resolves a channel by INDEX within the reader's own
+ * ranked lists, which only makes sense for a list the reader owns. This one
+ * resolves by channel id, and `sharedChannelById` is what authorises it -- the
+ * row comes back only while its owner's list is shared.
+ *
+ * Three things differ from the private path, all of them because the line belongs
+ * to somebody else:
+ *
+ *   1. The slot is claimed against the OWNER. Twenty readers on one subscription
+ *      is how that subscription gets terminated, so the ceiling has to be a
+ *      property of the line rather than of the audience.
+ *   2. A busy line REFUSES rather than evicting. On the owner's own stream,
+ *      eviction is right -- pressing Play elsewhere says which channel they want
+ *      now. Taking a stranger's film off them because you clicked something is
+ *      not the same act, and the honest answer is that the line is in use.
+ *   3. There is no .m3u and no VLC link anywhere near this. Those hand over the
+ *      URL, and the URL is the owner's provider password.
+ */
+app.get('/shared/:channelId/stream.ts', async (c) => {
+  const user = requireUser(c);
+  if (!config.playlists.proxy.enabled) return c.json({ error: 'player is off' }, 404);
+
+  const row = await q.sharedChannelById(Number(c.req.param('channelId')));
+  if (!row) return c.json({ error: 'not shared' }, 404);
+
+  /*
+   * The owner's own session is not subject to the refusal below.
+   *
+   * They can always take their own line back -- it is theirs, and a reader who
+   * has opened their list to others must not be locked out of it by them.
+   */
+  const isOwner = row.owner_id === user.id;
+  if (!isOwner && streamSlotsOpen(row.owner_id) >= config.playlists.proxy.maxPerUser) {
+    return c.json({ error: 'that line is in use right now' }, 409);
+  }
+
+  const stop = new AbortController();
+  const signal = stop.signal;
+  if (c.req.raw.signal?.aborted) stop.abort();
+  else c.req.raw.signal?.addEventListener('abort', () => stop.abort(), { once: true });
+
+  // Against the owner, not the viewer. See point 1 above.
+  const release = claimStreamSlot(row.owner_id, {
+    max: config.playlists.proxy.maxPerUser,
+    evict: () => stop.abort(),
+  });
+  if (!release) return c.json({ error: 'player is off' }, 404);
+
+  let result;
+  try {
+    result = await openStream(auth.open(row.stream_url), { signal });
+  } catch (err) {
+    release();
+    throw err;
+  }
+
+  if (!result.ok) {
+    release();
+    // Written back against the owner's row, because it is a fact about the slot
+    // rather than about who asked. Not for a reader who simply closed the tab.
+    if (!result.silent) {
+      await q
+        .markSharedChannelChecked({ channelId: row.id, live: false, note: result.note })
+        .catch(() => {});
+    }
+    return c.json({ error: result.note }, result.status === 499 ? 499 : result.status);
+  }
+
+  await q
+    .markSharedChannelChecked({ channelId: row.id, live: true, note: result.note })
+    .catch(() => {});
+
+  signal.addEventListener('abort', release, { once: true });
+  const body = result.body.pipeThrough(new TransformStream({ flush: release, cancel: release }));
+
+  return new Response(body, {
+    headers: {
+      'content-type': /^video\/|^audio\//i.test(result.contentType)
+        ? result.contentType
+        : 'video/mp2t',
+      'cache-control': 'no-store, private',
+      'accept-ranges': 'none',
+      'x-accel-buffering': 'no',
+    },
+  });
+});
+
+/** Is one shared entry actually there? Same shape as the private check. */
+app.get('/shared/:channelId/check', async (c) => {
+  const user = requireUser(c);
+  const row = await q.sharedChannelById(Number(c.req.param('channelId')));
+  if (!row) return c.json({ error: 'not shared' }, 404);
+
+  // A probe is a connection like any other, and it is the owner's line it would
+  // be opened on. Never while that line is carrying something.
+  if (streamSlotsOpen(row.owner_id) > 0) return c.json({ skipped: 'watching' });
+
+  const result = await probeStream(auth.open(row.stream_url), { signal: c.req.raw.signal });
+  await q
+    .markSharedChannelChecked({ channelId: row.id, live: result.live, note: result.note })
+    .catch(() => {});
+  return c.json(result);
 });
 
 app.post('/api/playlist/delete', async (c) => {

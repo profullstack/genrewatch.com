@@ -1762,6 +1762,129 @@ export async function deletePlaylist(userId) {
   await sql`delete from user_playlists where user_id = ${userId}`;
 }
 
+/* ----------------------------------------------------- sharing a playlist -- */
+/**
+ * Record a probe verdict on a SHARED entry.
+ *
+ * Deliberately not scoped by a viewer, and that is the difference from
+ * markChannelChecked. Whether a slot is streaming is a fact about the owner's
+ * line, not about who asked -- so a check run by any reader benefits everyone,
+ * including the owner. `p.shared` is what makes the write legitimate: a row stops
+ * being writable this way the moment its owner closes the list.
+ */
+export async function markSharedChannelChecked({ channelId, live, note }) {
+  await sql`
+    update user_playlist_channels c set
+      is_live = ${live === null ? null : Boolean(live)},
+      checked_at = now(),
+      check_note = ${note ? String(note).slice(0, 200) : null}
+    from user_playlists p
+    where c.id = ${channelId} and p.id = c.playlist_id and p.shared
+  `;
+}
+
+/**
+ * Open one account's list to everybody signed in, or close it again.
+ *
+ * Owner-only by construction: the update is keyed on user_id, so there is no id a
+ * caller could pass to open somebody else's list.
+ *
+ * `shared_at` is stamped on the transition rather than on every save, so a page
+ * can say how long a list has been open rather than only that it is. Turning it
+ * off leaves the timestamp alone -- it is a record of when this started, and a
+ * flag that is currently false makes the distinction unambiguous.
+ */
+export async function setPlaylistShared({ userId, shared, label = null }) {
+  const [row] = await sql`
+    update user_playlists set
+      shared = ${Boolean(shared)},
+      shared_at = case
+        when ${Boolean(shared)} and not shared then now()
+        else shared_at
+      end,
+      -- Null clears it, which is the difference between "no label" and "do not
+      -- change the label". The caller decides by passing one or not.
+      shared_label = ${label === null ? null : String(label).slice(0, 80)}
+    where user_id = ${userId}
+    returning shared, shared_at, shared_label
+  `;
+  return row ?? null;
+}
+
+/**
+ * Every channel on every list whose owner has opened it.
+ *
+ * The one query in this file that deliberately crosses accounts, and the only
+ * one. Everything else about this table is scoped through the playlist join to
+ * the account that supplied it; this reads other people's rows, so the predicate
+ * that makes it legitimate -- `p.shared` -- is the first thing in the where
+ * clause rather than buried in it.
+ *
+ * What comes back carries the OWNER's id, and that is load-bearing rather than
+ * informational: the connection ceiling is a property of the owner's line, not of
+ * whoever is watching, so every caller counts slots against `owner_id`. Counting
+ * against the viewer would let twenty readers open twenty connections on one
+ * subscription, which is how that subscription gets terminated.
+ *
+ * The reader's own list is excluded -- it is already the first section on the
+ * page, and a channel appearing in both reads as a duplicate rather than as two
+ * facts.
+ */
+export async function sharedPlaylistChannels({ viewerId = null, limit = 20000 } = {}) {
+  return sql`
+    select c.id, c.title, c.group_title, c.stream_url, c.norm_title,
+           c.is_live, c.checked_at,
+           p.user_id as owner_id,
+           coalesce(p.shared_label, u.display_name, '@' || u.handle::text, 'someone') as owner_label
+    from user_playlists p
+    join users u on u.id = p.user_id
+    join user_playlist_channels c on c.playlist_id = p.id
+    where p.shared
+      and (${viewerId}::uuid is null or p.user_id <> ${viewerId})
+      -- Same freshness rule as a reader's own list: a "dead" verdict is respected
+      -- only while it is recent, and NULL is never filtered out because unchecked
+      -- is not the same as dead.
+      and (c.is_live is not false or c.checked_at < now() - interval '30 minutes')
+    order by c.position
+    limit ${limit}
+  `;
+}
+
+/** Whose lists are open, for the page that says so. Never includes a URL. */
+export async function sharedPlaylistOwners() {
+  return sql`
+    select p.user_id as owner_id,
+           u.handle::text as handle,
+           coalesce(p.shared_label, u.display_name, '@' || u.handle::text, 'someone') as label,
+           p.channel_count, p.shared_at, p.last_synced_at
+    from user_playlists p
+    join users u on u.id = p.user_id
+    where p.shared
+    order by p.channel_count desc nulls last, p.shared_at
+  `;
+}
+
+/**
+ * One shared channel by its own id, with the owner beside it.
+ *
+ * Used by the routes that play a shared entry. Keyed by the channel id alone --
+ * there is no viewer to scope by, which is the whole point of the feature -- so
+ * `p.shared` is what authorises the read and it is checked here rather than by
+ * the caller remembering to.
+ */
+export async function sharedChannelById(channelId) {
+  const [row] = await sql`
+    select c.id, c.title, c.group_title, c.stream_url,
+           p.user_id as owner_id,
+           coalesce(p.shared_label, u.display_name, '@' || u.handle::text, 'someone') as owner_label
+    from user_playlist_channels c
+    join user_playlists p on p.id = c.playlist_id
+    join users u on u.id = p.user_id
+    where c.id = ${channelId} and p.shared
+  `;
+  return row ?? null;
+}
+
 /**
  * Record a failure, and back off before trying again.
  *

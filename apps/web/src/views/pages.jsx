@@ -415,6 +415,91 @@ export const ChannelRow = ({ event, ch, index, tier = null }) => {
   );
 };
 
+/**
+ * A shared entry, playable and nothing else.
+ *
+ * Deliberately not ChannelRow. That component offers VLC, Infuse and a .m3u
+ * download, and every one of those works by handing over the stream URL — which
+ * on somebody else's line is their provider username and password. This row has
+ * one control, and the absence of the other three is the security property rather
+ * than an omission.
+ *
+ * `data-check` and `data-play` are keyed by channel id rather than by an index
+ * into a ranked list: there is no per-viewer ranking to index into when the list
+ * is not the viewer's own.
+ */
+export const SharedChannelRow = ({ ch }) => (
+  <li data-check={`/shared/${ch.id}/check`}>
+    <span class="own-channel-name">
+      {ch.title || 'Untitled entry'}
+      {ch.group ? <span class="genre-tag channel-tag">{ch.group}</span> : null}
+      <span class="genre-tag channel-tag owner" title="Whose list this is on">
+        {ch.ownerLabel}
+      </span>
+    </span>
+    <span class="own-channel-state" />
+    <span class="own-channel-actions">
+      <button
+        type="button"
+        class="ghost small-btn play-btn"
+        disabled
+        data-play={`/shared/${ch.id}/stream.ts`}
+      >
+        Play here
+      </button>
+    </span>
+  </li>
+);
+
+/**
+ * Who has opened their list, and how big it is.
+ *
+ * What this page does not have is the point: no titles, no groups, no addresses,
+ * nothing that could be scraped into a directory of somebody else's subscription.
+ * It says who is sharing and roughly how much, and everything else is answered on
+ * a page for a specific thing.
+ */
+export const SharedLists = ({ user, owners }) => (
+  <Layout title="Shared lists" user={user}>
+    <h1>Shared lists</h1>
+    <p class="muted">
+      Lists other people have opened to everyone signed in. You can play from them on the page for
+      something they carry — you never get the address, and only one person can watch a given line
+      at a time, because that is what a provider subscription allows.
+    </p>
+
+    {owners.length === 0 ? (
+      <p class="empty">
+        Nobody has shared a list yet. You can open yours in <a href="/settings">settings</a>.
+      </p>
+    ) : (
+      <ul class="results">
+        {owners.map((o) => (
+          <li class="result">
+            <span class="subject-blank" />
+            <div class="result-main">
+              {o.handle ? (
+                <a href={`/u/${o.handle}`}>{o.label}</a>
+              ) : (
+                <span class="result-name">{o.label}</span>
+              )}
+              <span class="meta">
+                {(o.channel_count ?? 0).toLocaleString('en-US')} entries
+                {o.last_synced_at ? (
+                  <>
+                    {' · updated '}
+                    <LocalTime at={o.last_synced_at} />
+                  </>
+                ) : null}
+              </span>
+            </div>
+          </li>
+        ))}
+      </ul>
+    )}
+  </Layout>
+);
+
 export const EventPage = ({
   user,
   event,
@@ -422,6 +507,7 @@ export const EventPage = ({
   comments,
   following,
   ownChannels,
+  sharedChannels,
   streamDead,
 }) => {
   const when = whenLabel(event);
@@ -700,6 +786,37 @@ export const EventPage = ({
               </ul>
             </>
           ) : null}
+        </section>
+      ) : null}
+
+      {/*
+        Other people's lists, for the same thing.
+
+        A separate section rather than more rows in the one above, because it is a
+        different claim and carries a different set of controls. What is missing
+        here is the point: no VLC link, no Infuse link, no .m3u. Each of those
+        works by handing over the stream URL, and on somebody else's line that URL
+        is their provider username and password.
+
+        The whole section renders only when a shared list actually matched, and the
+        player section wrapper is duplicated deliberately -- a reader with no list
+        of their own still gets a player, which the `ownChannels.hasList` guard
+        above would otherwise deny them.
+      */}
+      {sharedChannels?.channels?.length > 0 ? (
+        <section class="own-line shared-line" data-player-src={assetUrl('vendor-mpegts.js')}>
+          <h2>Shared with you</h2>
+          <p class="muted small">
+            From {sharedChannels.owners === 1 ? 'a list' : `${sharedChannels.owners} lists`} other
+            people have opened to everyone signed in. These play here and nowhere else — you never
+            get the address — and one person at a time, because that is what a provider line allows.
+            See <a href="/shared">whose lists are open</a>.
+          </p>
+          <ul class="channels">
+            {sharedChannels.channels.map((ch) => (
+              <SharedChannelRow ch={ch} />
+            ))}
+          </ul>
         </section>
       ) : null}
 
@@ -1509,9 +1626,10 @@ export const Settings = ({
       <h2>Your channel list</h2>
       <p class="muted small">
         If you subscribe to a service that gives you an M3U playlist, add it here and we will tell
-        you which of your own channels is carrying something you follow. It stays private to your
-        account, and nothing is streamed through GenreWatch — opening a channel hands a playlist
-        file to the player you already use. Browse it at <a href="/my/channels">your channels</a>.
+        you which of your own entries is carrying something you follow. It stays private to your
+        account unless you choose otherwise below. VLC, Infuse and .m3u hand the entry straight to
+        the player you already use and never touch our servers; “Play here” passes through us, to
+        your session only. Browse it at <a href="/my/channels">your channels</a>.
       </p>
 
       {playlistError ? <p class="feedback error">{playlistError}</p> : null}
@@ -1544,6 +1662,74 @@ export const Settings = ({
               </button>
             </form>
           </div>
+        </div>
+      ) : null}
+
+      {/*
+        Opening the list to everybody signed in.
+
+        Rendered only when there IS a list, and worded so the two consequences are
+        read before the button is pressed rather than discovered afterwards. Both
+        are real and neither is obvious:
+
+          - a provider line permits a small number of simultaneous connections and
+            suspends the account for exceeding it, so other people watching it are
+            using the owner's allowance;
+          - the site therefore refuses a shared entry while that line is busy,
+            rather than cutting off whoever is already watching.
+
+        What it does NOT do is hand anybody the URL, and that is why this is
+        offerable at all. Shared entries play through the proxy only; VLC, Infuse
+        and .m3u stay owner-only, because each of those is the credential itself.
+      */}
+      {playlist ? (
+        <div class="card">
+          <div class="card-head">
+            <h3 class="card-title">
+              {playlist.shared ? 'Your list is open to everyone signed in' : 'Share your list'}
+            </h3>
+            <p class="card-desc">
+              {playlist.shared ? (
+                <>
+                  Anyone signed in can play from it on a page for something it carries. They cannot
+                  see, download or copy the address — only “Play here” works, and only one person at
+                  a time, because that is what your line allows. It is listed on{' '}
+                  <a href="/shared">shared lists</a>.
+                </>
+              ) : (
+                <>
+                  Let anyone signed in play from your list. They never get the address — it carries
+                  your provider username and password, so shared entries play through us and the
+                  VLC, Infuse and .m3u buttons stay yours alone. Your line still permits one
+                  connection at a time, so somebody else watching means you are not.
+                </>
+              )}
+            </p>
+          </div>
+          <form method="post" action="/api/playlist/share">
+            <input type="hidden" name="shared" value={playlist.shared ? '0' : '1'} />
+            {playlist.shared ? null : (
+              <label class="field">
+                <span>What to call it (optional)</span>
+                <input
+                  type="text"
+                  name="label"
+                  maxlength="80"
+                  placeholder="Anthony's line"
+                  autocomplete="off"
+                />
+                {/* The private label defaults to the provider's hostname, which is
+                    the one thing not to publish -- it names their provider to
+                    everybody on the site. */}
+                <span class="hint">
+                  Shown instead of the name above, which is usually your provider's address.
+                </span>
+              </label>
+            )}
+            <button class={playlist.shared ? 'ghost' : 'cta'} type="submit">
+              {playlist.shared ? 'Stop sharing' : 'Share my list'}
+            </button>
+          </form>
         </div>
       ) : null}
 

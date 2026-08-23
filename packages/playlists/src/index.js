@@ -246,3 +246,67 @@ export async function ownChannelsForEvent({ userId, event }) {
     genre: unseal(ranked.genre),
   };
 }
+
+/**
+ * Which of the SHARED lists is carrying this event.
+ *
+ * The same matching as ownChannelsForEvent, over other people's rows, and it
+ * exists only because the owner of a line asked for one. Everything about this
+ * table was built to make it impossible -- see migration 0011 for what the owner
+ * is actually agreeing to -- so the differences from the private path are all
+ * deliberate:
+ *
+ *   - The stream URL is NOT unsealed here. A shared entry is playable through the
+ *     proxy and nowhere else, because every other route hands the reader the URL
+ *     itself, and that URL carries the owner's provider username and password. A
+ *     shared list that also handed out credentials would last exactly as long as
+ *     it took one person to paste one.
+ *   - Each row carries its owner, because the connection ceiling belongs to the
+ *     owner's line rather than to whoever is watching.
+ *   - Rows are keyed by channel id, so the routes can look one up without a
+ *     viewer to scope by.
+ *
+ * @param {{viewerId: string|null, event: object}} args
+ */
+export async function sharedChannelsForEvent({ viewerId, event }) {
+  const none = { channels: [], owners: 0 };
+  if (!config.playlists.enabled || !viewerId) return none;
+
+  const rows = await q.sharedPlaylistChannels({ viewerId });
+  if (rows.length === 0) return none;
+
+  const ranked = rankChannelsForTitle(
+    rows.map((r) => ({ id: r.id, title: r.title, url: r.stream_url })),
+    {
+      title: event.subject_name,
+      genreName: event.genre_name,
+      categoryName: event.category,
+    },
+  );
+
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  // On demand first, then the ones that look like the thing, then the genre
+  // channels -- the same order the reader's own section uses, so the two read
+  // the same way.
+  const flat = [...ranked.onDemand, ...ranked.certain, ...ranked.likely, ...ranked.genre];
+
+  const channels = flat
+    .map((m) => {
+      const row = byId.get(m.id);
+      if (!row) return null;
+      return {
+        id: row.id,
+        title: row.title,
+        group: row.group_title ?? null,
+        ownerId: row.owner_id,
+        ownerLabel: row.owner_label,
+        // No `url`. Deliberately, and the absence is the security property: a
+        // caller that wants to play this has to go through the proxy route, which
+        // looks the row up again and never renders the URL into a page.
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 10);
+
+  return { channels, owners: new Set(channels.map((c) => c.ownerId)).size };
+}

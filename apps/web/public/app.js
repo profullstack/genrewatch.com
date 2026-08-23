@@ -962,8 +962,40 @@ async function checkOwnChannels(section, onLive, signal) {
   section.appendChild(note);
 }
 
+/**
+ * There can be two player sections on a page now, not one.
+ *
+ * The reader's own list and the shared lists are separate sections because they
+ * are separate claims with different controls -- and querySelector took the first
+ * and left the second inert, which showed up as a shared entry whose Play button
+ * never enabled. Each section gets its own player state: its own sweep, its own
+ * generation counter, its own teardown.
+ *
+ * Stopping is still global. `__genreStopPlayer` chains, so a press in one section
+ * tears down the other -- the reader's line, or the owner's, permits one
+ * connection and two <video> elements pulling at once is the thing the whole
+ * ceiling exists to prevent.
+ */
 function initInlinePlayer(root = document) {
-  const section = root.querySelector('.own-line[data-player-src]');
+  const sections = [...root.querySelectorAll('.own-line[data-player-src]')].filter(
+    (el) => !el.dataset.player,
+  );
+  if (sections.length === 0) return;
+
+  /*
+   * The chain starts empty for each fresh set of sections.
+   *
+   * A client-side navigation replaces <main> wholesale and then calls this again,
+   * so without the reset the chain would accumulate a teardown per section per
+   * navigation -- each holding a reference to a section long since removed from
+   * the document. The navigation handler has already run the old chain before the
+   * swap, so there is nothing live left to lose.
+   */
+  window.__genreStopPlayer = null;
+  for (const section of sections) initPlayerSection(section);
+}
+
+function initPlayerSection(section) {
   if (!section || section.dataset.player) return;
   section.dataset.player = '1';
 
@@ -1023,7 +1055,14 @@ function initInlinePlayer(root = document) {
     stage?.remove();
     stage = null;
   };
-  window.__genreStopPlayer = teardown;
+  // Chained, not assigned. With two sections the second would otherwise replace
+  // the first's handle, and a navigation would tear down one player while the
+  // other kept pulling the stream.
+  const previousStop = window.__genreStopPlayer;
+  window.__genreStopPlayer = () => {
+    previousStop?.();
+    teardown();
+  };
 
   const fail = (message) => {
     teardown();
