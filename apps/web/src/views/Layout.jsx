@@ -13,7 +13,7 @@ export const Layout = (props) => (
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
       <title>
-        {props.title ? `${props.title} · GenreWatch` : 'GenreWatch — never miss a game'}
+        {props.title ? `${props.title} · GenreWatch` : 'GenreWatch — never miss a release'}
       </title>
       <meta
         name="description"
@@ -29,21 +29,30 @@ export const Layout = (props) => (
       {/* Deliberately NOT linking the 1254x1254 /favicon.png the generator emits:
           it is the same 1.4MB source image as the logo, and browsers would fetch it
           on every page to draw a 16px tab icon. The generated sizes are the point. */}
-      <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
-      <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
-      <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-180x180.png" />
-      <link rel="apple-touch-icon" sizes="152x152" href="/icons/apple-touch-icon-152x152.png" />
-      <link rel="apple-touch-icon" sizes="144x144" href="/icons/apple-touch-icon-144x144.png" />
-      <link rel="apple-touch-icon" sizes="120x120" href="/icons/apple-touch-icon-120x120.png" />
-      <link rel="apple-touch-icon" sizes="76x76" href="/icons/apple-touch-icon-76x76.png" />
+      {/* Versioned like the stylesheet: icons sit behind a week-long cache, so
+          redrawing one under its own name reaches nobody who has already visited.
+          A new hash is a new URL, which is the only thing a cache respects. */}
+      <link rel="icon" type="image/png" sizes="32x32" href={assetUrl('icons/favicon-32.png')} />
+      <link rel="icon" type="image/png" sizes="16x16" href={assetUrl('icons/favicon-16.png')} />
+      {[180, 152, 144, 120, 76].map((s) => (
+        <link
+          key={s}
+          rel="apple-touch-icon"
+          sizes={`${s}x${s}`}
+          href={assetUrl(`icons/apple-touch-icon-${s}x${s}.png`)}
+        />
+      ))}
 
       <meta name="apple-mobile-web-app-capable" content="yes" />
       <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-      <meta name="apple-mobile-web-app-title" content="Tipoff" />
+      <meta name="apple-mobile-web-app-title" content="GenreWatch" />
       <meta name="mobile-web-app-capable" content="yes" />
       <meta name="msapplication-TileColor" content="#12161f" />
       <meta name="msapplication-config" content="/icons/browserconfig.xml" />
-      <meta name="msapplication-TileImage" content="/icons/apple-touch-icon-144x144.png" />
+      <meta
+        name="msapplication-TileImage"
+        content={assetUrl('icons/apple-touch-icon-144x144.png')}
+      />
 
       {/* Autodiscovery: a reader pointed at any page finds the feed without being
           told where it is. props.feedUrl narrows it to the genre or name in view. */}

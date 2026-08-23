@@ -18,7 +18,7 @@ import {
 import { connection } from '@genre/queue';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
-import { isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
+import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { buildCalendar } from './lib/ics.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
@@ -1515,6 +1515,13 @@ app.get('/sitemaps/:file', async (c) => {
 /**
  * Colours track the stylesheet's ground, not the generator's white default -- an
  * installed PWA whose splash is white flashes bright before a dark app paints.
+ *
+ * `maskable` is its own entry rather than a second purpose on the full-bleed
+ * art. A launcher crops a maskable icon to a safe-zone circle of 80% diameter,
+ * so declaring the edge-to-edge mark maskable cost it the antenna, both side
+ * tiles and the bottom camera. The -maskable files carry that inset already,
+ * on an opaque ground -- a transparent maskable gets whatever the launcher
+ * paints behind it.
  */
 app.get('/manifest.webmanifest', (c) =>
   c.json({
@@ -1527,22 +1534,18 @@ app.get('/manifest.webmanifest', (c) =>
     background_color: '#12161f',
     theme_color: '#12161f',
     icons: [
-      { src: '/icons/icon-48x48.png', sizes: '48x48', type: 'image/png' },
-      { src: '/icons/icon-128x128.png', sizes: '128x128', type: 'image/png' },
-      {
-        src: '/icons/icon-192x192.png',
-        sizes: '192x192',
+      ...[48, 128, 192, 256, 384, 512].map((s) => ({
+        src: assetUrl(`icons/icon-${s}x${s}.png`),
+        sizes: `${s}x${s}`,
         type: 'image/png',
-        purpose: 'any maskable',
-      },
-      { src: '/icons/icon-256x256.png', sizes: '256x256', type: 'image/png' },
-      { src: '/icons/icon-384x384.png', sizes: '384x384', type: 'image/png' },
-      {
-        src: '/icons/icon-512x512.png',
-        sizes: '512x512',
+        purpose: 'any',
+      })),
+      ...[192, 512].map((s) => ({
+        src: assetUrl(`icons/icon-${s}x${s}-maskable.png`),
+        sizes: `${s}x${s}`,
         type: 'image/png',
-        purpose: 'any maskable',
-      },
+        purpose: 'maskable',
+      })),
     ],
   }),
 );
@@ -1564,8 +1567,23 @@ const STATIC_FILES = [
   ['/logo-mark.png', 'logo-mark.png', 'image/png'],
 ];
 
+/**
+ * The icons the markup and the manifest link, hashed alongside the other assets.
+ *
+ * They are cached for a week, so redrawing one under its own name -- which is
+ * what fixing an icon means -- reaches nobody who has visited recently. The
+ * install prompt in particular reads the manifest and keeps whatever it got.
+ */
+const VERSIONED_ICONS = [
+  'icons/favicon-16.png',
+  'icons/favicon-32.png',
+  ...[76, 120, 144, 152, 180].map((s) => `icons/apple-touch-icon-${s}x${s}.png`),
+  ...[48, 128, 192, 256, 384, 512].map((s) => `icons/icon-${s}x${s}.png`),
+  ...[192, 512].map((s) => `icons/icon-${s}x${s}-maskable.png`),
+];
+
 // Hashed once at boot so pages can link /styles.css?v=<hash>. See lib/asset-version.js.
-await loadAssetVersions(STATIC_FILES.map(([, file]) => file));
+await loadAssetVersions([...STATIC_FILES.map(([, file]) => file), ...VERSIONED_ICONS]);
 
 for (const [route, file, type] of STATIC_FILES) {
   app.get(route, async (c) => {
@@ -1607,8 +1625,14 @@ app.get('/icons/:file', async (c) => {
     'content-type',
     ICON_TYPES[file.split('.').pop().toLowerCase()] ?? 'application/octet-stream',
   );
-  // Icons are content-addressed by size and effectively immutable.
-  c.header('cache-control', 'public, max-age=604800');
+  if (isCurrentVersion(`icons/${file}`, c.req.query('v'))) {
+    // The URL carries the content hash, so these bytes cannot change under it.
+    c.header('cache-control', 'public, max-age=31536000, immutable');
+  } else {
+    // Unversioned: a bare /icons/... hit, or cached markup pointing at an older
+    // hash. Kept short so a redrawn icon is not pinned for a week.
+    c.header('cache-control', 'public, max-age=3600, must-revalidate');
+  }
   return c.body(await f.arrayBuffer());
 });
 
