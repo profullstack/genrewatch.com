@@ -122,10 +122,21 @@ describe('the code behind it', () => {
   const src = async (p) => readFile(new URL(p, import.meta.url).pathname, 'utf8');
 
   test('the poller is sequential, not fanned out', async () => {
-    // Several ~800KB pulls at once from one datacenter IP is the traffic pattern
-    // that gets somebody's line cut off.
+    // Several pulls at once from one datacenter IP is the traffic pattern that
+    // gets somebody's line cut off -- and a list can now be 38MB, so the same
+    // fan-out costs far more than it did when this was written.
     const s = await src('../packages/playlists/src/index.js');
-    const body = s.slice(s.indexOf('export async function refreshDuePlaylists'));
+    /*
+     * Bounded to the POLLER's own body, not to the end of the file.
+     *
+     * It used to slice to EOF, which made it an assertion about every function
+     * defined after this one. It failed the moment ownChannelsFor awaited two of
+     * our OWN database queries together -- which has nothing to do with a
+     * provider's line and is exactly the concurrency this test does not care
+     * about. What it is protecting is the loop that fetches from providers.
+     */
+    const start = s.indexOf('export async function refreshDuePlaylists');
+    const body = s.slice(start, s.indexOf('\n}\n', start));
     expect(body).toContain('for (const row of due)');
     expect(body).not.toContain('Promise.all');
   });

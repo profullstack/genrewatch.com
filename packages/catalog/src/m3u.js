@@ -22,8 +22,14 @@
 
 import { normaliseTitle } from './slug.js';
 
-/** Hard ceiling on a stored list. A real one is ~7k lines; this bounds abuse. */
-export const MAX_CHANNELS = 20000;
+/**
+ * Fallback ceiling for callers that do not pass one.
+ *
+ * The real limit is configuration -- see playlists.maxChannels -- because it had to
+ * become a knob: at 20,000 this silently truncated a 300,000-entry VOD catalogue
+ * and the reader had no way to tell which entries were missing.
+ */
+export const MAX_CHANNELS = 300_000;
 
 /**
  * Pull `key="value"` pairs out of the attribute block of an #EXTINF line.
@@ -52,13 +58,13 @@ function parseAttrs(head) {
  *
  * @param {string} text
  */
-export function parseM3u(text) {
+export function parseM3u(text, { max = MAX_CHANNELS } = {}) {
   const lines = String(text ?? '').split(/\r?\n/);
   const out = [];
   /** `#EXTGRP:` is the other way providers state a group; it applies until changed. */
   let currentGroup = null;
 
-  for (let i = 0; i < lines.length && out.length < MAX_CHANNELS; i++) {
+  for (let i = 0; i < lines.length && out.length < max; i++) {
     const line = lines[i].trim();
 
     if (line.startsWith('#EXTGRP:')) {
@@ -265,6 +271,37 @@ export function entryKind({ url, group } = {}) {
   if (/\b(vod|on ?demand|movies?|films?)\b/.test(g)) return 'vod';
   if (/\b(series|shows?|tv ?shows?)\b/.test(g)) return 'series';
   return 'live';
+}
+
+/**
+ * The words worth asking the database about, for one title.
+ *
+ * Exported so the candidate query and the ranker agree on what "significant"
+ * means. They have to: the query narrows a list to rows worth ranking, and a word
+ * the ranker would have matched but the query never asked for is an entry the
+ * reader is silently not offered.
+ *
+ * This exists because a list can now be a whole VOD catalogue. At seven thousand
+ * entries, loading all of them and normalising each per page view was free. At
+ * three hundred thousand it is a third of a second of CPU on every page, to find a
+ * handful of rows that could have been selected by index.
+ */
+export function matchTerms({ title, genreName, categoryName } = {}) {
+  const out = new Set();
+  for (const name of [title, genreName, categoryName]) {
+    if (!name) continue;
+    for (const t of tokens(name)) out.add(t);
+  }
+  /*
+   * A short title has no significant tokens -- tokens() drops anything under three
+   * characters -- and would otherwise ask the database for nothing and match
+   * nothing. The normalised whole is the best available needle for those.
+   */
+  if (out.size === 0 && title) {
+    const whole = normaliseTitle(title);
+    if (whole.length >= 2) out.add(whole);
+  }
+  return [...out];
 }
 
 /**

@@ -277,6 +277,7 @@ export {
   groupsOf,
   isPlaceholder,
   MAX_CHANNELS,
+  matchTerms,
   oneChannelM3u,
   parseM3u,
   rankChannelsForTitle,

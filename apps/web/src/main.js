@@ -1,9 +1,21 @@
-import { config } from '@genre/config';
-import { close as closeDb, healthcheck } from '@genre/db';
+import { assertCoinpayMerchantKey, config } from '@genre/config';
+import { close as closeDb, healthcheck, sql } from '@genre/db';
 import { migrate } from '@genre/db/migrate';
+import { configurePayments } from '@genre/payments';
 import { closeQueues, connection, installSchedules } from '@genre/queue';
 import { startWorkers } from '@genre/queue/workers';
 import { app } from './app.js';
+
+/*
+ * Hand the payments package its database handle and settings.
+ *
+ * It imports nothing from this brand -- that is what lets the same file live in
+ * both siblings unchanged -- so it has to be given `sql` and the CoinPay block
+ * once, here, before anything can take money. The coinpay object is passed whole
+ * rather than unpacked: its keys are getters that read the environment on every
+ * access, and snapshotting them is the bug their comment in config warns about.
+ */
+configurePayments({ sql, coinpay: config.coinpay, siteUrl: config.siteUrl });
 
 /**
  * One process, one container, one Railway service.
@@ -14,6 +26,9 @@ import { app } from './app.js';
  */
 
 // Fail at boot rather than at checkout if the CoinPay credential is the wrong family.
+// The comment came across with the clone and the call did not, so for the whole
+// life of this repo it asserted nothing.
+assertCoinpayMerchantKey();
 
 /**
  * Turn an infrastructure failure into a sentence someone can act on.

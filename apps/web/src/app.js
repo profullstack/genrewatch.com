@@ -10,6 +10,7 @@ import {
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendInviteEmail, sendLoginLink } from '@genre/notify';
+import * as pay from '@genre/payments';
 import {
   claimStreamSlot,
   firstLiveChannel,
@@ -696,7 +697,7 @@ app.get('/shared/:channelId/stream.ts', async (c) => {
 
 /** Is one shared entry actually there? Same shape as the private check. */
 app.get('/shared/:channelId/check', async (c) => {
-  const user = requireUser(c);
+  const _user = requireUser(c);
   const row = await q.sharedChannelById(Number(c.req.param('channelId')));
   if (!row) return c.json({ error: 'not shared' }, 404);
 
@@ -1098,6 +1099,36 @@ app.get('/my/channels/:channelId/stream.ts', async (c) => {
       'x-accel-buffering': 'no',
     },
   });
+});
+
+/* ---------------------------------------------------------------- payments -- */
+
+/**
+ * CoinPay's webhook.
+ *
+ * Ported from the sibling brand along with the package behind it. Unauthenticated
+ * by necessity -- CoinPay holds no session with us -- so the SIGNATURE is the only
+ * thing standing between this route and anybody who can POST. It is verified over
+ * the RAW bytes: re-serialising the parsed JSON changes key order and whitespace
+ * and the signature stops matching, which reads as a forgery rather than the bug
+ * it is.
+ *
+ * No `grant` callback is passed, and that is the current state of this brand
+ * rather than an oversight. The rail records money correctly and grants nothing,
+ * because there is nothing on this site for sale yet. Whatever it eventually sells
+ * supplies its grant here, inside settleWebhook's transaction, the way the sibling
+ * claims a seat.
+ */
+app.post('/api/webhooks/coinpay', async (c) => {
+  const raw = await c.req.text();
+  const ok = pay.verifyWebhook({
+    rawBody: raw,
+    signatureHeader: c.req.header('coinpay-signature') ?? c.req.header('x-coinpay-signature'),
+  });
+  if (!ok) return c.json({ error: 'bad signature' }, 401);
+
+  const result = await pay.settleWebhook(JSON.parse(raw));
+  return c.json(result);
 });
 
 /* -------------------------------------------------------------------- auth -- */

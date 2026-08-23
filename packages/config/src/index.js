@@ -206,8 +206,30 @@ export const config = {
     get enabled() {
       return Boolean(this.secret);
     },
-    /** Refuse a list bigger than this, in bytes. A real provider list is ~800KB. */
-    maxBytes: num('PLAYLIST_MAX_BYTES', 8 * 1024 * 1024),
+    /**
+     * Refuse a list bigger than this, in bytes.
+     *
+     * 100MB, raised from 8MB after a real 38MB list was rejected with "that list
+     * is larger than we store". Eight megabytes was sized for a channel lineup --
+     * a few thousand rows of title and URL. A provider that also exposes its VOD
+     * library ships its whole catalogue in the same file, and those run to
+     * hundreds of thousands of entries.
+     *
+     * The ceiling is still a ceiling: this is read into memory as one string
+     * before it is parsed, so it bounds what a wrong URL pointing at something
+     * enormous can cost.
+     */
+    maxBytes: num('PLAYLIST_MAX_BYTES', 100 * 1024 * 1024),
+
+    /**
+     * Hard ceiling on entries stored from one list.
+     *
+     * Was a constant of 20,000 in the parser, which silently truncated: a reader
+     * importing a 300,000-entry catalogue got 20,000 rows, no error, and no way to
+     * tell which 280,000 were missing. It is a knob now, the import reports when it
+     * hits it, and the default is high enough for a full VOD catalogue.
+     */
+    maxChannels: num('PLAYLIST_MAX_CHANNELS', 300_000),
     /**
      * How often each list is re-fetched, in minutes.
      *
@@ -224,6 +246,21 @@ export const config = {
      * deploy.
      */
     refreshMinutes: num('PLAYLIST_REFRESH_MINUTES', 5),
+
+    /**
+     * Bytes per minute of refresh interval, for lists too big to poll every five.
+     *
+     * The provider offers no conditional request, so every poll downloads the
+     * whole file. At five minutes that is 288 fetches a day: fine for an 8MB
+     * lineup (~2GB/day, already a lot) and indefensible for a 38MB catalogue,
+     * which would pull 11GB a day off the reader's own subscription from a
+     * datacenter IP. That is how a line gets flagged.
+     *
+     * So a big list is polled proportionally less often: interval scales with
+     * size, floored at refreshMinutes. 2MB per minute puts a 38MB list on a
+     * ~19-minute cycle and leaves an ordinary lineup untouched.
+     */
+    refreshBytesPerMinute: num('PLAYLIST_REFRESH_BYTES_PER_MINUTE', 2 * 1024 * 1024),
 
     /**
      * Playing a channel in the page itself, rather than handing it to an app.
@@ -258,6 +295,48 @@ export const config = {
        * permits more; it does not make the player better behaved.
        */
       maxPerUser: num('STREAM_PROXY_MAX_PER_USER', 1),
+    },
+  },
+
+  /**
+   * Selling access to something, through CoinPay.
+   *
+   * Shared verbatim with the sibling brand -- @tipoff/payments and @genre/payments
+   * are the same file -- so this block is deliberately identical in both configs
+   * too. A difference here would be a difference the shared package cannot see.
+   */
+  payments: {
+    /**
+     * How long access outlives the thing it was bought for, in hours.
+     *
+     * There is no perpetual licence to a stream, and an open-ended grant is what
+     * turns a small sale into redistribution. The grace exists because a fixture
+     * running to extra time, or a premiere starting late, must not cut a paying
+     * viewer off mid-way.
+     */
+    entitlementGraceHours: num('ENTITLEMENT_GRACE_HOURS', 6),
+  },
+
+  coinpay: {
+    /** Must be a MERCHANT api key (cp_live_/cp_test_ + 32 hex). An OAuth client id
+     *  (cp_ + 24 hex) authenticates but cannot create payments -- it fails only at
+     *  checkout, which is why this is asserted at boot rather than trusted. */
+    /* Read on use rather than snapshotted at import. These three are only ever
+       touched inside a request, and snapshotting them made the value depend on which
+       module imported config first -- which turned the webhook signature tests into a
+       coin flip decided by the rest of the suite. */
+    get apiKey() {
+      return opt('COINPAY_API_KEY');
+    },
+    get businessId() {
+      return opt('COINPAY_BUSINESS_ID');
+    },
+    get webhookSecret() {
+      return opt('COINPAY_WEBHOOK_SECRET');
+    },
+    baseUrl: opt('COINPAY_BASE_URL', 'https://coinpayportal.com'),
+    get enabled() {
+      return Boolean(this.apiKey && this.businessId && this.webhookSecret);
     },
   },
 
@@ -378,3 +457,16 @@ export const config = {
     ttlDays: num('SESSION_TTL_DAYS', 90),
   },
 };
+
+/** Asserted at boot by whichever process is about to depend on it. */
+export function assertCoinpayMerchantKey() {
+  const k = config.coinpay.apiKey;
+  if (!k) return;
+  const merchant = /^cp_(live|test)_[0-9a-f]{32}$/.test(k);
+  if (!merchant) {
+    throw new Error(
+      'COINPAY_API_KEY is not a merchant API key. Expected cp_live_/cp_test_ + 32 hex. ' +
+        'An OAuth client id (cp_ + 24 hex) grants identity only and cannot create payments.',
+    );
+  }
+}

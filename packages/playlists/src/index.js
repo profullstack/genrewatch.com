@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { open, seal } from '@genre/auth';
-import { MAX_CHANNELS, normaliseTitle, parseM3u, rankChannelsForTitle } from '@genre/catalog';
+import { matchTerms, normaliseTitle, parseM3u, rankChannelsForTitle } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 
@@ -83,11 +83,11 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
    */
   const stale = await q.playlistNeedsReparse(userId);
   if (knownHash && knownHash === contentHash && !stale) {
-    await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt() });
+    await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(text.length) });
     return { channels: null, unchanged: true };
   }
 
-  const channels = parseM3u(text).map((c) => ({
+  const channels = parseM3u(text, { max: config.playlists.maxChannels }).map((c) => ({
     title: c.title,
     // The provider's own group-title, verbatim. This is what makes a reader's own
     // list browsable by genre without any of it leaving their account.
@@ -114,10 +114,10 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
   }
 
   await q.replacePlaylistChannels({ userId, channels });
-  await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt() });
+  await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(text.length) });
   return {
     channels: channels.length,
-    truncated: channels.length >= MAX_CHANNELS,
+    truncated: channels.length >= config.playlists.maxChannels,
     unchanged: false,
   };
 }
@@ -129,8 +129,23 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
  * the same afternoon do not all fetch on the same tick forever after -- which is
  * the shape of traffic a provider notices.
  */
-function nextRefreshAt() {
-  const base = config.playlists.refreshMinutes * 60_000;
+/**
+ * When to poll this list again, scaled by how big it is.
+ *
+ * The provider supports no conditional request, so every poll downloads the whole
+ * file whether or not a byte changed. Five minutes is right for a channel lineup
+ * and ruinous for a full VOD catalogue: a 38MB list on a five-minute cycle pulls
+ * 11GB a day off the reader's own subscription from a datacenter IP, which is how
+ * a line gets flagged.
+ *
+ * So the interval is the configured minimum or size/rate, whichever is longer. An
+ * ordinary list is unaffected; a large one is polled proportionally less often.
+ * The jitter stops every list on a deploy waking up in the same second.
+ */
+function nextRefreshAt(bytes = 0) {
+  const floorMs = config.playlists.refreshMinutes * 60_000;
+  const scaledMs = (bytes / config.playlists.refreshBytesPerMinute) * 60_000;
+  const base = Math.max(floorMs, scaledMs);
   return new Date(Date.now() + base + Math.floor(Math.random() * base * 0.25));
 }
 
@@ -213,8 +228,27 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
   const none = { hasList: false, channelCount: 0, onDemand: [], matches: [], genre: [] };
   if (!config.playlists.enabled || !userId) return none;
 
-  const rows = await q.playlistChannels(userId);
-  if (rows.length === 0) return none;
+  /*
+   * Narrowed in the database, ranked in JavaScript.
+   *
+   * This used to load the whole list. That was free at seven thousand entries and
+   * is not at three hundred thousand -- a provider that exposes its VOD catalogue
+   * ships one -- so rows that could not possibly match are dropped by an index
+   * before they are ever sent. The ranker below is unchanged and still decides
+   * everything; this only decides what it is shown.
+   *
+   * The count is fetched separately because it is still owed to the page even when
+   * nothing matched: "none of your 7,059 entries look like they carry this" is an
+   * answer, and it used to come free from having loaded them all.
+   */
+  const [channelCount, rows] = await Promise.all([
+    q.playlistChannelCount(userId),
+    q.playlistCandidates(userId, { terms: matchTerms({ title, genreName, categoryName }) }),
+  ]);
+  if (channelCount === 0) return none;
+  if (rows.length === 0) {
+    return { hasList: true, channelCount, onDemand: [], matches: [], genre: [] };
+  }
 
   const ranked = rankChannelsForTitle(
     rows.map((r) => ({
@@ -265,7 +299,7 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
    */
   return {
     hasList: true,
-    channelCount: rows.length,
+    channelCount,
     // A file the reader already has access to, whenever they want it -- a
     // different and better answer than a channel that might be showing it.
     onDemand: unseal(ranked.onDemand),

@@ -7,10 +7,11 @@
     "start": "bun src/main.js"
   },
   "dependencies": {
+    "@genre/catalog": "workspace:*",
     "@genre/config": "workspace:*",
     "@genre/db": "workspace:*",
     "@genre/notify": "workspace:*",
-    "@genre/queue": "workspace:*",
-    "@genre/catalog": "workspace:*"
+    "@genre/payments": "workspace:*",
+    "@genre/queue": "workspace:*"
   }
 }

@@ -55,8 +55,21 @@ describe('migrations', () => {
     const names = (
       await rows(`select table_name from information_schema.tables where table_schema='public'`)
     ).map((r) => r.table_name);
-    for (const gone of ['leagues', 'teams', 'stream_offers', 'entitlements', 'plays']) {
+    /*
+     * `entitlements` left this list when the payment rail was ported, and
+     * `stream_offers` did not.
+     *
+     * That split is the whole point of how CoinPay came across. Taking money and
+     * recording who may access what is general, and the shared payments package
+     * writes both tables identically in either brand. Reselling stream slots
+     * somebody else holds is not general -- nothing has ever INSERTed into
+     * stream_offers even on the brand that has it -- so it stayed behind.
+     */
+    for (const gone of ['leagues', 'teams', 'stream_offers', 'plays']) {
       expect(names).not.toContain(gone);
+    }
+    for (const ported of ['payments', 'entitlements']) {
+      expect(names).toContain(ported);
     }
   });
 
