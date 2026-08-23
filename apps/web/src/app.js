@@ -13,6 +13,7 @@ import {
   firstLiveChannel,
   importPlaylist,
   ownChannelsForEvent,
+  probeStream,
   refreshPlaylist,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
@@ -490,20 +491,18 @@ app.post('/api/playlist/delete', async (c) => {
  *
  * `no-store`, because the response body is a credential.
  */
-app.get('/events/:id/playlist.m3u', async (c) => {
-  const user = requireUser(c);
-  const event = await q.getEvent(Number(c.req.param('id')));
-  if (!event) return c.notFound();
-
-  const own = await ownChannelsForEvent({ userId: user.id, event });
-
-  /*
-   * Which tier the reader clicked.
-   *
-   * The two lists are different claims -- "this carries your show" and "this
-   * carries the genre" -- and they are indexed separately on the page, so the
-   * link has to say which one it means or ?n=0 hands back the wrong channel.
-   */
+/**
+ * Which tier the reader clicked, and which entry within it.
+ *
+ * The three lists are different claims -- "you already have this file", "this
+ * carries your show", "this carries the genre" -- and they are indexed separately
+ * on the page, so the link has to say which one it means or ?n=0 hands back the
+ * wrong channel.
+ *
+ * Shared by the download and the check, because they must agree: verifying one
+ * channel and then handing over another is worse than not checking at all.
+ */
+function pickOwnChannel(c, own) {
   const tier = c.req.query('tier');
   const list =
     tier === 'genre'
@@ -511,12 +510,67 @@ app.get('/events/:id/playlist.m3u', async (c) => {
       : tier === 'vod'
         ? (own.onDemand ?? [])
         : (own.matches ?? []);
-  if (list.length === 0) return c.redirect(`/events/${event.id}`, 303);
 
   // The first entry, which rankChannelsForTitle has already ordered most-specific
   // first, unless the reader asked for a particular one by index.
   const wanted = Number(c.req.query('n') ?? 0);
   const asked = Number.isInteger(wanted) && list[wanted] ? wanted : 0;
+  return { list, asked };
+}
+
+/**
+ * Is this one entry actually there, right now?
+ *
+ * The page used to list every channel whose title matched and let the reader find
+ * out by opening it. A provider list is mostly aspirational -- the slot exists,
+ * the title is right, and a large share answer with an HTML error page rather than
+ * video -- so being handed a dead one was a routine outcome of using the feature
+ * as intended. The .m3u route has probed since it was written; the page had no way
+ * to.
+ *
+ * One entry per request, and the client walks the list in order. Not one endpoint
+ * that checks them all: these are one subscriber's own connections on a line that
+ * caps them, and a row that has been cleared should become usable then rather than
+ * when the slowest of five has timed out.
+ *
+ * The verdict is written back, so the next reader of this page, the .m3u route and
+ * the 30-minute filter in playlistChannels all inherit what this one learned.
+ */
+app.get('/events/:id/channel-check', async (c) => {
+  const user = requireUser(c);
+  const event = await q.getEvent(Number(c.req.param('id')));
+  if (!event) return c.notFound();
+
+  const own = await ownChannelsForEvent({ userId: user.id, event });
+  const { list, asked } = pickOwnChannel(c, own);
+  const pick = list[asked];
+  if (!pick) return c.json({ error: 'no channel' }, 404);
+
+  const result = await probeStream(pick.url, { signal: c.req.raw.signal });
+
+  if (pick.id) {
+    await q
+      .markChannelChecked({
+        userId: user.id,
+        channelId: pick.id,
+        live: result.live,
+        note: result.note,
+      })
+      .catch(() => {});
+  }
+
+  return c.json(result);
+});
+
+app.get('/events/:id/playlist.m3u', async (c) => {
+  const user = requireUser(c);
+  const event = await q.getEvent(Number(c.req.param('id')));
+  if (!event) return c.notFound();
+
+  const own = await ownChannelsForEvent({ userId: user.id, event });
+
+  const { list, asked } = pickOwnChannel(c, own);
+  if (list.length === 0) return c.redirect(`/events/${event.id}`, 303);
 
   /*
    * Ask the stream whether it is there, before handing anybody a file.

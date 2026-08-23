@@ -175,6 +175,18 @@ export async function refreshDuePlaylists({ log = console.log, limit = 25 } = {}
  * the match is on a whole run of words rather than a substring. Returns unsealed
  * URLs, so the caller must already have established that the requester owns them.
  */
+/**
+ * How long a "yes, this is there" verdict is worth trusting.
+ *
+ * Ten minutes, which is short on purpose. A provider slot that answers at eight
+ * o'clock can be an error page by nine -- that is the normal behaviour of these
+ * lines, not an edge case -- so a stale yes is exactly the thing being fixed.
+ * Long enough that opening the same page twice does not probe twice.
+ */
+const VERDICT_TTL_MS = 10 * 60 * 1000;
+
+const freshEnough = (at) => Boolean(at) && Date.now() - new Date(at).getTime() < VERDICT_TTL_MS;
+
 export async function ownChannelsForEvent({ userId, event }) {
   const none = { hasList: false, channelCount: 0, onDemand: [], matches: [], genre: [] };
   if (!config.playlists.enabled || !userId) return none;
@@ -197,9 +209,18 @@ export async function ownChannelsForEvent({ userId, event }) {
     },
   );
 
+  // What we last learned about each slot, so the page does not re-probe something
+  // confirmed a moment ago. The ranker only preserves the fields it is handed, so
+  // liveness is looked up against the rows rather than carried through it.
+  const byId = new Map(rows.map((r) => [r.id, r]));
   const unseal = (list) =>
     list
-      .map((m) => ({ id: m.id, title: m.title, url: open(m.url) }))
+      .map((m) => ({
+        id: m.id,
+        title: m.title,
+        url: open(m.url),
+        verified: byId.get(m.id)?.is_live === true && freshEnough(byId.get(m.id)?.checked_at),
+      }))
       .filter((m) => m.url)
       .slice(0, 10);
 

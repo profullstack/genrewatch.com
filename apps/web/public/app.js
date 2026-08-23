@@ -643,6 +643,10 @@ function initNavigation() {
       localiseTimes();
       initPush();
       initPasskeys();
+      // The swapped-in <main> carries its own channel list, which has had neither
+      // the phone hand-off treatment nor a single check run against it.
+      initOwnChannelActions();
+      checkOwnChannels();
     } catch {
       location.href = url;
     } finally {
@@ -676,6 +680,7 @@ function initNavigation() {
 localiseTimes();
 reportTimezone();
 initOwnChannelActions();
+checkOwnChannels();
 initPush();
 initPasskeys();
 // Before initFollowForms: it must be able to cancel a submit that handler would
@@ -730,4 +735,99 @@ function initOwnChannelActions(root = document) {
       section.append(hint);
     }
   }
+}
+
+/* ------------------------------------------- checking before offering -- */
+
+/**
+ * Ask the provider whether each listed entry is actually there.
+ *
+ * A provider playlist is mostly aspirational: the slot exists, the title matches,
+ * and a large share of them answer with an HTML error page rather than video.
+ * Offering those and letting the reader find out by opening one is how being
+ * handed a dead link became a routine outcome of using the feature as intended --
+ * the .m3u route has probed since it was written, and the page had no way to.
+ *
+ * Sequential, one row at a time, and that is not a detail. These are one
+ * subscriber's own connections on a line that usually permits very few, so five
+ * checks at once is how an account gets flagged. A row clears the moment its own
+ * answer arrives rather than when the slowest of five has timed out.
+ *
+ * Rows that fail are removed outright. Greying one out leaves the reader deciding
+ * whether to try it anyway, and the answer is no.
+ *
+ * Nothing here runs without JavaScript, and that is the right failure: the page
+ * then behaves exactly as it did before any of this, with every listed row
+ * offered and the .m3u route still probing behind whichever one is opened.
+ */
+async function checkOwnChannels(root = document) {
+  const section = root.querySelector('.own-line');
+  if (!section || section.dataset.checking) return;
+  section.dataset.checking = '1';
+
+  const rows = [...section.querySelectorAll('li[data-check]')];
+  const pending = rows.filter((li) => !li.dataset.verified);
+  if (pending.length === 0) {
+    section.dataset.checking = '';
+    return;
+  }
+
+  const say = (li, text) => {
+    const slot = li.querySelector('.own-channel-state');
+    if (slot) slot.textContent = text;
+  };
+  for (const li of pending) {
+    li.classList.add('checking');
+    say(li, 'checking…');
+  }
+
+  let dropped = 0;
+  for (const li of pending) {
+    let verdict;
+    try {
+      const res = await fetch(li.dataset.check, { headers: { accept: 'application/json' } });
+      verdict = await res.json();
+    } catch {
+      // A network failure here says nothing about the entry, so the row is left
+      // usable rather than removed. Better an unchecked row than one wrongly
+      // deleted because our own connection dropped.
+      li.classList.remove('checking');
+      say(li, '');
+      continue;
+    }
+
+    li.classList.remove('checking');
+    if (verdict?.live) {
+      li.dataset.verified = '1';
+      say(li, '');
+      continue;
+    }
+
+    dropped += 1;
+    li.remove();
+  }
+
+  section.dataset.checking = '';
+  if (dropped === 0) return;
+
+  // Every list that lost all its rows goes with them. There are three -- on
+  // demand, matches, and the genre channels -- and an emptied <ul> left behind is
+  // a gap where a list used to be, under a heading that now names nothing.
+  for (const ul of section.querySelectorAll('ul.channels')) {
+    if (!ul.querySelector('li')) {
+      // The heading and blurb above it describe a list that is no longer there.
+      const label = ul.previousElementSibling;
+      if (label?.matches?.('h3, p.muted')) label.remove();
+      ul.remove();
+    }
+  }
+
+  const left = section.querySelectorAll('li[data-check]').length;
+  const note = document.createElement('p');
+  note.className = 'muted small channels-dropped';
+  note.textContent = left
+    ? `${dropped} ${dropped === 1 ? 'entry is' : 'entries are'} not there right now, so ${dropped === 1 ? 'it was' : 'they were'} removed.`
+    : 'None of your matching entries are there right now. Your provider lists them, but the slots are empty.';
+  section.querySelector('.channels-dropped')?.remove();
+  section.appendChild(note);
 }

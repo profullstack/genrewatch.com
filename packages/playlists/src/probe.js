@@ -30,13 +30,19 @@ const TIMEOUT_MS = 6000;
  * @param {string} url
  * @returns {Promise<{ live: boolean, note: string }>}
  */
-export async function probeStream(url) {
+export async function probeStream(url, { signal } = {}) {
   if (!url || !/^https?:\/\//i.test(url)) {
     return { live: false, note: 'not a fetchable url' };
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const abort = () => controller.abort();
+  // The caller's signal, normally the request's. A probe that outlives the reader
+  // who asked for it is a connection held open on a line that counts them, and the
+  // page now verifies several channels in a row.
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(abort, TIMEOUT_MS);
 
   try {
     const res = await fetch(url, {
@@ -69,6 +75,7 @@ export async function probeStream(url) {
     return { live: false, note: aborted ? 'timed out' : 'could not connect' };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -82,10 +89,11 @@ export async function probeStream(url) {
  * @param {Array<{ title: string, url: string }>} candidates
  * @param {number} max how many to try before giving up
  */
-export async function firstLiveChannel(candidates, { max = 4, onResult } = {}) {
+export async function firstLiveChannel(candidates, { max = 4, onResult, signal } = {}) {
   const tried = [];
   for (const c of (candidates ?? []).slice(0, max)) {
-    const result = await probeStream(c.url);
+    if (signal?.aborted) break;
+    const result = await probeStream(c.url, { signal });
     tried.push({ ...c, ...result });
     if (onResult) await onResult(c, result);
     if (result.live) return { pick: c, tried };

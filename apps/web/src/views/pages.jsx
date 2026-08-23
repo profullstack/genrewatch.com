@@ -334,6 +334,47 @@ export const SubjectPage = ({ user, subject, events, genres, following }) => (
   </Layout>
 );
 
+/**
+ * One entry from the reader's own list, with room for a verdict.
+ *
+ * The three tiers rendered the same markup three times, and all three now need
+ * the same two attributes and the same state slot.
+ *
+ * `data-check` is the route that asks the provider whether this entry is actually
+ * there; app.js walks the rows in order and clears them one at a time. The URL is
+ * the check, never the stream: the provider URL belongs in the VLC href, where an
+ * app that holds no session with us needs it, and nowhere else.
+ *
+ * `data-verified` is set when the server already knows -- a yes from the last ten
+ * minutes -- so reopening a page does not re-probe a line that caps connections.
+ *
+ * The state span ships empty. Everything it ever says is a fact the page did not
+ * have when it was rendered.
+ */
+export const ChannelRow = ({ event, ch, index, tier = null }) => {
+  const query = `${tier ? `tier=${tier}&` : ''}n=${index}`;
+  return (
+    <li
+      data-check={`/events/${event.id}/channel-check?${query}`}
+      data-verified={ch.verified ? '1' : null}
+    >
+      <span>{ch.title}</span>
+      <span class="own-channel-state" />
+      <span class="own-channel-actions">
+        <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
+          VLC
+        </a>
+        <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
+          Infuse
+        </a>
+        <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?${query}`}>
+          .m3u
+        </a>
+      </span>
+    </li>
+  );
+};
+
 export const EventPage = ({
   user,
   event,
@@ -568,23 +609,7 @@ export const EventPage = ({
               <h3>Available on demand</h3>
               <ul class="channels">
                 {ownChannels.onDemand.map((ch, i) => (
-                  <li>
-                    <span>{ch.title}</span>
-                    <span class="own-channel-actions">
-                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
-                        VLC
-                      </a>
-                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
-                        Infuse
-                      </a>
-                      <a
-                        class="ghost small-btn"
-                        href={`/events/${event.id}/playlist.m3u?tier=vod&n=${i}`}
-                      >
-                        .m3u
-                      </a>
-                    </span>
-                  </li>
+                  <ChannelRow event={event} ch={ch} index={i} tier="vod" />
                 ))}
               </ul>
             </>
@@ -593,25 +618,13 @@ export const EventPage = ({
           {ownChannels.matches.length > 0 ? (
             <>
               <p class="muted small">
-                From the playlist you added. Opening one hands a file to your own player — nothing
-                is streamed through GenreWatch.
+                From the playlist you added. Each one is checked against your provider before it is
+                offered — a slot can be listed and still be empty. Opening one hands a file to your
+                own player; nothing is streamed through GenreWatch.
               </p>
               <ul class="channels">
                 {ownChannels.matches.map((ch, i) => (
-                  <li>
-                    <span>{ch.title}</span>
-                    <span class="own-channel-actions">
-                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
-                        VLC
-                      </a>
-                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
-                        Infuse
-                      </a>
-                      <a class="ghost small-btn" href={`/events/${event.id}/playlist.m3u?n=${i}`}>
-                        .m3u
-                      </a>
-                    </span>
-                  </li>
+                  <ChannelRow event={event} ch={ch} index={i} />
                 ))}
               </ul>
             </>
@@ -634,23 +647,7 @@ export const EventPage = ({
               </p>
               <ul class="channels">
                 {ownChannels.genre.map((ch, i) => (
-                  <li>
-                    <span>{ch.title}</span>
-                    <span class="own-channel-actions">
-                      <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
-                        VLC
-                      </a>
-                      <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
-                        Infuse
-                      </a>
-                      <a
-                        class="ghost small-btn"
-                        href={`/events/${event.id}/playlist.m3u?tier=genre&n=${i}`}
-                      >
-                        .m3u
-                      </a>
-                    </span>
-                  </li>
+                  <ChannelRow event={event} ch={ch} index={i} tier="genre" />
                 ))}
               </ul>
             </>

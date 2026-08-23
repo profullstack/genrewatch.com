@@ -2059,3 +2059,30 @@ li.result img {
 .comment-author:hover {
   color: var(--accent);
 }
+
+/* --------------------------------------------------- entry verification -- */
+
+/* What a row says about itself while the provider is being asked. Empty in the
+   markup: everything it ever holds is a fact the page did not have when it was
+   rendered. */
+.own-channel-state {
+  font-family: var(--mono, monospace);
+  font-size: 0.7rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* A row nothing has vouched for yet cannot be opened. It has to cover the links
+   rather than a button, because links are all this page offers -- and no attribute
+   disables an anchor. */
+.channels li.checking .own-channel-actions {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.channels li.checking {
+  /* Legible as pending rather than as broken: the row is doing something. */
+  opacity: 0.75;
+}
+.channels-dropped {
+  margin-top: 0.6rem;
+}
