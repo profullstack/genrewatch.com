@@ -315,6 +315,24 @@ export const config = {
      * viewer off mid-way.
      */
     entitlementGraceHours: num('ENTITLEMENT_GRACE_HOURS', 6),
+
+    /**
+     * The address proceeds settle to.
+     *
+     * No default, and that is the point. The upstream treats the payee as
+     * OPTIONAL and quietly falls back to the platform wallet when it is missing --
+     * so an unset value does not fail, it just pays somebody else. createCheckout
+     * refuses to run without this rather than letting a silent misdirection ship.
+     */
+    payoutAddress: opt('COINPAY_PAYOUT_ADDRESS'),
+
+    /**
+     * Which chain to settle on. Required by the upstream for a crypto payment.
+     *
+     * It must be one the payout address above is actually valid for: a BTC address
+     * given an ETH payment is an address nobody controls.
+     */
+    blockchain: opt('COINPAY_BLOCKCHAIN', 'BTC'),
   },
 
   coinpay: {

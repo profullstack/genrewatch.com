@@ -78,9 +78,10 @@ function safeEqualHex(a, b) {
  * Start a payment and write it down as pending.
  *
  * Nothing here knows what is being bought. `description` is what the buyer reads
- * on CoinPay's page and `metadata` is echoed back on the webhook -- and that echo
- * is the only thing linking money to a purchase, so a settled payment with empty
- * metadata cannot be attributed to anything and is unrecoverable without a human.
+ * on the checkout page and `metadata` is echoed back on the webhook -- and that
+ * echo is the only thing linking money to a purchase, so a settled payment with
+ * empty metadata cannot be attributed to anything and is unrecoverable without a
+ * human.
  *
  * The pending row is inserted BEFORE the buyer leaves. A webhook can arrive before
  * the redirect completes, and settling a payment we have no record of would mean
@@ -92,9 +93,13 @@ function safeEqualHex(a, b) {
  * @param {string} [args.currency]
  * @param {string} args.description  shown to the buyer on the checkout page
  * @param {Record<string,string>} args.metadata  echoed back on the webhook
- * @param {string} args.successUrl
- * @param {string} args.cancelUrl
- * @returns {Promise<string>} the URL to send the buyer to
+ * @param {string} args.blockchain  chain to settle on, e.g. BTC or ETH
+ * @param {string} [args.paymentMethod]  crypto (default), card, or both
+ * @param {string} args.payTo  the address funds settle to; see the guard below
+ * @param {boolean} [args.allowPlatformSettlement]  explicit opt-in to no payTo
+ * @param {string} [args.successUrl]
+ * @param {string} [args.cancelUrl]
+ * @returns {Promise<{checkoutUrl: string, paymentRef: string}>}
  */
 export async function createCheckout({
   user,
@@ -102,6 +107,10 @@ export async function createCheckout({
   currency = 'USD',
   description,
   metadata = {},
+  blockchain,
+  paymentMethod = 'crypto',
+  payTo,
+  allowPlatformSettlement = false,
   successUrl,
   cancelUrl,
 }) {
@@ -109,6 +118,37 @@ export async function createCheckout({
   if (!coinpay.enabled) throw new Error('CoinPay is not configured');
   if (!user?.id) throw new Error('a checkout needs a buyer');
   if (!Number.isFinite(amountCents) || amountCents < 0) throw new Error('bad amount');
+
+  /*
+   * A crypto payment has to name the chain it settles on.
+   *
+   * The upstream refuses without it -- "Invalid or missing cryptocurrency type" --
+   * so omitting it does not settle somewhere sensible by default, it simply fails
+   * at the moment a buyer presses pay. Named here so the failure is at the call
+   * site instead.
+   */
+  const needsCrypto = paymentMethod !== 'card';
+  if (needsCrypto && !blockchain) throw new Error('a crypto checkout needs a blockchain');
+
+  /*
+   * WHERE THE MONEY GOES IS NOT OPTIONAL.
+   *
+   * The upstream treats merchant_wallet_address as optional and falls back to the
+   * PLATFORM wallet when it is absent. That is a silent failure of exactly the
+   * worst kind: every payment succeeds, the buyer gets what they bought, and the
+   * proceeds accumulate somewhere the seller never chose. Nothing surfaces it --
+   * not an error, not a warning, not the payment record.
+   *
+   * So a payee is required here, and skipping it takes a deliberate flag rather
+   * than an omission.
+   */
+  if (!payTo && !allowPlatformSettlement) {
+    throw new Error(
+      'createCheckout needs payTo: without it the upstream settles to the platform ' +
+        'wallet rather than yours. Pass allowPlatformSettlement: true only if that ' +
+        'is genuinely what you want.',
+    );
+  }
 
   const res = await fetch(`${coinpay.baseUrl}/api/payments/create`, {
     method: 'POST',
@@ -120,6 +160,9 @@ export async function createCheckout({
       business_id: coinpay.businessId,
       amount: amountCents / 100,
       currency,
+      blockchain,
+      payment_method: paymentMethod,
+      ...(payTo ? { merchant_wallet_address: payTo } : {}),
       description,
       // Always carries the buyer. A caller may add whatever else identifies the
       // purchase; settleWebhook hands the whole object back to the grant callback.
@@ -133,7 +176,15 @@ export async function createCheckout({
   if (!res.ok) throw new Error(`coinpay ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const body = await res.json();
 
-  const ref = body.id ?? body.payment_id;
+  /*
+   * The payment is nested, and the id is what the webhook will echo.
+   *
+   * The response is { success, payment: {...}, usage } -- reading `body.id` finds
+   * nothing, so the pending row would be written under an undefined reference and
+   * the webhook could never match it.
+   */
+  const payment = body?.payment ?? body;
+  const ref = payment?.id ?? payment?.payment_id;
   if (!ref) throw new Error('coinpay returned no payment reference');
 
   await sql`
@@ -149,9 +200,16 @@ export async function createCheckout({
     on conflict (provider, provider_ref) do nothing
   `;
 
-  const url = body.checkout_url ?? body.url;
-  if (!url) throw new Error('coinpay returned no checkout url');
-  return url;
+  /*
+   * Where to send the buyer.
+   *
+   * A card payment comes back with a Stripe session URL. A crypto one does not --
+   * it comes back with an address and an amount, and the page that renders those
+   * is the hosted checkout at /pay/<id>. There is no generic `checkout_url` field;
+   * reading one is how this returned undefined and sent buyers nowhere.
+   */
+  const checkoutUrl = payment?.stripe_checkout_url ?? `${coinpay.baseUrl}/pay/${ref}`;
+  return { checkoutUrl, paymentRef: ref };
 }
 
 /* ------------------------------------------------------------------ webhook -- */
