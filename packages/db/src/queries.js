@@ -2134,13 +2134,48 @@ export async function setPlaylistShared({ userId, shared, label = null }) {
 }
 
 /**
- * Every channel on every list whose owner has opened it.
+ * How much has been opened to this reader at all, matched or not.
  *
- * The one query in this file that deliberately crosses accounts, and the only
- * one. Everything else about this table is scoped through the playlist join to
- * the account that supplied it; this reads other people's rows, so the predicate
- * that makes it legitimate -- `p.shared` -- is the first thing in the where
- * clause rather than buried in it.
+ * This and the candidate query below are the only two reads in this file that
+ * deliberately cross accounts. Everything else about this table is scoped through
+ * the playlist join to the account that supplied it; these read other people's
+ * rows, so the predicate that makes them legitimate -- `p.shared` -- is the first
+ * thing in the where clause rather than buried in it.
+ *
+ * Note what is NOT in that clause: a follow. Sharing is a property of the list,
+ * not of a relationship, and following somebody who has not opened theirs shows
+ * nothing -- correctly. Adding a follow here would quietly widen who can reach
+ * another person's provider line.
+ *
+ * The reader's own list is excluded -- it is already the first section on the
+ * page, and a channel appearing in both reads as a duplicate rather than as two
+ * facts.
+ *
+ * The count is separate from the rows because it is owed to the page even when
+ * nothing matched: "none of the 41,000 channels shared with you name this" is an
+ * answer, and silence is indistinguishable from the feature being broken.
+ */
+export async function sharedChannelCount({ viewerId = null } = {}) {
+  const [row] = await sql`
+    select count(*)::int as n
+    from user_playlist_channels c
+    join user_playlists p on p.id = c.playlist_id
+    where p.shared
+      and (${viewerId}::uuid is null or p.user_id <> ${viewerId})
+  `;
+  return row?.n ?? 0;
+}
+
+/**
+ * The shared rows that could plausibly carry a title, narrowed in the database.
+ *
+ * This replaced a `order by c.position limit 20000`, which took the first twenty
+ * thousand rows of the shared set and ranked those. A reader's OWN list was
+ * already narrowed by term across the whole thing (playlistCandidates), so on a
+ * 300,000-entry VOD catalogue the two paths disagreed: the owner saw a film and
+ * everybody they had shared with saw nothing, because the row carrying it sat
+ * past the ceiling. From the outside that is indistinguishable from sharing
+ * being broken, which is how it was reported.
  *
  * What comes back carries the OWNER's id, and that is load-bearing rather than
  * informational: the connection ceiling is a property of the owner's line, not of
@@ -2148,13 +2183,17 @@ export async function setPlaylistShared({ userId, shared, label = null }) {
  * against the viewer would let twenty readers open twenty connections on one
  * subscription, which is how that subscription gets terminated.
  *
- * The reader's own list is excluded -- it is already the first section on the
- * page, and a channel appearing in both reads as a duplicate rather than as two
- * facts.
+ * `c.kind` is selected here for the same reason it is in playlistCandidates: the
+ * stream URL is sealed, so a caller cannot work out whether a row is a file or a
+ * channel by looking at it. Without the column every shared entry ranked as live
+ * and no follower could ever be offered a film on demand.
  */
-export async function sharedPlaylistChannels({ viewerId = null, limit = 20000 } = {}) {
+export async function sharedPlaylistCandidates({ viewerId = null, terms = [], limit = 3000 } = {}) {
+  const usable = (terms ?? []).filter((t) => t && t.length >= 2);
+  if (usable.length === 0) return [];
+
   return sql`
-    select c.id, c.title, c.group_title, c.stream_url, c.norm_title,
+    select c.id, c.title, c.group_title, c.kind, c.stream_url, c.norm_title,
            c.is_live, c.checked_at,
            p.user_id as owner_id,
            coalesce(p.shared_label, u.display_name, '@' || u.handle::text, 'someone') as owner_label
@@ -2167,6 +2206,7 @@ export async function sharedPlaylistChannels({ viewerId = null, limit = 20000 } 
       -- only while it is recent, and NULL is never filtered out because unchecked
       -- is not the same as dead.
       and (c.is_live is not false or c.checked_at < now() - interval '30 minutes')
+      and c.norm_title like any(${pgArray(usable.map((t) => `%${t}%`))}::text[])
     order by c.position
     limit ${limit}
   `;

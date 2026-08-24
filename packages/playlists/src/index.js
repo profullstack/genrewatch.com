@@ -374,11 +374,28 @@ export async function sharedChannelsFor({
   genreName = null,
   categoryName = null,
 }) {
-  const none = { channels: [], owners: 0 };
+  const none = { channels: [], owners: 0, channelCount: 0 };
   if (!config.playlists.enabled || !viewerId) return none;
 
-  const rows = await q.sharedPlaylistChannels({ viewerId });
-  if (rows.length === 0) return none;
+  /*
+   * Narrowed across the WHOLE shared set, the same way the reader's own page is.
+   *
+   * This used to take the first 20,000 rows by position and rank those, while
+   * ownChannelsFor narrowed by term over everything. On a 300,000-entry VOD
+   * catalogue the row carrying a given film sits well past that ceiling, so the
+   * owner saw it and everyone they had shared with saw nothing -- which reads as
+   * sharing being broken rather than as a limit. The count comes back separately
+   * so an empty result can say which kind of empty it is.
+   */
+  const [channelCount, rows] = await Promise.all([
+    q.sharedChannelCount({ viewerId }),
+    q.sharedPlaylistCandidates({
+      viewerId,
+      terms: matchTerms({ title, genreName, categoryName }),
+    }),
+  ]);
+  if (channelCount === 0) return none;
+  if (rows.length === 0) return { channels: [], owners: 0, channelCount };
 
   const ranked = rankChannelsForTitle(
     rows.map((r) => ({
@@ -416,7 +433,7 @@ export async function sharedChannelsFor({
     .filter(Boolean)
     .slice(0, 10);
 
-  return { channels, owners: new Set(channels.map((c) => c.ownerId)).size };
+  return { channels, owners: new Set(channels.map((c) => c.ownerId)).size, channelCount };
 }
 
 /** From an event page. */

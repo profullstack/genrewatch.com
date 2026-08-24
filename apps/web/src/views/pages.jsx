@@ -514,7 +514,13 @@ export const ChannelRow = ({ ch }) => {
  */
 export const OwnLine = ({ own, shared, streamDead, title }) => {
   const hasOwn = own?.hasList;
-  const hasShared = shared?.channels?.length > 0;
+  /*
+   * Anything shared at all, not just anything that matched. Rendering only on a
+   * hit made "nobody has opened a list" and "somebody has, and none of it names
+   * this title" identical from the outside -- and the second one reads as the
+   * feature being broken, which is how it was reported.
+   */
+  const hasShared = shared?.channelCount > 0;
   if (!hasOwn && !hasShared) return null;
 
   return (
@@ -592,17 +598,26 @@ export const OwnLine = ({ own, shared, streamDead, title }) => {
       {hasShared ? (
         <section class="own-line shared-line" data-player-src={assetUrl('vendor-mpegts.js')}>
           <h2>Shared with you</h2>
-          <p class="muted small">
-            From {shared.owners === 1 ? 'a list' : `${shared.owners} lists`} other people have
-            opened to everyone signed in. These play here and nowhere else — you never get the
-            address — and one person at a time, because that is what a provider line allows. See{' '}
-            <a href="/shared">whose lists are open</a>.
-          </p>
-          <ul class="channels">
-            {shared.channels.map((ch) => (
-              <SharedChannelRow ch={ch} />
-            ))}
-          </ul>
+          {shared.channels.length > 0 ? (
+            <>
+              <p class="muted small">
+                From {shared.owners === 1 ? 'a list' : `${shared.owners} lists`} other people have
+                opened to everyone signed in. These play here and nowhere else — you never get the
+                address — and one person at a time, because that is what a provider line allows. See{' '}
+                <a href="/shared">whose lists are open</a>.
+              </p>
+              <ul class="channels">
+                {shared.channels.map((ch) => (
+                  <SharedChannelRow ch={ch} />
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p class="muted">
+              None of the {shared.channelCount.toLocaleString('en-US')} channels shared with you
+              name this. See <a href="/shared">whose lists are open</a>.
+            </p>
+          )}
         </section>
       ) : null}
     </>
