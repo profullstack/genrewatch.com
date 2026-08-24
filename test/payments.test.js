@@ -196,23 +196,21 @@ describe('createCheckout', () => {
   };
 
   /*
-   * The upstream treats the payee as OPTIONAL and falls back to the PLATFORM
-   * wallet when it is missing. That is the worst shape of failure: the payment
-   * succeeds, the buyer gets what they bought, and the proceeds land somewhere the
-   * seller never chose, with nothing surfacing it.
+   * The payee belongs on the BUSINESS, not in every call.
+   *
+   * merchant_wallet_address is an override. Omitted, the upstream forwards to the
+   * business's own wallet for that chain, falls back to the account-global one,
+   * and refuses the payment with "No <coin> wallet configured for this business"
+   * if neither exists — it does NOT quietly settle somewhere else. A single
+   * address in configuration could only ever be right for one chain anyway.
    */
-  test('refuses to take money with nowhere to send it', async () => {
-    capture();
-    expect(createCheckout({ ...base, payTo: undefined })).rejects.toThrow(/payTo/);
-  });
-
-  test('and settling to the platform takes a deliberate flag', async () => {
+  test('omits the payee so the business wallet resolves per chain', async () => {
     const calls = capture();
-    await createCheckout({ ...base, payTo: undefined, allowPlatformSettlement: true });
+    await createCheckout({ ...base, payTo: undefined });
     expect(calls[0].body).not.toHaveProperty('merchant_wallet_address');
   });
 
-  test('sends the payee when it has one', async () => {
+  test('and sends one only when overriding to a third party', async () => {
     const calls = capture();
     await createCheckout(base);
     expect(calls[0].body.merchant_wallet_address).toBe('bc1qexample');

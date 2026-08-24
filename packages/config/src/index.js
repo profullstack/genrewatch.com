@@ -317,12 +317,15 @@ export const config = {
     entitlementGraceHours: num('ENTITLEMENT_GRACE_HOURS', 6),
 
     /**
-     * The address proceeds settle to.
+     * An address to forward the net to INSTEAD of this business's own wallet.
      *
-     * No default, and that is the point. The upstream treats the payee as
-     * OPTIONAL and quietly falls back to the platform wallet when it is missing --
-     * so an unset value does not fail, it just pays somebody else. createCheckout
-     * refuses to run without this rather than letting a silent misdirection ship.
+     * Almost always empty, and that is correct. The payee belongs on the business
+     * -- import the account-global wallets once and the upstream resolves the
+     * right address per chain, refusing the payment outright if none is
+     * configured. A single address here could only ever be right for one chain.
+     *
+     * Set it only for a genuinely third-party payout, where the money is meant to
+     * reach somebody who is not this business.
      */
     payoutAddress: opt('COINPAY_PAYOUT_ADDRESS'),
 

@@ -95,8 +95,7 @@ function safeEqualHex(a, b) {
  * @param {Record<string,string>} args.metadata  echoed back on the webhook
  * @param {string} args.blockchain  chain to settle on, e.g. BTC or ETH
  * @param {string} [args.paymentMethod]  crypto (default), card, or both
- * @param {string} args.payTo  the address funds settle to; see the guard below
- * @param {boolean} [args.allowPlatformSettlement]  explicit opt-in to no payTo
+ * @param {string} [args.payTo]  override the payee; omit to use the business wallet
  * @param {string} [args.successUrl]
  * @param {string} [args.cancelUrl]
  * @returns {Promise<{checkoutUrl: string, paymentRef: string}>}
@@ -110,7 +109,6 @@ export async function createCheckout({
   blockchain,
   paymentMethod = 'crypto',
   payTo,
-  allowPlatformSettlement = false,
   successUrl,
   cancelUrl,
 }) {
@@ -131,24 +129,20 @@ export async function createCheckout({
   if (needsCrypto && !blockchain) throw new Error('a crypto checkout needs a blockchain');
 
   /*
-   * WHERE THE MONEY GOES IS NOT OPTIONAL.
+   * WHERE THE MONEY GOES: omit payTo, and the upstream resolves it.
    *
-   * The upstream treats merchant_wallet_address as optional and falls back to the
-   * PLATFORM wallet when it is absent. That is a silent failure of exactly the
-   * worst kind: every payment succeeds, the buyer gets what they bought, and the
-   * proceeds accumulate somewhere the seller never chose. Nothing surfaces it --
-   * not an error, not a warning, not the payment record.
+   * `merchant_wallet_address` is an OVERRIDE, not a requirement. Left out, the
+   * upstream forwards to the business's own wallet for that chain, falling back to
+   * the account-global one -- and if neither exists it refuses the payment with
+   * "No <coin> wallet configured for this business" rather than settling anywhere.
+   * That is the correct behaviour and it is per-chain, which a single address in
+   * configuration could never be: a BTC address is not a payee for an ETH payment.
    *
-   * So a payee is required here, and skipping it takes a deliberate flag rather
-   * than an omission.
+   * So the payee is attached to the BUSINESS (import the account-global wallets
+   * once) and not carried in every call. The override exists for the genuinely
+   * third-party case -- forwarding the net to somebody who is not the business --
+   * and the upstream records who authorised it.
    */
-  if (!payTo && !allowPlatformSettlement) {
-    throw new Error(
-      'createCheckout needs payTo: without it the upstream settles to the platform ' +
-        'wallet rather than yours. Pass allowPlatformSettlement: true only if that ' +
-        'is genuinely what you want.',
-    );
-  }
 
   const res = await fetch(`${coinpay.baseUrl}/api/payments/create`, {
     method: 'POST',
