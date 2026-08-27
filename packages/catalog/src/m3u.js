@@ -319,6 +319,48 @@ export function matchTerms({ title, genreName, categoryName } = {}) {
  * @param {string} eventTitle the SUBJECT's name -- a show or a film, never the
  *   episode line, which carries numbering no provider uses
  */
+/**
+ * Words a provider adds to a filename that say nothing about which title it is.
+ *
+ * Matching every word of the title is not enough on its own, because a short
+ * title reduces to very few significant words: "The Last of Us" is just `last`
+ * once stop words and two-letter words are dropped, so "Last Man Standing S01E02"
+ * matched all of it and was offered as the on-demand copy.
+ *
+ * The fix is to look at what the CHANNEL has that the title does not. An episode
+ * marker, a year, a resolution or a codec is decoration and explains nothing --
+ * "Severance S02E03" is still Severance. A real word is not: "Man" and
+ * "Standing" mean this is a different programme.
+ */
+const DECORATION = [
+  /^\d{4}$/, // a year
+  /^s\d{1,2}(e\d{1,3})?$/, // s02, s02e03
+  /^e(p|pisode)?\d{1,3}$/,
+  /^season\d*$/,
+  /^part\d*$/,
+  /^\d{3,4}p$/, // 1080p, 720p
+  /^(uhd|fhd|hdr|sdr|web|webrip|webdl|bluray|bdrip|dvdrip|remux|x264|x265|hevc|avc|aac|ddp|atmos|dolby|multi|dual|subbed|dubbed|vostfr|repack|proper|extended|unrated|imax|remastered)$/,
+];
+
+const isDecoration = (word) => DECORATION.some((re) => re.test(word));
+
+/**
+ * Significant words the channel has that the title does not account for.
+ *
+ * This is the whole precision rule, and it is the same on both paths: a channel
+ * may add decoration and it may add an instalment marker, but it may not name
+ * something the title never mentioned. "Top Chef" is not "Top Gun: Maverick"
+ * because of `chef`, and no amount of sharing the word `top` changes that.
+ *
+ * Instalment words are allowed through here rather than rejected, because they
+ * already have a dedicated mechanism -- SEQUELS and contradicts() -- which knows
+ * whether the SUBJECT is itself an instalment. Rejecting them here as well would
+ * mean "Dune: Part One" stopped matching "Dune".
+ */
+function unexplainedWords(channelTitle, ownSet) {
+  return tokens(channelTitle).filter((w) => !ownSet.has(w) && !isDecoration(w) && !SEQUELS.has(w));
+}
+
 export function channelMatchesTitle(channelTitle, eventTitle) {
   const hay = normaliseTitle(channelTitle);
   const needle = normaliseTitle(eventTitle);
@@ -336,7 +378,19 @@ export function channelMatchesTitle(channelTitle, eventTitle) {
   // match on, so fall back to whole-phrase containment at a word boundary.
   if (own.length === 0) return ` ${hay} `.includes(` ${needle} `);
 
-  return own.every((t) => words.has(t));
+  if (!own.every((t) => words.has(t))) return false;
+
+  /*
+   * Every word of the title is here -- but so is everything else the channel is
+   * called, and that is what decides it. Anything the channel adds beyond the
+   * title has to be decoration; a real word means this is something else with an
+   * overlapping name.
+   *
+   * Without this "The Last of Us" (which is the single word `last` once stop
+   * words go) matched "Last Man Standing S01E02" completely, and offered it as
+   * the on-demand copy.
+   */
+  return unexplainedWords(channelTitle, new Set(own)).length === 0;
 }
 
 /** Did the title name a DIFFERENT instalment than the one we are looking for? */
@@ -373,6 +427,11 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
   const genre = [];
 
   const genreTokens = new Set([...tokens(genreName ?? ''), ...tokens(categoryName ?? '')]);
+  // Hoisted: this was recomputed for every candidate, and a 300,000-entry list
+  // narrows to a couple of thousand of them.
+  const titleTokens = title ? tokens(title) : [];
+
+  const titleSet = new Set(titleTokens);
 
   for (const c of channels ?? []) {
     const norm = normaliseTitle(c.title);
@@ -396,12 +455,30 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
          * whenever the reader wants it, and conflating the two puts a maybe above
          * a certainty.
          */
-        (isFile ? onDemand : certain).push({ ...c, score: 100 + tokens(title).length });
+        (isFile ? onDemand : certain).push({ ...c, score: 100 + titleTokens.length });
         continue;
       }
-      const found = tokens(title).filter((t) => words.has(t));
-      if (found.length && !contradicts(words, title, found)) {
-        (isFile ? onDemand : likely).push({ ...c, score: found.length });
+      const found = titleTokens.filter((t) => words.has(t));
+      /*
+       * A partial match is a maybe, and it stays one.
+       *
+       * Two things were wrong here. Any single shared word was enough -- which is
+       * how "Top Chef S23E07" was offered for "Top Gun: Maverick", on the word
+       * `top` -- and a file was then promoted into the on-demand tier, so a
+       * coincidence appeared above the exact matches as the strongest claim the
+       * page makes.
+       *
+       * Now the channel has to name nothing the title does not, so "Dune HD" is
+       * still a maybe for "Dune Part Three" while "Top Chef" is not a maybe for
+       * anything. Files and channels both land in `likely`: what separates the
+       * tiers is how sure we are, not what kind of entry it is.
+       */
+      if (
+        found.length &&
+        !unexplainedWords(c.title, titleSet).length &&
+        !contradicts(words, title, found)
+      ) {
+        likely.push({ ...c, score: found.length });
         continue;
       }
     }
