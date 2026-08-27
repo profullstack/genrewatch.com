@@ -121,6 +121,21 @@ describe('words too short to match on, but not too short to matter', () => {
     expect(r.onDemand.map((c) => c.id)).toEqual([3]);
   });
 
+  /*
+   * Found by re-running against the real list after the John Q fix: the first
+   * version of that rule also threw away "24/7: John Wick", which is a channel
+   * dedicated to exactly the film being asked about.
+   */
+  test('a 24/7 channel for the film is still a match', () => {
+    const r = rank([chan(5, '24/7: John Wick')], 'John Wick');
+    expect(r.certain.map((c) => c.id)).toEqual([5]);
+  });
+
+  test('but 24/7 for something else is not', () => {
+    const r = rank([chan(6, '24/7: Gunsmoke')], 'John Wick');
+    expect([...r.onDemand, ...r.certain, ...r.likely]).toEqual([]);
+  });
+
   test('quality and language furniture is still ignored', () => {
     const r = rank([file(4, '[4K] Severance (2026) UHD')], 'Severance');
     expect(r.onDemand.map((c) => c.id)).toEqual([4]);

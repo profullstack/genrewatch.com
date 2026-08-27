@@ -358,7 +358,14 @@ const isDecoration = (word) => DECORATION.some((re) => re.test(word));
  * mean "Dune: Part One" stopped matching "Dune".
  */
 function unexplainedWords(channelTitle, ownWords) {
+  /*
+   * "24/7:" is a provider convention for a channel dedicated to one thing, not
+   * part of what it is called. It normalises to the two words `24 7`, and
+   * treating those as content lost "24/7: John Wick" from the John Wick page --
+   * a real match, and exactly the kind this whole rule exists to keep.
+   */
   return normaliseTitle(channelTitle)
+    .replace(/\b24 7\b/g, ' ')
     .split(' ')
     .filter((w) => w && !ownWords.has(w) && !STOP.has(w) && !isDecoration(w) && !SEQUELS.has(w));
 }
