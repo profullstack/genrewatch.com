@@ -917,6 +917,87 @@ function canTransmux() {
 }
 
 /**
+ * Is this button a file rather than a live channel?
+ *
+ * The server puts the stored kind on the button because nothing else here can
+ * tell: `data-play` is the same proxy route for both. Without it every entry went
+ * to the transport-stream demuxer, and an MP4 is not a transport stream -- no sync
+ * bytes, no PAT -- so on-demand films failed with "that stream could not be played
+ * here" and a suggestion to install VLC for something the browser plays natively.
+ */
+function isVod(button) {
+  const kind = button?.dataset?.kind;
+  return kind === 'vod' || kind === 'series';
+}
+
+/**
+ * Turn a dead <video> into the sentence the route meant.
+ *
+ * The transmuxing path is handed a status code by the library. A native one gets
+ * `MEDIA_ERR_SRC_NOT_SUPPORTED` and nothing else, so "your provider did not send a
+ * stream" and "somebody else is watching that line" would arrive as the same
+ * shrug. One byte is enough to read the status back.
+ *
+ * Asked only AFTER the failure, which is what makes it affordable: the element has
+ * let go of its connection by then, so this is not a second one on a line that
+ * counts them.
+ */
+async function explainStreamFailure(url) {
+  let status = 0;
+  try {
+    const res = await fetch(url, { headers: { range: 'bytes=0-0' } });
+    status = res.status;
+    // Nothing here wants the body, and an unread one holds the connection open.
+    res.body?.cancel?.().catch(() => {});
+  } catch {
+    return 'The stream stopped. Your provider may have dropped it, or you started another entry somewhere else.';
+  }
+  if (status === 409) return 'Somebody else is watching that line right now. Try again in a bit.';
+  if (status === 404) return 'That entry is no longer on your list.';
+  if (status === 415) return 'That entry needs a different player. Try VLC.';
+  if (status === 429) return 'The line was busy. Try that again.';
+  if (status === 502 || status === 504) {
+    return 'Your provider did not send a stream for that entry.';
+  }
+  // The bytes arrived and the browser refused them anyway: a container or a codec
+  // it will not decode -- an MKV, or H.265 with no hardware path. That is VLC's
+  // job, and saying so is an answer where "could not be played" was not.
+  if (status >= 200 && status < 400) return 'Your browser cannot decode that file. Try VLC.';
+  return 'That file could not be played here. Try VLC.';
+}
+
+/**
+ * Play a file the way a browser already can.
+ *
+ * No library at all, and that is the point twice over: a film should not pull
+ * 270KB of MPEG-2 demuxer to be handed to <video>, and iPhone Safari -- which has
+ * no Media Source Extensions, and therefore loses the button entirely for a live
+ * channel -- plays an MP4 perfectly well.
+ *
+ * Mirrors the shape of the bundle's `attach`: same arguments, and the same
+ * teardown contract of releasing the connection rather than only the element.
+ */
+function attachNative(video, url, onError) {
+  const onErr = () => {
+    // MEDIA_ERR_ABORTED is us tearing the player down. Reporting it would put an
+    // error on the page every time the reader pressed Stop.
+    if (video.error?.code === 1) return;
+    explainStreamFailure(url).then(onError);
+  };
+  video.addEventListener('error', onErr);
+  video.src = url;
+  video.play()?.catch(() => {});
+
+  return () => {
+    video.removeEventListener('error', onErr);
+    // Clearing src is what actually drops the socket; removing the element does
+    // not, and the reader's line counts the connection either way.
+    video.removeAttribute('src');
+    video.load();
+  };
+}
+
+/**
  * Ask the provider whether each listed entry is actually there.
  *
  * A provider playlist is mostly aspirational: the slot exists, the title matches
@@ -1096,7 +1177,18 @@ function initPlayerSection(section) {
   if (!section || section.dataset.player) return;
   section.dataset.player = '1';
 
-  const buttons = [...section.querySelectorAll('button[data-play]')];
+  const offered = [...section.querySelectorAll('button[data-play]')];
+
+  /*
+   * A browser with no Media Source Extensions loses the LIVE buttons only.
+   *
+   * iPhone Safari is the case, and the narrowing is the fix: it cannot transmux a
+   * transport stream and never will, but it plays an MP4 natively and always
+   * could. Dropping every button here meant an iPhone was sent to find VLC for a
+   * film it was able to play on the page.
+   */
+  const buttons = canTransmux() ? offered : offered.filter(isVod);
+  for (const b of offered) if (!buttons.includes(b)) b.remove();
 
   /*
    * The sweep aborts when a stream starts.
@@ -1109,20 +1201,14 @@ function initPlayerSection(section) {
   let sweep = new AbortController();
 
   /*
-   * A browser that cannot play these loses the button rather than keeping a dead
-   * one.
+   * Nothing left that this browser can play, so there is no player to wire up.
    *
-   * iPhone Safari is the case: no Media Source Extensions, so there is nothing to
-   * push fragments into, and no header or container that changes it. It already
-   * has the right answer on the page -- VLC, which demuxes TS natively -- and a
-   * "Play here" that silently failed would pull people away from the button that
+   * The rows stay and the check sweep still runs: VLC and .m3u are handed the same
+   * entries, and a dead slot is just as dead in VLC. What has gone is the button
+   * that would have failed silently and pulled people away from the one that
    * works.
-   *
-   * The check sweep still runs there. VLC and .m3u are handed the same channels,
-   * and a dead slot is just as dead in VLC.
    */
-  if (!canTransmux() || buttons.length === 0) {
-    for (const b of buttons) b.remove();
+  if (buttons.length === 0) {
     checkOwnChannels(section, () => {}, sweep.signal);
     return;
   }
@@ -1264,28 +1350,42 @@ function initPlayerSection(section) {
       button.disabled = true;
       button.textContent = 'Starting…';
 
-      let player;
-      try {
-        player = await loadPlayerBundle(src);
-      } catch {
-        button.disabled = false;
-        button.textContent = 'Play here';
-        fail('The player could not be loaded. Try VLC, or reload the page.');
-        return;
-      }
+      /*
+       * A file takes no library, so it does not wait for one.
+       *
+       * The bundle is a transport-stream demuxer, and a film has nothing to demux:
+       * <video> reads an MP4 by itself. Fetching it anyway would be a quarter of a
+       * megabyte spent to reach a code path that then hands the bytes to the wrong
+       * parser -- which is precisely what it used to do.
+       */
+      const vod = isVod(button);
+      let player = null;
 
-      // Somebody pressed a different channel while the bundle was arriving. That
-      // press owns the player now; this one puts its own button back and leaves.
-      if (mine !== generation) {
-        button.disabled = false;
-        button.textContent = 'Play here';
-        return;
+      if (!vod) {
+        try {
+          player = await loadPlayerBundle(src);
+        } catch {
+          button.disabled = false;
+          button.textContent = 'Play here';
+          fail('The player could not be loaded. Try VLC, or reload the page.');
+          return;
+        }
+
+        // Somebody pressed a different channel while the bundle was arriving. That
+        // press owns the player now; this one puts its own button back and leaves.
+        if (mine !== generation) {
+          button.disabled = false;
+          button.textContent = 'Play here';
+          return;
+        }
       }
 
       button.disabled = false;
 
-      if (!player.supported()) {
-        for (const b of buttons) b.remove();
+      if (player && !player.supported()) {
+        // The live buttons only. A file is still playable here, and removing its
+        // button because a channel is not would repeat the bug this fixes.
+        for (const b of buttons.filter((b) => !isVod(b))) b.remove();
         fail('This browser cannot play these streams. Open the channel in VLC instead.');
         return;
       }
@@ -1296,15 +1396,28 @@ function initPlayerSection(section) {
       video.controls = true;
       video.autoplay = true;
       video.playsInline = true;
-      // Muted, and not as a preference. Every browser refuses to autoplay audible
-      // video without a gesture, and the refusal arrives as a rejected play() that
-      // leaves a black rectangle -- which reads as a broken stream rather than a
-      // blocked one. The reader unmutes with the control.
-      video.muted = true;
+      /*
+       * Muted for a live channel, and not as a preference. Every browser refuses to
+       * autoplay audible video without a gesture, and by the time the bundle has
+       * arrived the press that started this no longer counts as one -- the refusal
+       * comes back as a rejected play() and a black rectangle, which reads as a
+       * broken stream rather than a blocked one. The reader unmutes with the
+       * control.
+       *
+       * A file needs none of that. Nothing is awaited on this path, so play() is
+       * still inside the gesture and audible playback is allowed -- and starting a
+       * film silently, which the reader then has to notice and fix, is a worse
+       * default than the one it was protecting against.
+       */
+      video.muted = !vod;
       stage.append(video);
       button.closest('li')?.after(stage);
 
-      stop = player.attach(video, button.dataset.play, fail, notice);
+      // A file is handed to the element itself; only the TS path has a stream to
+      // reconnect, so only it takes the notice channel.
+      stop = vod
+        ? attachNative(video, button.dataset.play, fail)
+        : player.attach(video, button.dataset.play, fail, notice);
       button.dataset.playing = '1';
       button.textContent = 'Stop';
     });

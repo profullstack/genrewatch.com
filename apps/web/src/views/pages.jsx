@@ -469,12 +469,22 @@ export const SubjectPage = ({
  * the VLC and Infuse hrefs because an external app cannot hold our session; the
  * page can, so nothing here needs the credential.
  */
-const PlayButton = ({ channelId }) => (
+/**
+ * `data-kind` is the one thing the page cannot work out for itself.
+ *
+ * `data-play` is the same proxy route for a live channel and for a film, and the
+ * provider URL -- the only other thing that says which -- is deliberately not
+ * here. Without the kind the script had no choice but to treat every entry as a
+ * transport stream, which is why an MP4 was handed to a demuxer that cannot read
+ * one. The column already exists; it just never travelled this far.
+ */
+const PlayButton = ({ channelId, kind }) => (
   <button
     type="button"
     class="ghost small-btn play-btn"
     disabled
     data-play={`/my/channels/${channelId}/stream.ts`}
+    data-kind={kind ?? null}
   >
     Play here
   </button>
@@ -509,7 +519,7 @@ export const ChannelRow = ({ ch }) => {
       </span>
       <span class="own-channel-state" />
       <span class="own-channel-actions">
-        {mine ? <PlayButton channelId={mine} /> : null}
+        {mine ? <PlayButton channelId={mine} kind={ch.kind} /> : null}
         <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
           VLC
         </a>
@@ -711,6 +721,7 @@ export const SharedChannelRow = ({ ch }) => (
         class="ghost small-btn play-btn"
         disabled
         data-play={`/shared/${ch.id}/stream.ts`}
+        data-kind={ch.kind ?? null}
       >
         Play here
       </button>

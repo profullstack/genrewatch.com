@@ -2501,7 +2501,7 @@ export async function sharedPlaylistOwners({ viewerId = null } = {}) {
  */
 export async function sharedChannelById(channelId, { viewerId = null } = {}) {
   const [row] = await sql`
-    select c.id, c.title, c.group_title, c.stream_url,
+    select c.id, c.title, c.group_title, c.kind, c.stream_url,
            p.user_id as owner_id,
            coalesce(p.shared_label, u.display_name, '@' || u.handle::text, 'someone') as owner_label
     from user_playlist_channels c
