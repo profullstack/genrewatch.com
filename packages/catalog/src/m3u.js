@@ -473,8 +473,24 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
        * anything. Files and channels both land in `likely`: what separates the
        * tiers is how sure we are, not what kind of entry it is.
        */
+      /*
+       * And the overlap has to START the title, not fall anywhere in it.
+       *
+       * "By the Gun (2014)" shares only `gun` with "Top Gun: Maverick", and the
+       * words that make it a different film -- "By", "the" -- are erased as too
+       * short and as a stop word, so it has no unexplained words left to refuse
+       * it with. What gives it away is WHERE the overlap sits: a file named after
+       * a title almost always opens with it, so `gun` matching the second word
+       * and not the first is the tell.
+       *
+       * This is also why the rule is not a count. "Dune HD" is one word out of
+       * three and is a fair maybe for "Dune Part Three"; "By the Gun" is one word
+       * out of three and is not.
+       */
+      const opensTitle = found.every((t, i) => t === titleTokens[i]);
       if (
         found.length &&
+        opensTitle &&
         !unexplainedWords(c.title, titleSet).length &&
         !contradicts(words, title, found)
       ) {

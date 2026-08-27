@@ -72,14 +72,25 @@ describe('what still has to match', () => {
     expect(r.onDemand).toEqual([]);
   });
 
-  test('a long title still matches on half its words', () => {
-    // Four significant words; a file naming two of them is a real candidate.
-    const r = rank([file(4, 'MI Dead Reckoning')], 'Mission Impossible Dead Reckoning');
+  test('a long title matches on the words it opens with', () => {
+    const r = rank([file(4, 'Mission Impossible HD')], 'Mission Impossible Dead Reckoning');
     expect(r.likely.map((c) => c.id)).toEqual([4]);
   });
 
-  test('but not on one of them', () => {
+  test('but not on words from the middle of it', () => {
+    // "Dead Reckoning" without "Mission Impossible" in front is a different film
+    // as far as this can tell, and guessing is what put Top Chef on the page.
     expect(rank([file(5, 'Dead Silence')], 'Mission Impossible Dead Reckoning').likely).toEqual([]);
+  });
+
+  /*
+   * The one prod turned up after the first fix. It shares only `gun`, and the
+   * words that make it a different film are erased by tokenising -- "By" is two
+   * letters and "the" is a stop word -- so nothing was left to refuse it with.
+   */
+  test('"By the Gun (2014)" is not offered for "Top Gun: Maverick"', () => {
+    const r = rank([file(6, 'By the Gun (2014)')], 'Top Gun: Maverick');
+    expect([...r.onDemand, ...r.certain, ...r.likely]).toEqual([]);
   });
 });
 
