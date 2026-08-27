@@ -357,9 +357,36 @@ const isDecoration = (word) => DECORATION.some((re) => re.test(word));
  * whether the SUBJECT is itself an instalment. Rejecting them here as well would
  * mean "Dune: Part One" stopped matching "Dune".
  */
-function unexplainedWords(channelTitle, ownSet) {
-  return tokens(channelTitle).filter((w) => !ownSet.has(w) && !isDecoration(w) && !SEQUELS.has(w));
+function unexplainedWords(channelTitle, ownWords) {
+  return normaliseTitle(channelTitle)
+    .split(' ')
+    .filter((w) => w && !ownWords.has(w) && !STOP.has(w) && !isDecoration(w) && !SEQUELS.has(w));
 }
+
+/**
+ * Every word of a title, including the ones tokens() throws away.
+ *
+ * tokens() drops anything under three characters, which is right for deciding
+ * what to MATCH on and wrong for deciding what is unexplained. Two mistakes came
+ * out of using it for both:
+ *
+ *   - "John Q (2002)" was offered for "John Wick". They share `john`; the `Q`
+ *     that makes it a different film is one character, so it vanished and left
+ *     nothing to refuse it with.
+ *   - and in the other direction, a possessive splits into a stray `s`
+ *     ("Marvel's Cloak & Dagger" normalises to `marvel s cloak dagger`). Checking
+ *     the channel's raw words against the title's TOKENS would have made that `s`
+ *     unexplained and rejected an exact match.
+ *
+ * So the comparison is raw words on both sides. Short words still cannot be
+ * matched ON, but they can now account for themselves.
+ */
+const wordsOf = (title) =>
+  new Set(
+    normaliseTitle(title ?? '')
+      .split(' ')
+      .filter(Boolean),
+  );
 
 export function channelMatchesTitle(channelTitle, eventTitle) {
   const hay = normaliseTitle(channelTitle);
@@ -390,7 +417,7 @@ export function channelMatchesTitle(channelTitle, eventTitle) {
    * words go) matched "Last Man Standing S01E02" completely, and offered it as
    * the on-demand copy.
    */
-  return unexplainedWords(channelTitle, new Set(own)).length === 0;
+  return unexplainedWords(channelTitle, wordsOf(eventTitle)).length === 0;
 }
 
 /** Did the title name a DIFFERENT instalment than the one we are looking for? */
@@ -431,7 +458,7 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
   // narrows to a couple of thousand of them.
   const titleTokens = title ? tokens(title) : [];
 
-  const titleSet = new Set(titleTokens);
+  const titleWords = wordsOf(title);
 
   for (const c of channels ?? []) {
     const norm = normaliseTitle(c.title);
@@ -491,7 +518,7 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
       if (
         found.length &&
         opensTitle &&
-        !unexplainedWords(c.title, titleSet).length &&
+        !unexplainedWords(c.title, titleWords).length &&
         !contradicts(words, title, found)
       ) {
         likely.push({ ...c, score: found.length });

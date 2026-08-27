@@ -94,6 +94,39 @@ describe('what still has to match', () => {
   });
 });
 
+describe('words too short to match on, but not too short to matter', () => {
+  /*
+   * "John Q (2002)" for "John Wick", found on the real list. They share `john`;
+   * the `Q` that makes it a different film is one character, so tokenising
+   * erased it and left nothing to refuse it with.
+   */
+  test('a one-letter word still tells two films apart', () => {
+    const r = rank([file(1, 'John Q (2002)')], 'John Wick');
+    expect([...r.onDemand, ...r.certain, ...r.likely]).toEqual([]);
+  });
+
+  test('and the real one is still found', () => {
+    const r = rank([file(2, 'John Wick (2014)'), file(1, 'John Q (2002)')], 'John Wick');
+    expect(r.onDemand.map((c) => c.id)).toEqual([2]);
+  });
+
+  /*
+   * The other direction, and the reason the comparison is raw words on BOTH
+   * sides. A possessive splits into a stray `s`, which tokens() drops -- so
+   * checking the channel's raw words against the title's tokens would make that
+   * `s` unexplained and reject an exact match.
+   */
+  test('a possessive does not become an unexplained word', () => {
+    const r = rank([series(3, "Marvel's Cloak & Dagger S02E05")], "Marvel's Cloak & Dagger");
+    expect(r.onDemand.map((c) => c.id)).toEqual([3]);
+  });
+
+  test('quality and language furniture is still ignored', () => {
+    const r = rank([file(4, '[4K] Severance (2026) UHD')], 'Severance');
+    expect(r.onDemand.map((c) => c.id)).toEqual([4]);
+  });
+});
+
 describe('single common words', () => {
   /*
    * The general form of the bug. Every one of these shares exactly one word with
