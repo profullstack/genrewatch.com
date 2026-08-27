@@ -136,6 +136,16 @@ describe('words too short to match on, but not too short to matter', () => {
     expect([...r.onDemand, ...r.certain, ...r.likely]).toEqual([]);
   });
 
+  /*
+   * A Greek TV station, found on the real list under Top Gun: Maverick. The
+   * normaliser strips "(GR)" and `channel` is furniture, so it reduces to the
+   * single word `top` with nothing left to look unexplained.
+   */
+  test('"(GR) Top Channel" is not a maybe for "Top Gun: Maverick"', () => {
+    const r = rank([chan(7, '(GR) Top Channel')], 'Top Gun: Maverick');
+    expect([...r.onDemand, ...r.certain, ...r.likely]).toEqual([]);
+  });
+
   test('quality and language furniture is still ignored', () => {
     const r = rank([file(4, '[4K] Severance (2026) UHD')], 'Severance');
     expect(r.onDemand.map((c) => c.id)).toEqual([4]);

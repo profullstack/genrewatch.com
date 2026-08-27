@@ -522,9 +522,25 @@ export function rankChannelsForTitle(channels, { title, genreName, categoryName 
        * out of three and is not.
        */
       const opensTitle = found.every((t, i) => t === titleTokens[i]);
+      /*
+       * And it has to be at least half of what the title is called.
+       *
+       * "(GR) Top Channel" is a Greek television station. The normaliser strips
+       * the country prefix and `channel` is furniture, so it reduces to the
+       * single word `top` -- the first word of "Top Gun: Maverick", with nothing
+       * left over to look unexplained. Only how MUCH of the title it accounts
+       * for gives it away: one word of three.
+       *
+       * This does not cost the loose matches it looks like it should, because
+       * furniture is already out of titleTokens. "Dune Part Three" is two tokens,
+       * not three -- `part` is a stop word -- so "Dune HD" is one of two and
+       * still a fair maybe.
+       */
+      const coversEnough = found.length * 2 >= titleTokens.length;
       if (
         found.length &&
         opensTitle &&
+        coversEnough &&
         !unexplainedWords(c.title, titleWords).length &&
         !contradicts(words, title, found)
       ) {
