@@ -75,7 +75,7 @@ export async function getUserForPassword(email) {
     select id, email::text as email, password_hash
     from users where email = ${String(email).trim().toLowerCase()}
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 export async function setPasswordHash({ userId, hash }) {
@@ -143,7 +143,7 @@ export async function getUserByHandle(handle) {
     select id, handle::text as handle, display_name, bio, profile_public, created_at
     from users where handle = ${String(handle ?? '').trim()}
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /**
@@ -198,7 +198,7 @@ export async function getUserByInviteCode(code) {
     select id, display_name, handle::text as handle
     from users where invite_code = ${code}
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /**
@@ -319,7 +319,7 @@ export async function getSessionUser(sessionId) {
     join users u on u.id = s.user_id
     where s.id = ${sessionId}::uuid and s.expires_at > now()
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 export async function endSession(sessionId) {
@@ -350,7 +350,7 @@ export async function insertPasskey({ credentialId, userId, publicKey, counter, 
 
 export async function getPasskey(credentialId) {
   const [row] = await sql`select * from passkeys where credential_id = ${credentialId}`;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 export async function listPasskeys(userId) {
@@ -881,12 +881,12 @@ export async function listGenres({ category = null, limit = 500 } = {}) {
 
 export async function getGenreBySlug(slug) {
   const [row] = await sql`select * from genres where slug = ${slug} and active`;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 export async function getSubjectBySlug(slug) {
   const [row] = await sql`select * from subjects where slug = ${slug}`;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /** The genres a subject belongs to, in the adapter's own order. */
@@ -1064,7 +1064,7 @@ export async function getEvent(eventId) {
     join subjects s on s.id = e.subject_id
     where e.id = ${eventId}
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /** The genres an event inherited, for the chips on its page. */
@@ -1703,7 +1703,7 @@ export async function deletePushSubscription({ userId, endpoint }) {
 
 export async function getPrefs(userId) {
   const [row] = await sql`select * from reminder_prefs where user_id = ${userId}`;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 export async function savePrefs({ userId, offsetsMinutes, dateOffsetsMinutes, channels }) {
@@ -1732,7 +1732,7 @@ export async function userByCalendarToken(token) {
     select u.*, u.email::text as email, u.handle::text as handle
     from users u where u.calendar_token = ${token}::uuid
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 export async function rotateCalendarToken(userId) {
@@ -1885,7 +1885,7 @@ export async function deleteComment({ commentId, userId }) {
     where id = ${commentId} and user_id = ${userId} and deleted_at is null
     returning event_id
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /* -------------------------------------------------------------- playlists -- */
@@ -1902,7 +1902,7 @@ export async function savePlaylist({ userId, label, sourceUrl }) {
 
 export async function getPlaylist(userId) {
   const [row] = await sql`select * from user_playlists where user_id = ${userId}`;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 export async function deletePlaylist(userId) {
@@ -1919,7 +1919,7 @@ export async function deletePlaylist(userId) {
  */
 export async function imdbProgress() {
   const [row] = await sql`select * from imdb_progress where id = 1`;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /** Stamp the start, creating the row on the first ever pass. */
@@ -2143,7 +2143,7 @@ export async function setPlaylistShared({ userId, shared, label = null }) {
     where user_id = ${userId}
     returning shared, shared_at, shared_label
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /**
@@ -2257,7 +2257,7 @@ export async function sharedChannelById(channelId) {
     join users u on u.id = p.user_id
     where c.id = ${channelId} and p.shared
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /**
@@ -2416,7 +2416,7 @@ export async function ownChannelById(userId, channelId) {
     join user_playlists p on p.id = c.playlist_id
     where p.user_id = ${userId} and c.id = ${channelId}
   `;
-  return row?.email ?? null;
+  return row ?? null;
 }
 
 /**
