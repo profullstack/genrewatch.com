@@ -225,7 +225,14 @@ const VERDICT_TTL_MS = 10 * 60 * 1000;
 const freshEnough = (at) => Boolean(at) && Date.now() - new Date(at).getTime() < VERDICT_TTL_MS;
 
 export async function ownChannelsFor({ userId, title, genreName = null, categoryName = null }) {
-  const none = { hasList: false, channelCount: 0, onDemand: [], matches: [], genre: [] };
+  const none = {
+    hasList: false,
+    channelCount: 0,
+    onDemand: [],
+    matches: [],
+    genre: [],
+    unavailable: [],
+  };
   if (!config.playlists.enabled || !userId) return none;
 
   /*
@@ -247,7 +254,7 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
   ]);
   if (channelCount === 0) return none;
   if (rows.length === 0) {
-    return { hasList: true, channelCount, onDemand: [], matches: [], genre: [] };
+    return { hasList: true, channelCount, onDemand: [], matches: [], genre: [], unavailable: [] };
   }
 
   const ranked = rankChannelsForTitle(
@@ -275,19 +282,42 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
   // confirmed a moment ago. The ranker only preserves the fields it is handed, so
   // liveness is looked up against the rows rather than carried through it.
   const byId = new Map(rows.map((r) => [r.id, r]));
+  /*
+   * A recent "dead" verdict. The probe asked the provider and it refused.
+   *
+   * These used to be filtered out in SQL, which made a consistently-failing
+   * title flicker on a thirty-minute cycle -- present, probed, 404, gone for half
+   * an hour, back again. Now they are separated out and reported, so the page can
+   * say the list HAS this and the provider will not serve it.
+   */
+  const failing = (m) => {
+    const row = byId.get(m.id);
+    return row?.is_live === false && freshEnough(row?.checked_at);
+  };
+
+  const shape = (m) => ({
+    id: m.id,
+    title: m.title,
+    // The provider's own shelf for this entry, so a row can say what it is.
+    group: byId.get(m.id)?.group_title ?? null,
+    kind: byId.get(m.id)?.kind ?? null,
+    url: open(m.url),
+    verified: byId.get(m.id)?.is_live === true && freshEnough(byId.get(m.id)?.checked_at),
+  });
+
   const unseal = (list) =>
     list
-      .map((m) => ({
-        id: m.id,
-        title: m.title,
-        // The provider's own shelf for this entry, so a row can say what it is.
-        group: byId.get(m.id)?.group_title ?? null,
-        kind: byId.get(m.id)?.kind ?? null,
-        url: open(m.url),
-        verified: byId.get(m.id)?.is_live === true && freshEnough(byId.get(m.id)?.checked_at),
-      }))
+      .filter((m) => !failing(m))
+      .map(shape)
       .filter((m) => m.url)
       .slice(0, 10);
+
+  // Matched, and currently refused by the provider. Never offered as playable --
+  // the URL is dropped rather than unsealed, because there is nothing to play.
+  const unavailable = [...ranked.onDemand, ...ranked.certain, ...ranked.likely]
+    .filter(failing)
+    .map((m) => ({ id: m.id, title: m.title, kind: byId.get(m.id)?.kind ?? null }))
+    .slice(0, 5);
 
   /*
    * The count comes back even when nothing matched, and that is the point.
@@ -308,6 +338,10 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
     // whatever horror is on. Shown separately so the page never claims more than
     // it knows.
     genre: unseal(ranked.genre),
+    // On the list, and refused by the provider when we last asked. Reported
+    // rather than hidden: "you have this and your line will not serve it" is an
+    // answer, and silence was being read as the matcher being broken.
+    unavailable,
   };
 }
 

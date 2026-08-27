@@ -2466,9 +2466,24 @@ export async function playlistCandidates(userId, { terms = [], limit = 3000 } = 
     from user_playlist_channels c
     join user_playlists p on p.id = c.playlist_id
     where p.user_id = ${userId}
-      -- Same freshness rule as before: a "dead" verdict is respected only while it
-      -- is recent, and NULL is never filtered out because unchecked is not dead.
-      and (c.is_live is not false or c.checked_at < now() - interval '30 minutes')
+      /*
+       * No liveness filter here, deliberately, and it is the opposite of what
+       * this used to do.
+       *
+       * A recent "dead" verdict used to remove the row for thirty minutes. On a
+       * title the provider consistently fails that produced a flicker: the entry
+       * appeared, was probed, 404'd, vanished for half an hour, came back, and
+       * vanished again -- so "Top Gun: Maverick is not on this page" was true or
+       * false depending on when you looked, and the page never said why.
+       *
+       * The verdict still travels, on is_live and checked_at, and the caller
+       * files a failing entry under "unavailable" instead of offering it. Hiding
+       * was the wrong lever: the reader wants to know their list HAS the film and
+       * that the provider will not serve it.
+       *
+       * No backticks in this comment, and that is not style: it sits INSIDE a
+       * tagged template literal, so one would end the query mid-sentence.
+       */
       and c.norm_title like any(${pgArray(usable.map((t) => `%${t}%`))}::text[])
     order by c.position
     limit ${limit}

@@ -567,7 +567,7 @@ export const OwnLine = ({ own, shared, streamDead, title }) => {
                 ))}
               </ul>
             </>
-          ) : own.onDemand?.length > 0 ? null : (
+          ) : own.onDemand?.length > 0 || own.unavailable?.length > 0 ? null : (
             <p class="empty">
               None of your {own.channelCount.toLocaleString('en-US')} entries look like they carry{' '}
               {title ? <strong>{title}</strong> : 'this'}. Provider names vary a lot, so it may be
@@ -575,6 +575,37 @@ export const OwnLine = ({ own, shared, streamDead, title }) => {
               <a href="/my/channels">browse your list</a> to see what you actually have.
             </p>
           )}
+
+          {/*
+            On the list, and refused by the provider when we last asked.
+            
+            These used to be filtered out in the query, which made a title the
+            provider consistently fails flicker on a thirty-minute cycle: shown,
+            probed, 404, hidden for half an hour, shown again. So whether the page
+            had your film depended on when you looked, and it never said why.
+            Reported instead of offered -- there is no Play button here, because
+            there is nothing behind it.
+          */}
+          {own.unavailable?.length > 0 ? (
+            <>
+              <h3>On your list, but your provider will not serve it</h3>
+              <p class="muted small">
+                {own.unavailable.length === 1 ? 'This entry names' : 'These entries name'}{' '}
+                {title ? <strong>{title}</strong> : 'this'}, so your list does have it. Asking your
+                line for {own.unavailable.length === 1 ? 'it' : 'them'} came back with an error, so
+                there is nothing to play. That is your provider's side, not a naming problem — it is
+                worth raising with them.
+              </p>
+              <ul class="channels">
+                {own.unavailable.map((ch) => (
+                  <li class="channel dead">
+                    <span class="ch-name">{ch.title}</span>
+                    <span class="meta">unavailable from your provider</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
 
           {/* A different claim, worded as one: a 24/7 genre channel carries
               whatever is on, which is not the same as having this. */}
