@@ -457,6 +457,10 @@ export async function sharedChannelsFor({
         id: row.id,
         title: row.title,
         group: row.group_title ?? null,
+        // Carried for the same reason the reader's own rows carry it: the page
+        // has to know whether the thing behind the Play button is a channel or a
+        // file, and cannot tell from a proxy route that looks identical for both.
+        kind: row.kind ?? null,
         ownerId: row.owner_id,
         ownerLabel: row.owner_label,
         // No `url`. Deliberately, and the absence is the security property: a

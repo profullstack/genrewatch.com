@@ -605,6 +605,81 @@ app.get('/shared', async (c) => {
 });
 
 /**
+ * Is this entry a file rather than a channel?
+ *
+ * The stored kind is the only thing that knows. `data-play` is our own proxy route
+ * for both, the provider URL is sealed, and what comes back down the pipe is
+ * either a transport stream or an MP4 -- so a route that does not ask this
+ * question serves a film with live-channel headers and the page hands it to a
+ * transport-stream demuxer. That is exactly what it did.
+ *
+ * `series` counts as a file: a provider's series entry is an episode sitting on
+ * disk, not a stream.
+ */
+const isVodKind = (kind) => kind === 'vod' || kind === 'series';
+
+/**
+ * What to call a file the provider would not name.
+ *
+ * A fair number of these panels answer `application/octet-stream` for everything.
+ * On the live path that is harmless -- the demuxer reads the bytes and ignores the
+ * header -- but native playback is the opposite: `<video>` decides from the
+ * content type alone, and an MP4 announced as `video/mp2t` is refused before a
+ * byte is decoded. The URL is the only other thing that knows, and for these
+ * panels it is reliable, because the extension is what the kind was derived from.
+ */
+const VOD_TYPE = [
+  [/\.(mp4|m4v)(\?|$)/i, 'video/mp4'],
+  [/\.mkv(\?|$)/i, 'video/x-matroska'],
+  [/\.webm(\?|$)/i, 'video/webm'],
+  [/\.avi(\?|$)/i, 'video/x-msvideo'],
+];
+
+/**
+ * The response for a stream this route is proxying.
+ *
+ * Live and on-demand differ in one respect, and it is not cosmetic. A live channel
+ * has no end and cannot be seeked, so it says `accept-ranges: none` and any Range
+ * a client sends is ignored -- which is right, and was applied to files too. For a
+ * file that is fatal rather than merely limiting: `<video>` seeks to read the index
+ * of an MP4 whose moov atom sits at the end, and a route that refuses ranges turns
+ * such a film into a spinner that never resolves.
+ *
+ * So a file mirrors what the provider said about ranges rather than asserting it,
+ * and keeps a 206 a 206. Nothing else changes: same one connection, same session,
+ * still never cached and still not a restream.
+ */
+function streamResponse(result, body, { vod = false, url = '' } = {}) {
+  const named = /^video\/|^audio\//i.test(result.contentType);
+  const guessed = vod ? (VOD_TYPE.find(([re]) => re.test(url))?.[1] ?? 'video/mp4') : 'video/mp2t';
+
+  const headers = {
+    // What the provider called it, unless it declined to say. mpegts.js reads the
+    // bytes rather than the header, but a bare octet-stream tells an intermediary
+    // nothing about whether it may buffer -- and tells <video> nothing it can act
+    // on at all.
+    'content-type': named ? result.contentType : guessed,
+    // The body is somebody's own subscription. Nothing may hold a copy.
+    'cache-control': 'no-store, private',
+    // Ask intermediaries to pass it through rather than accumulate it; a proxy
+    // that buffers a stream adds its buffer to the latency, permanently.
+    'x-accel-buffering': 'no',
+  };
+
+  if (!vod) {
+    // No length, no ranges: a live channel has no end and cannot be seeked. Saying
+    // so stops a client asking for byte ranges the provider will not honour.
+    headers['accept-ranges'] = 'none';
+    return new Response(body, { headers });
+  }
+
+  headers['accept-ranges'] = result.acceptRanges || 'bytes';
+  if (result.contentRange) headers['content-range'] = result.contentRange;
+  if (result.contentLength) headers['content-length'] = result.contentLength;
+  return new Response(body, { status: result.status === 206 ? 206 : 200, headers });
+}
+
+/**
  * Play an entry from somebody else's shared list.
  *
  * Separate from /events/:id/stream.ts rather than a flag on it, and the split is
@@ -656,9 +731,16 @@ app.get('/shared/:channelId/stream.ts', async (c) => {
   });
   if (!release) return c.json({ error: 'player is off' }, 404);
 
+  const streamUrl = auth.open(row.stream_url);
+  const vod = isVodKind(row.kind);
+
   let result;
   try {
-    result = await openStream(auth.open(row.stream_url), { signal });
+    result = await openStream(streamUrl, {
+      signal,
+      // Only a file gets the reader's Range. See streamResponse.
+      range: vod ? (c.req.header('range') ?? null) : null,
+    });
   } catch (err) {
     release();
     throw err;
@@ -683,16 +765,7 @@ app.get('/shared/:channelId/stream.ts', async (c) => {
   signal.addEventListener('abort', release, { once: true });
   const body = result.body.pipeThrough(new TransformStream({ flush: release, cancel: release }));
 
-  return new Response(body, {
-    headers: {
-      'content-type': /^video\/|^audio\//i.test(result.contentType)
-        ? result.contentType
-        : 'video/mp2t',
-      'cache-control': 'no-store, private',
-      'accept-ranges': 'none',
-      'x-accel-buffering': 'no',
-    },
-  });
+  return streamResponse(result, body, { vod, url: streamUrl });
 });
 
 /** Is one shared entry actually there? Same shape as the private check. */
@@ -872,9 +945,15 @@ app.get('/events/:id/stream.ts', async (c) => {
   });
   if (!release) return c.json({ error: 'player is off' }, 404);
 
+  const vod = isVodKind(pick.kind);
+
   let result;
   try {
-    result = await openStream(pick.url, { signal });
+    result = await openStream(pick.url, {
+      signal,
+      // Only a file gets the reader's Range. See streamResponse.
+      range: vod ? (c.req.header('range') ?? null) : null,
+    });
   } catch (err) {
     // openStream answers rather than throws for everything it anticipates, so
     // this is the unanticipated one -- and a slot that leaks here is the reader's
@@ -920,25 +999,7 @@ app.get('/events/:id/stream.ts', async (c) => {
     }),
   );
 
-  return new Response(body, {
-    headers: {
-      // What the provider called it, unless it declined to say. mpegts.js reads
-      // the bytes rather than the header, but a bare octet-stream tells an
-      // intermediary nothing about whether it may buffer.
-      'content-type': /^video\/|^audio\//i.test(result.contentType)
-        ? result.contentType
-        : 'video/mp2t',
-      // The body is somebody's own subscription. Nothing may hold a copy.
-      'cache-control': 'no-store, private',
-      // No length, no ranges: a live channel has no end and cannot be seeked.
-      // Saying so stops a client asking for byte ranges the provider will not
-      // honour.
-      'accept-ranges': 'none',
-      // Ask intermediaries to pass it through rather than accumulate it; a proxy
-      // that buffers a live stream adds its buffer to the latency, permanently.
-      'x-accel-buffering': 'no',
-    },
-  });
+  return streamResponse(result, body, { vod, url: pick.url });
 });
 
 app.get('/events/:id/playlist.m3u', async (c) => {
@@ -1064,9 +1125,15 @@ app.get('/my/channels/:channelId/stream.ts', async (c) => {
   });
   if (!release) return c.json({ error: 'player is off' }, 404);
 
+  const vod = isVodKind(ch.kind);
+
   let result;
   try {
-    result = await openStream(ch.url, { signal });
+    result = await openStream(ch.url, {
+      signal,
+      // Only a file gets the reader's Range. See streamResponse.
+      range: vod ? (c.req.header('range') ?? null) : null,
+    });
   } catch (err) {
     release();
     throw err;
@@ -1089,16 +1156,7 @@ app.get('/my/channels/:channelId/stream.ts', async (c) => {
   signal.addEventListener('abort', release, { once: true });
   const body = result.body.pipeThrough(new TransformStream({ flush: release, cancel: release }));
 
-  return new Response(body, {
-    headers: {
-      'content-type': /^video\/|^audio\//i.test(result.contentType)
-        ? result.contentType
-        : 'video/mp2t',
-      'cache-control': 'no-store, private',
-      'accept-ranges': 'none',
-      'x-accel-buffering': 'no',
-    },
-  });
+  return streamResponse(result, body, { vod, url: ch.url });
 });
 
 /* ---------------------------------------------------------------- payments -- */

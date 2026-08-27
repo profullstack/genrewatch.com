@@ -29,6 +29,9 @@ function serve(routes) {
       const r = routes[pathname];
       if (!r) return new Response('nope', { status: 404 });
       if (r.hang) return new Promise(() => {});
+      // A route that wants to see the request itself -- what Range arrived, and
+      // whether one arrived at all, which is the whole question for a file.
+      if (r.handler) return r.handler(req);
       return new Response(r.body ?? 'x', {
         status: r.status ?? 200,
         headers: r.type ? { 'content-type': r.type } : {},
@@ -77,6 +80,74 @@ describe('opening a channel for the browser', () => {
     const got = await openStream(`http://localhost:${s.port}/err`);
     expect(got.ok).toBe(false);
     expect(got.note).toContain('503');
+    s.stop(true);
+  });
+
+  test('a file may be seeked: the Range goes upstream and the 206 comes back whole', async () => {
+    /*
+     * The second half of the on-demand bug, and the one that would have bitten
+     * immediately after the first was fixed.
+     *
+     * An MP4 whose moov atom sits at the end of the file -- which is most of what
+     * these panels serve, since nothing has been run through faststart -- cannot
+     * BEGIN playing until the player can fetch that end. The route swallowed every
+     * Range and answered `accept-ranges: none`, so such a film was a spinner that
+     * never resolved rather than a film that could not be seeked.
+     */
+    let seen = null;
+    const s = serve({
+      '/movie.mp4': {
+        handler: (req) => {
+          seen = req.headers.get('range');
+          return new Response('DE', {
+            status: 206,
+            headers: {
+              'content-type': 'video/mp4',
+              'accept-ranges': 'bytes',
+              'content-range': 'bytes 8-9/10',
+            },
+          });
+        },
+      },
+    });
+
+    const got = await openStream(`http://localhost:${s.port}/movie.mp4`, { range: 'bytes=8-9' });
+    expect(seen).toBe('bytes=8-9');
+    expect(got.ok).toBe(true);
+    // A 206 flattened into a 200 would be read as the whole file, and the player
+    // would place the last two bytes at the start of the timeline.
+    expect(got.status).toBe(206);
+    expect(got.contentRange).toBe('bytes 8-9/10');
+    expect(got.acceptRanges).toBe('bytes');
+    s.stop(true);
+  });
+
+  test('a live channel is never asked for a range', async () => {
+    // The default, and it stays the default: a live slot has no end to seek
+    // within, and asking one for a byte range is a good way to be handed an error
+    // page instead of video.
+    let seen = 'unset';
+    const s = serve({
+      '/live': {
+        handler: (req) => {
+          seen = req.headers.get('range');
+          return new Response('GG', { headers: { 'content-type': 'video/mp2t' } });
+        },
+      },
+    });
+    await openStream(`http://localhost:${s.port}/live`);
+    expect(seen).toBeNull();
+    s.stop(true);
+  });
+
+  test('a seek past the end is passed through as itself, not as a dead line', async () => {
+    // 416 is the reader's player being wrong about the length. Mapped to 502 it
+    // would read as "your provider did not send a stream", and the next seek would
+    // work -- which is how a working film comes to look broken.
+    const s = serve({ '/eof': { status: 416, type: 'video/mp4' } });
+    const got = await openStream(`http://localhost:${s.port}/eof`, { range: 'bytes=99-' });
+    expect(got.ok).toBe(false);
+    expect(got.status).toBe(416);
     s.stop(true);
   });
 
@@ -253,7 +324,11 @@ describe('what the page offers, and to whom', () => {
     expect(view).toContain('own.onDemand.map((ch) => (');
     expect(view).toContain('own.matches.map((ch) => (');
     expect(view).toContain('own.genre.map((ch) => (');
-    expect(view).toContain('<PlayButton channelId={mine} />');
+    // The kind travels with the row, because the button is the only place the
+    // script can learn it: `data-play` is the same route for a live channel and
+    // for a film, and the provider URL -- the other thing that would say which --
+    // is deliberately not rendered.
+    expect(view).toContain('<PlayButton channelId={mine} kind={ch.kind} />');
     expect(view).toMatch(/\/my\/channels\/\$\{channelId\}\/stream\.ts/);
   });
 
@@ -287,13 +362,49 @@ describe('what the page offers, and to whom', () => {
     expect(client).toMatch(/teardown\(\);\n\s*for \(const b of buttons\)/);
   });
 
-  test('a browser with no Media Source Extensions loses the button entirely', () => {
-    // iPhone Safari. A "Play here" that silently fails would pull people away
-    // from VLC, which is the button that actually works there.
-    // The condition grew a second arm -- a section with no buttons at all -- but
-    // the guarantee is the same one: no Media Source Extensions, no Play button.
-    expect(client).toContain('if (!canTransmux()');
-    expect(client).toContain('for (const b of buttons) b.remove();');
+  test('a browser with no Media Source Extensions loses the LIVE buttons only', () => {
+    /*
+     * iPhone Safari, and the guarantee is narrower than it was.
+     *
+     * It still cannot transmux a transport stream -- there is nothing to push
+     * fragments into -- so a live "Play here" that silently failed would pull
+     * people away from VLC, the button that works there. But it plays an MP4
+     * natively and always could, and the old rule removed every button in the
+     * section: an iPhone was sent to find VLC for a film it could play on the
+     * page. So the filter is by kind rather than by browser.
+     */
+    expect(client).toContain('const buttons = canTransmux() ? offered : offered.filter(isVod);');
+    expect(client).toContain('for (const b of offered) if (!buttons.includes(b)) b.remove();');
+  });
+
+  test('a file is played natively, and never handed to the transport-stream demuxer', () => {
+    /*
+     * The bug this whole branch exists for.
+     *
+     * Every press went to `mpegts.createPlayer({type: 'mpegts'})`, and an MP4 is
+     * not a transport stream: no sync bytes, no PAT, so the demuxer failed and the
+     * reader was told to try VLC for a file the browser plays by itself. The kind
+     * decides, the bundle is fetched only for a channel, and a film costs no
+     * quarter-megabyte demuxer to watch.
+     */
+    expect(client).toContain('const vod = isVod(button);');
+    expect(client).toMatch(
+      /stop = vod\s*\n?\s*\? attachNative\(video, button\.dataset\.play, fail\)/,
+    );
+    // The bundle load sits behind the same test, so a file never waits for it.
+    expect(client).toMatch(
+      /if \(!vod\) \{\s*\n\s*try \{\s*\n\s*player = await loadPlayerBundle\(src\);/,
+    );
+  });
+
+  test('a native failure is explained, rather than reported as a broken player', () => {
+    // <video> is handed no status code -- only MEDIA_ERR_SRC_NOT_SUPPORTED -- so
+    // "your provider did not send a stream" and "somebody else is watching that
+    // line" would otherwise arrive as the same shrug.
+    expect(client).toContain('explainStreamFailure(url).then(onError)');
+    expect(client).toContain("if (status === 409) return 'Somebody else is watching");
+    // And an abort is us pressing Stop, not something to put on the page.
+    expect(client).toContain('if (video.error?.code === 1) return;');
   });
 
   test('the demuxer is fetched on demand, not linked from the Layout', () => {
@@ -315,5 +426,75 @@ describe('what the page offers, and to whom', () => {
      */
     expect(client).toContain('window.__genreStopPlayer?.();');
     expect(client).toContain("window.addEventListener('pagehide', teardown)");
+  });
+});
+
+/**
+ * What the three stream routes do with a file, as opposed to a channel.
+ *
+ * Read from the source, the way the rest of this file reads the client: app.js
+ * builds a whole application at import time -- config, database, migrations -- and
+ * these are properties of the wiring rather than of a response that could be
+ * fetched without all of it.
+ */
+describe('the routes tell a file from a channel', () => {
+  const app = readFileSync(new URL('../apps/web/src/app.js', import.meta.url).pathname, 'utf8');
+
+  test('the kind decides, and series counts as a file', () => {
+    // A provider's series entry is an episode sitting on disk, not a stream, so it
+    // takes the same path as a film. Leaving it out would fix films and leave
+    // every episode still failing.
+    expect(app).toContain("const isVodKind = (kind) => kind === 'vod' || kind === 'series';");
+  });
+
+  test('every stream route passes the Range through for a file and withholds it for a channel', () => {
+    // Three routes -- the reader's own, a shared one, and the event page's -- and
+    // all three carried the same blanket `accept-ranges: none`. Fixing one would
+    // have left an on-demand entry playable from one page and not another.
+    const forwarded = app.match(/range: vod \? \(c\.req\.header\('range'\) \?\? null\) : null,/g);
+    expect(forwarded?.length).toBe(3);
+
+    const responses = app.match(/return streamResponse\(result, body, \{ vod, url: /g);
+    expect(responses?.length).toBe(3);
+  });
+
+  test('a live channel still refuses ranges, and a file mirrors what the line said', () => {
+    /*
+     * Mirrored rather than asserted. Claiming `bytes` over a line that ignores
+     * Range is worse than admitting it: the player would seek, be handed the start
+     * of the file, and play the opening scene believing it was an hour in.
+     */
+    expect(app).toContain("headers['accept-ranges'] = 'none';");
+    expect(app).toContain("headers['accept-ranges'] = result.acceptRanges || 'bytes';");
+    expect(app).toContain('status: result.status === 206 ? 206 : 200,');
+  });
+
+  test('a file the provider would not name is not announced as a transport stream', () => {
+    /*
+     * These panels answer `application/octet-stream` for a great deal. The
+     * demuxing path ignores the header and reads the bytes; native playback does
+     * the opposite and refuses an MP4 announced as video/mp2t before decoding any
+     * of it. The extension is what the kind was derived from, so it is a sound
+     * fallback here.
+     */
+    expect(app).toContain("[/\\.(mp4|m4v)(\\?|$)/i, 'video/mp4']");
+    expect(app).toMatch(/vod \? \(VOD_TYPE\.find/);
+  });
+
+  test('a shared file is playable too, which means its kind has to reach the page', () => {
+    // sharedChannelById selected everything the row needed except the one column
+    // that decides how to play it, so a shared film went to the demuxer even after
+    // the reader's own stopped doing so.
+    const queries = readFileSync(
+      new URL('../packages/db/src/queries.js', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(queries).toContain('select c.id, c.title, c.group_title, c.kind, c.stream_url,');
+
+    const view = readFileSync(
+      new URL('../apps/web/src/views/pages.jsx', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(view).toContain('data-kind={ch.kind ?? null}');
   });
 });
