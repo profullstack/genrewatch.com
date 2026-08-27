@@ -338,6 +338,56 @@ export const config = {
     blockchain: opt('COINPAY_BLOCKCHAIN', 'BTC'),
   },
 
+  /**
+   * Premium membership: what it costs, how long it lasts, and what an invite earns.
+   *
+   * Every number here is configuration rather than a constant because each one is a
+   * commercial decision that outlives the deploy that shipped it -- a price rise, a
+   * promotional term, a change to what an introduction is worth. None of them is a
+   * secret; they are all printed on the page that sells the thing.
+   *
+   * Same names and same defaults as the sibling brand, so the two sites can be
+   * reasoned about together and a variable set on one means the same on the other.
+   */
+  membership: {
+    /** $10 a year, in cents, because money is never a float. */
+    priceCents: num('MEMBERSHIP_PRICE_CENTS', 1000),
+    currency: opt('MEMBERSHIP_CURRENCY', 'USD'),
+    /** One term. 365 rather than a calendar year: a term is a length, not a date. */
+    termDays: num('MEMBERSHIP_TERM_DAYS', 365),
+
+    /**
+     * What an inviter earns on what the people they invited spend, in basis points.
+     *
+     * 2000 = 20%. Basis points rather than a percentage so the rate is an integer
+     * all the way from configuration to the stored ledger row, and a fraction of a
+     * percent never becomes a float somewhere in the middle of an amount of money.
+     *
+     * Changing this does NOT re-rate anything already earned. The rate is copied
+     * onto each commission row when it is written, because the deal somebody was
+     * offered when they made the introduction is not a setting.
+     */
+    commissionBps: num('REFERRAL_COMMISSION_BPS', 2000),
+
+    /**
+     * How far back a NON-member can read their own direct messages, in days.
+     *
+     * The premium tier sells full message history, so the free tier has to have a
+     * window -- but nothing is ever deleted. This bounds a SELECT and nothing else:
+     * the rows stay, and the day somebody joins, the whole thread is there again.
+     * That is the only version of this that is honest to sell.
+     *
+     * Zero turns the limit off entirely, which is what to set if this turns out to
+     * be the wrong trade. It is a variable so that undoing it is not a deploy.
+     */
+    freeMessageHistoryDays: num('FREE_MESSAGE_HISTORY_DAYS', 30),
+
+    /** Nothing can be sold without a way to take the money. */
+    get enabled() {
+      return Boolean(config.coinpay.enabled);
+    },
+  },
+
   coinpay: {
     /** Must be a MERCHANT api key (cp_live_/cp_test_ + 32 hex). An OAuth client id
      *  (cp_ + 24 hex) authenticates but cannot create payments -- it fails only at

@@ -11,6 +11,7 @@ import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendInviteEmail, sendLoginLink } from '@genre/notify';
 import * as pay from '@genre/payments';
+import * as member from '@genre/payments/membership';
 import {
   claimStreamSlot,
   firstLiveChannel,
@@ -50,6 +51,8 @@ import {
   SignIn,
   SubjectPage,
 } from './views/pages.jsx';
+import { Inbox, Thread } from './views/people.jsx';
+import { PremiumPage } from './views/premium.jsx';
 
 export const app = new Hono();
 
@@ -84,6 +87,32 @@ async function ownedTitles({ userId, results }) {
  * where it came from and the page works with JavaScript off. A caller that asked
  * for JSON gets JSON. One helper, so the two can never drift apart.
  */
+/**
+ * Is this account a member right now?
+ *
+ * One function, called by every gate, so the features premium sells cannot drift
+ * apart in what they consider a member. It reads the terms table rather than a
+ * flag on the account: there is no `users.is_premium` to fall out of step with
+ * what was actually paid for.
+ */
+async function isMember(user) {
+  if (!user?.id) return false;
+  return Boolean(await q.activeMembership(user.id));
+}
+
+/**
+ * How far back this reader may read their own messages, in days.
+ *
+ * Null means "all of it". The window is a product decision and it is made HERE,
+ * once, rather than inside the query -- which stays a query with a parameter
+ * instead of one that knows about money.
+ */
+function historyWindowDays(member) {
+  if (member) return null;
+  const days = config.membership.freeMessageHistoryDays;
+  return days > 0 ? days : null;
+}
+
 function respond(c, { json, redirectTo, status }) {
   const accept = c.req.header('accept') ?? '';
   if (accept.includes('application/json') || c.req.header('x-requested-with') === 'fetch') {
@@ -108,7 +137,17 @@ export const render = async (node) => `<!doctype html>${await node.toString()}`;
 
 app.use('*', async (c, next) => {
   const sid = getCookie(c, config.session.cookie);
-  c.set('user', sid ? await auth.userFromRequest(sid) : null);
+  const user = sid ? await auth.userFromRequest(sid) : null;
+  /*
+   * The unread count rides on the user, set once here.
+   *
+   * The header shows it on every page, so the alternative is every render call
+   * remembering to pass it -- and the one route that forgets shows a reader zero
+   * unread messages while they have some, which is indistinguishable from the
+   * feature not working.
+   */
+  if (user) user.unread = await q.unreadMessageCount(user.id);
+  c.set('user', user);
   await next();
 });
 
@@ -572,10 +611,38 @@ app.post('/api/playlist/refresh', async (c) => {
 app.post('/api/playlist/share', async (c) => {
   const user = requireUser(c);
   const body = await c.req.parseBody();
-  const shared = String(body.shared ?? '') === '1';
   const label = String(body.label ?? '').trim();
 
-  const row = await q.setPlaylistShared({ userId: user.id, shared, label: label || null });
+  /*
+   * Still accepts the old `shared=1`, which is what an unreloaded page sends.
+   *
+   * That form is in browsers right now and its meaning has not changed -- it was
+   * always "open to everybody signed in". Reading it as anything narrower would
+   * quietly close lists their owners believe are open; reading a missing audience
+   * as anything WIDER would be the far worse mistake, so the fallback for an
+   * unrecognised value is 'none' and the query enforces that too.
+   */
+  const audience = body.audience
+    ? String(body.audience)
+    : String(body.shared ?? '') === '1'
+      ? 'everyone'
+      : 'none';
+
+  /*
+   * Sharing with named friends is what the membership sells; sharing with the
+   * whole site is not, and never was. A lapsed member keeps 'everyone' and is
+   * refused only the narrower option -- the gate must never be able to widen who
+   * can reach somebody's provider credentials.
+   */
+  if (audience === 'friends' && !(await isMember(user))) {
+    return respond(c, {
+      json: { error: 'premium only' },
+      status: 402,
+      redirectTo: '/premium?want=friends',
+    });
+  }
+
+  const row = await q.setPlaylistSharing({ userId: user.id, audience, label: label || null });
   if (!row) {
     return respond(c, {
       json: { error: 'no list to share' },
@@ -583,7 +650,33 @@ app.post('/api/playlist/share', async (c) => {
       redirectTo: '/settings?playlist_error=There%20is%20no%20list%20on%20this%20account%20yet.',
     });
   }
-  return respond(c, { json: row, redirectTo: `/settings?shared=${row.shared ? '1' : '0'}` });
+  return respond(c, { json: row, redirectTo: `/settings?shared=${row.share_audience}` });
+});
+
+/**
+ * Name one person who may see this list, or take them off it again.
+ *
+ * Removal is deliberately NOT gated on membership. A lapsed member must always be
+ * able to close their line down -- gating the revoke would leave somebody unable to
+ * withdraw a credential they had shared, which is the one direction this must
+ * never fail in.
+ */
+app.post('/api/playlist/share/grant', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const audienceUserId = String(body.user_id ?? '');
+  const allowed = String(body.allowed ?? '') === '1';
+
+  if (allowed && !(await isMember(user))) {
+    return respond(c, {
+      json: { error: 'premium only' },
+      status: 402,
+      redirectTo: '/premium?want=friends',
+    });
+  }
+
+  const ok = await q.setPlaylistShareGrant({ userId: user.id, audienceUserId, allowed });
+  return respond(c, { json: { ok }, redirectTo: '/settings#sharing' });
 });
 
 /**
@@ -600,7 +693,7 @@ app.post('/api/playlist/share', async (c) => {
  */
 app.get('/shared', async (c) => {
   const user = requireUser(c);
-  const owners = await q.sharedPlaylistOwners();
+  const owners = await q.sharedPlaylistOwners({ viewerId: user.id });
   return c.html(await render(<SharedLists user={user} owners={owners} />));
 });
 
@@ -630,7 +723,9 @@ app.get('/shared/:channelId/stream.ts', async (c) => {
   const user = requireUser(c);
   if (!config.playlists.proxy.enabled) return c.json({ error: 'player is off' }, 404);
 
-  const row = await q.sharedChannelById(Number(c.req.param('channelId')));
+  const row = await q.sharedChannelById(Number(c.req.param('channelId')), {
+    viewerId: user.id,
+  });
   if (!row) return c.json({ error: 'not shared' }, 404);
 
   /*
@@ -698,7 +793,9 @@ app.get('/shared/:channelId/stream.ts', async (c) => {
 /** Is one shared entry actually there? Same shape as the private check. */
 app.get('/shared/:channelId/check', async (c) => {
   const _user = requireUser(c);
-  const row = await q.sharedChannelById(Number(c.req.param('channelId')));
+  const row = await q.sharedChannelById(Number(c.req.param('channelId')), {
+    viewerId: user.id,
+  });
   if (!row) return c.json({ error: 'not shared' }, 404);
 
   // A probe is a connection like any other, and it is the owner's line it would
@@ -1113,11 +1210,8 @@ app.get('/my/channels/:channelId/stream.ts', async (c) => {
  * and the signature stops matching, which reads as a forgery rather than the bug
  * it is.
  *
- * No `grant` callback is passed, and that is the current state of this brand
- * rather than an oversight. The rail records money correctly and grants nothing,
- * because there is nothing on this site for sale yet. Whatever it eventually sells
- * supplies its grant here, inside settleWebhook's transaction, the way the sibling
- * claims a seat.
+ * There IS something for sale now -- a membership -- so the grant this used to
+ * leave empty is supplied below, inside settleWebhook's transaction.
  */
 app.post('/api/webhooks/coinpay', async (c) => {
   const raw = await c.req.text();
@@ -1127,8 +1221,277 @@ app.post('/api/webhooks/coinpay', async (c) => {
   });
   if (!ok) return c.json({ error: 'bad signature' }, 401);
 
-  const result = await pay.settleWebhook(JSON.parse(raw));
+  const result = await pay.settleWebhook(JSON.parse(raw), {
+    grant: async (tx, { meta, payment }) => {
+      /*
+       * A settled payload is an amount and a status; nothing in it says what was
+       * bought. `kind` is the whole attribution, so a payment arriving without it
+       * is recorded and grants nothing rather than being guessed at.
+       */
+      if (meta.kind !== member.MEMBERSHIP_KIND) return null;
+
+      const granted = await member.grantMembership(tx, {
+        userId: meta.user_id,
+        paymentId: payment?.id ?? null,
+        // What we CHARGED, from our own row, rather than what the payload says was
+        // paid. A term is a term whatever the wire claims.
+        priceCents: payment?.amount_cents ?? config.membership.priceCents,
+        currency: payment?.currency ?? config.membership.currency,
+        termDays: config.membership.termDays,
+      });
+      if (!granted) return null;
+
+      /*
+       * The introduction is paid AFTER something was delivered, in the same
+       * transaction as the delivery. Crediting in a second transaction would leave
+       * a window where the sale exists and the commission owed on it does not.
+       * Returns null when nobody invited this buyer, which is the common case and
+       * must never fail a webhook.
+       */
+      const commission = await member.creditReferral(tx, {
+        buyerId: meta.user_id,
+        paymentId: payment?.id ?? null,
+        amountCents: payment?.amount_cents ?? 0,
+        currency: payment?.currency ?? config.membership.currency,
+        rateBps: config.membership.commissionBps,
+      });
+
+      return { ...granted, commissionCents: commission?.amount_cents ?? 0 };
+    },
+  });
   return c.json(result);
+});
+
+/* --------------------------------------------------------------- messages -- */
+
+/*
+ * Direct messages, ported from the sibling brand.
+ *
+ * 0003 carried the naming columns and said the rest would land on the same shapes;
+ * 0015 brought the tables and these are the routes. Kept close to the original so
+ * a fix crosses as a diff -- including the two rules that are quiet when broken: a
+ * block is checked in BOTH directions, so neither party can reopen a conversation
+ * the other closed, and the rate limit is per sender rather than per thread.
+ */
+
+app.get('/messages', async (c) => {
+  const user = requireUser(c);
+  const threads = await q.conversations({ userId: user.id });
+  return c.html(await render(<Inbox user={user} threads={threads} />));
+});
+
+app.get('/messages/:handle', async (c) => {
+  const user = requireUser(c);
+  const other = await q.getUserByHandle(c.req.param('handle'));
+  if (!other) return c.html(await render(<NotFound user={user} />), 404);
+  if (other.id === user.id) return c.redirect('/messages', 303);
+
+  const blocked = await q.blockExists({ a: user.id, b: other.id });
+
+  /*
+   * Full history is what the membership sells, so a non-member gets a window.
+   *
+   * Nothing is deleted to make that true and the withheld count is fetched
+   * separately, because "there is nothing older" and "there are 340 older messages
+   * you cannot open" must not render as the same empty space. A page that cannot
+   * tell them apart reads as data loss, which is a worse thing to sell against.
+   */
+  const member = await isMember(user);
+  const sinceDays = historyWindowDays(member);
+  const [messages, olderCount] = blocked
+    ? [[], 0]
+    : await Promise.all([
+        q.thread({ userId: user.id, otherId: other.id, sinceDays }),
+        q.olderMessageCount({ userId: user.id, otherId: other.id, sinceDays }),
+      ]);
+
+  return c.html(
+    await render(
+      <Thread
+        user={user}
+        other={other}
+        messages={messages}
+        blocked={blocked}
+        historyDays={sinceDays}
+        olderCount={olderCount}
+      />,
+    ),
+  );
+});
+
+/** Generous for a person, useless for anything sending in bulk. */
+const MESSAGE_RATE_PER_HOUR = 60;
+
+app.post('/api/messages', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const other = await q.getUserByHandle(String(body.handle ?? ''));
+  const text = String(body.body ?? '').trim();
+
+  if (!other || other.id === user.id) return c.json({ error: 'no such person' }, 404);
+  if (!text) return c.redirect(`/messages/${other.handle}`, 303);
+  if (text.length > 4000) return c.json({ error: 'too long' }, 400);
+
+  // Checked in both directions, so neither party can reopen a conversation the
+  // other closed.
+  if (await q.blockExists({ a: user.id, b: other.id })) {
+    return c.json({ error: 'unavailable' }, 403);
+  }
+
+  const sent = await q.messagesSentSince({ senderId: user.id, minutes: 60 });
+  if (sent >= MESSAGE_RATE_PER_HOUR) {
+    return respond(c, {
+      json: { error: 'rate limited' },
+      status: 429,
+      redirectTo: `/messages/${other.handle}?slow=1`,
+    });
+  }
+
+  await q.sendMessage({ senderId: user.id, recipientId: other.id, body: text });
+  return respond(c, { json: { ok: true }, redirectTo: `/messages/${other.handle}` });
+});
+
+/**
+ * Following a person, and blocking one.
+ *
+ * Following somebody is not following a genre: that is the polymorphic `follows`
+ * table and it cannot carry a uuid. These write user_follows, which the database
+ * can actually constrain to real accounts.
+ */
+app.post('/api/users/follow', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const other = await q.getUserByHandle(String(body.handle ?? ''));
+  if (!other || other.id === user.id) return c.json({ error: 'no such person' }, 404);
+
+  if (String(body.follow ?? '1') === '1') {
+    await q.followUser({ followerId: user.id, followeeId: other.id });
+  } else {
+    await q.unfollowUser({ followerId: user.id, followeeId: other.id });
+  }
+  return respond(c, { json: { ok: true }, redirectTo: `/u/${other.handle}` });
+});
+
+app.post('/api/users/block', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const other = await q.getUserByHandle(String(body.handle ?? ''));
+  if (!other || other.id === user.id) return c.json({ error: 'no such person' }, 404);
+
+  if (String(body.block ?? '1') === '1') {
+    await q.blockUser({ blockerId: user.id, blockedId: other.id });
+  } else {
+    await q.unblockUser({ blockerId: user.id, blockedId: other.id });
+  }
+  return respond(c, { json: { ok: true }, redirectTo: '/messages' });
+});
+
+/* ------------------------------------------------------------- membership -- */
+
+/**
+ * The page that sells the tier, and the page that reports on it.
+ *
+ * One page rather than two, because "what do I get" and "what have I earned" are
+ * the same question asked before and after joining, and splitting them means a
+ * member lands on a sales pitch every time they want to check their balance.
+ *
+ * Readable signed out: somebody has to be able to find out what this costs before
+ * making an account.
+ */
+app.get('/premium', async (c) => {
+  const user = c.get('user');
+
+  const [membership, earnings, invited, ledger, code] = user
+    ? await Promise.all([
+        q.activeMembership(user.id),
+        q.commissionSummary(user.id),
+        q.invitedAccounts(user.id),
+        q.commissionLedger(user.id, { limit: 20 }),
+        auth.inviteCodeFor(user.id),
+      ])
+    : [null, [], [], [], null];
+
+  return c.html(
+    await render(
+      <PremiumPage
+        user={user}
+        membership={membership}
+        priceCents={config.membership.priceCents}
+        currency={config.membership.currency}
+        termDays={config.membership.termDays}
+        commissionBps={config.membership.commissionBps}
+        freeHistoryDays={config.membership.freeMessageHistoryDays}
+        paymentsEnabled={pay.paymentsEnabled()}
+        inviteUrl={code ? auth.inviteUrl(code) : null}
+        invited={invited}
+        earnings={earnings}
+        ledger={ledger}
+        payout={user}
+        want={c.req.query('want') ?? null}
+        notice={
+          c.req.query('paid') === '1'
+            ? 'Payment started. Membership begins the moment it settles on chain, which is usually a few minutes.'
+            : c.req.query('payout') === 'saved'
+              ? 'Payout details saved.'
+              : null
+        }
+        error={c.req.query('error') ?? null}
+      />,
+    ),
+  );
+});
+
+/**
+ * Buy a term.
+ *
+ * Renewing is the same call as joining and needs no special case: the grant stacks
+ * the new term onto the end of whatever is already held, so pressing this twice
+ * costs twice and grants twice as long rather than overwriting anything.
+ */
+app.post('/api/membership/buy', async (c) => {
+  const user = requireUser(c);
+
+  if (!pay.paymentsEnabled()) {
+    return respond(c, {
+      json: { error: 'payments are off' },
+      status: 503,
+      redirectTo: '/premium?error=Payments%20are%20not%20switched%20on%20here.',
+    });
+  }
+
+  /*
+   * `kind` is what the webhook branches on, and it is the only thing that makes
+   * this payment a membership. A checkout that omitted it would settle, be
+   * recorded, and grant nothing at all.
+   */
+  const { checkoutUrl } = await pay.createCheckout({
+    user,
+    amountCents: config.membership.priceCents,
+    currency: config.membership.currency,
+    description: `GenreWatch premium, ${config.membership.termDays} days`,
+    metadata: { kind: member.MEMBERSHIP_KIND },
+    blockchain: config.payments.blockchain,
+    payTo: config.payments.payoutAddress || undefined,
+    successUrl: `${config.siteUrl}/premium?paid=1`,
+    cancelUrl: `${config.siteUrl}/premium`,
+  });
+
+  return respond(c, { json: { checkoutUrl }, redirectTo: checkoutUrl });
+});
+
+/**
+ * Where to send this account's commission.
+ *
+ * Not validated against the chain beyond being present: this site does not know
+ * how to check an address on every chain CoinPay settles, and a validator that is
+ * wrong about one of them would refuse a correct address with no way past it.
+ * Payouts are settled by a human who can look.
+ */
+app.post('/api/membership/payout', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  await q.setPayoutInstruction({ userId: user.id, address: body.address, chain: body.chain });
+  return respond(c, { json: { ok: true }, redirectTo: '/premium?payout=saved' });
 });
 
 /* -------------------------------------------------------------------- auth -- */
@@ -1611,10 +1974,15 @@ app.post('/api/timezone', async (c) => {
 
 app.get('/settings', async (c) => {
   const user = requireUser(c);
-  const [prefs, passkeys, playlist] = await Promise.all([
+  const [prefs, passkeys, playlist, member, shareCandidates] = await Promise.all([
     q.getPrefs(user.id),
     q.listPasskeys(user.id),
     q.getPlaylist(user.id),
+    isMember(user),
+    // Fetched unconditionally rather than only for a member: the picker has to be
+    // populated the instant somebody joins, and a second round trip after the
+    // upgrade is how it renders empty on the one page view that matters.
+    q.shareCandidates(user.id),
   ]);
   const added = c.req.query('playlist');
   const playlistNotice = added
@@ -1645,6 +2013,8 @@ app.get('/settings', async (c) => {
               : null
         }
         passwordError={c.req.query('password_error') ?? null}
+        member={member}
+        shareCandidates={shareCandidates}
         passwordMinLength={auth.PASSWORD_MIN_LENGTH}
       />,
     ),

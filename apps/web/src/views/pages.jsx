@@ -1798,6 +1798,8 @@ export const Settings = ({
   passwordNotice,
   passwordError,
   passwordMinLength,
+  member = false,
+  shareCandidates = [],
 }) => (
   <Layout title="Settings" user={user}>
     <h1>Settings</h1>
@@ -1865,53 +1867,100 @@ export const Settings = ({
         and .m3u stay owner-only, because each of those is the credential itself.
       */}
       {playlist ? (
-        <div class="card">
+        <div class="card" id="sharing">
           <div class="card-head">
-            <h3 class="card-title">
-              {playlist.shared ? 'Your list is open to everyone signed in' : 'Share your list'}
-            </h3>
+            <h3 class="card-title">Who can see your list</h3>
             <p class="card-desc">
-              {playlist.shared ? (
-                <>
-                  Anyone signed in can play from it on a page for something it carries. They cannot
-                  see, download or copy the address — only “Play here” works, and only one person at
-                  a time, because that is what your line allows. It is listed on{' '}
-                  <a href="/shared">shared lists</a>.
-                </>
-              ) : (
-                <>
-                  Let anyone signed in play from your list. They never get the address — it carries
-                  your provider username and password, so shared entries play through us and the
-                  VLC, Infuse and .m3u buttons stay yours alone. Your line still permits one
-                  connection at a time, so somebody else watching means you are not.
-                </>
-              )}
+              Whoever you choose can play from it on a page for something it carries. They never get
+              the address — it carries your provider username and password, so shared entries play
+              through us and the VLC, Infuse and .m3u buttons stay yours alone. Your line still
+              permits one connection at a time, so somebody else watching means you are not. See{' '}
+              <a href="/shared">whose lists are open</a>.
             </p>
           </div>
           <form method="post" action="/api/playlist/share">
-            <input type="hidden" name="shared" value={playlist.shared ? '0' : '1'} />
-            {playlist.shared ? null : (
-              <label class="field">
-                <span>What to call it (optional)</span>
-                <input
-                  type="text"
-                  name="label"
-                  maxlength="80"
-                  placeholder="Anthony's line"
-                  autocomplete="off"
-                />
-                {/* The private label defaults to the provider's hostname, which is
-                    the one thing not to publish -- it names their provider to
-                    everybody on the site. */}
+            <label class="field">
+              <span>Audience</span>
+              {/*
+                One control with three values rather than a toggle plus a second
+                toggle. The old form posted `shared=1`, which the route still
+                accepts and still reads as 'everyone' -- an unreloaded page sitting
+                in somebody's browser must not quietly change what it means.
+              */}
+              <select name="audience">
+                <option value="none" selected={playlist.share_audience === 'none'}>
+                  Nobody — keep it private
+                </option>
+                <option value="friends" selected={playlist.share_audience === 'friends'}>
+                  Only the people I name{member ? '' : ' (premium)'}
+                </option>
+                <option value="everyone" selected={playlist.share_audience === 'everyone'}>
+                  Everyone signed in
+                </option>
+              </select>
+              {member ? null : (
                 <span class="hint">
-                  Shown instead of the name above, which is usually your provider's address.
+                  Naming individual people is part of <a href="/premium">premium</a>. Private and
+                  everyone are free, as they have always been.
                 </span>
-              </label>
-            )}
-            <button class={playlist.shared ? 'ghost' : 'cta'} type="submit">
-              {playlist.shared ? 'Stop sharing' : 'Share my list'}
+              )}
+            </label>
+
+            <label class="field">
+              <span>What to call it (optional)</span>
+              <input
+                type="text"
+                name="label"
+                maxlength="80"
+                value={playlist.shared_label ?? ''}
+                placeholder="Anthony's line"
+                autocomplete="off"
+              />
+              {/* The private label defaults to the provider's hostname, which is
+                  the one thing not to publish -- it names their provider to
+                  everybody on the site. */}
+              <span class="hint">
+                Shown instead of the name above, which is usually your provider's address.
+              </span>
+            </label>
+
+            <button class="cta" type="submit">
+              Save
             </button>
           </form>
+
+          {/*
+            The people picker, shown only when that is the audience.
+
+            Candidates are mutual follows, but a follow is NOT the rule -- a name
+            has to be added here before it can see anything. Somebody who followed
+            back out of politeness has not agreed to be handed a credential.
+          */}
+          {playlist.share_audience === 'friends' ? (
+            <div class="share-grants">
+              <h4>Named people</h4>
+              {shareCandidates.length === 0 ? (
+                <p class="empty">
+                  Nobody to name yet. This lists people you follow who follow you back.
+                </p>
+              ) : (
+                <ul class="grant-list">
+                  {shareCandidates.map((p) => (
+                    <li>
+                      <span>{p.display_name ?? (p.handle ? `@${p.handle}` : 'Someone')}</span>
+                      <form method="post" action="/api/playlist/share/grant" class="inline">
+                        <input type="hidden" name="user_id" value={p.id} />
+                        <input type="hidden" name="allowed" value={p.granted ? '0' : '1'} />
+                        <button class={p.granted ? 'ghost small-btn' : 'small-btn'} type="submit">
+                          {p.granted ? 'Remove' : 'Add'}
+                        </button>
+                      </form>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : (
         /*

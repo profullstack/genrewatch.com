@@ -38,8 +38,11 @@ beforeAll(async () => {
 
   const pl = (
     await db.query(
-      `insert into user_playlists (user_id, label, source_url, shared)
-       values ($1, 'big', 'sealed', true) returning id`,
+      // `shared` and `share_audience` are written together because the schema
+      // refuses a row where they disagree -- see 0016. 'everyone' is what the
+      // boolean alone used to mean.
+      `insert into user_playlists (user_id, label, source_url, shared, share_audience)
+       values ($1, 'big', 'sealed', true, 'everyone') returning id`,
       [ids.owner],
     )
   ).rows[0].id;
@@ -132,9 +135,15 @@ describe('following is not sharing', () => {
   });
 
   test('an unshared list is invisible however many people follow its owner', async () => {
-    await db.query('update user_playlists set shared = false where user_id = $1', [ids.owner]);
+    await db.query(
+      "update user_playlists set shared = false, share_audience = 'none' where user_id = $1",
+      [ids.owner],
+    );
     expect(await byTerms(ids.follower, ['maverick'])).toEqual([]);
-    await db.query('update user_playlists set shared = true where user_id = $1', [ids.owner]);
+    await db.query(
+      "update user_playlists set shared = true, share_audience = 'everyone' where user_id = $1",
+      [ids.owner],
+    );
   });
 });
 

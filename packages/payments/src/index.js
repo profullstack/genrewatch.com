@@ -264,7 +264,10 @@ const SETTLED = new Set(['paid', 'completed', 'confirmed', 'succeeded', 'settled
  * buyers pass the check together and both are sold the last one.
  *
  * `grant` receives the transaction, so any conditional UPDATE it needs is
- * serialised with everything else here.
+ * serialised with everything else here. It also receives the payment row as WE
+ * recorded it at checkout -- amount included -- rather than as the payload claims
+ * it: anything calculated from the money (a commission, a tier) must be a
+ * percentage of what we charged, not of a number that arrived over the wire.
  * Returning a falsy value aborts the grant without failing the webhook: the money
  * is recorded, the access is not given, and the caller decides what to say.
  *
@@ -289,7 +292,7 @@ export async function settleWebhook(payload, { grant } = {}) {
     const [payment] = await tx`
       update payments set status = ${status || 'unknown'}, raw = ${payload}, updated_at = now()
       where provider = 'coinpay' and provider_ref = ${ref}
-      returning id, status
+      returning id, status, amount_cents, currency
     `;
 
     if (!SETTLED.has(status)) return { settled: false, granted: false, reason: `status ${status}` };

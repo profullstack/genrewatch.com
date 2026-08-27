@@ -48,19 +48,67 @@ describe('finding the sharing switch', () => {
   });
 
   test('the real switch appears as soon as there is a list', async () => {
-    const html = await render({ id: 1, label: 'my line', channel_count: 7060, shared: false });
+    const html = await render({
+      id: 1,
+      label: 'my line',
+      channel_count: 7060,
+      shared: false,
+      share_audience: 'none',
+    });
     expect(html).toContain('/api/playlist/share');
-    expect(html).toContain('Share my list');
+    // The control is an audience now rather than a toggle, but the property being
+    // pinned is unchanged: there is something to press, on the page, as soon as
+    // there is a list to press it about.
+    expect(html).toContain('name="audience"');
   });
 
-  test('and turns into the way back out once it is open', async () => {
-    const html = await render({ id: 1, label: 'my line', channel_count: 7060, shared: true });
-    expect(html).toContain('Your list is open to everyone signed in');
-    expect(html).toContain('Stop sharing');
+  test('and the way back out is always one of the choices', async () => {
+    // Whatever it is currently set to, "nobody" is on the same control. A path in
+    // and no path out is the shape of a feature people are afraid to try.
+    for (const audience of ['none', 'friends', 'everyone']) {
+      const html = await render({
+        id: 1,
+        label: 'my line',
+        channel_count: 7060,
+        shared: audience !== 'none',
+        share_audience: audience,
+      });
+      expect(html).toContain('Nobody');
+      expect(html).toContain(`value="${audience}" selected=""`);
+    }
+  });
+
+  test('naming individual people is marked as the paid part, not hidden', async () => {
+    // A gate nobody can see reads as a missing feature -- the same bug this file
+    // was written about. It is offered and labelled, and refused at the route.
+    const html = await render({
+      id: 1,
+      label: 'my line',
+      channel_count: 7060,
+      shared: false,
+      share_audience: 'none',
+    });
+    expect(html).toContain('(premium)');
+    expect(html).toContain('href="/premium"');
+  });
+
+  test('a member is not told about a tier they already have', async () => {
+    const node = Settings({
+      user: { id: 'u1', email: 'a@b.c', handle: 'chovy', display_name: 'Anthony' },
+      prefs: { offsets_minutes: [60], date_offsets_minutes: [1440], channels: ['email'] },
+      passkeys: [],
+      passwordMinLength: 10,
+      playlist: { id: 1, label: 'x', channel_count: 1, shared: false, share_audience: 'none' },
+      member: true,
+    });
+    expect(String(await node.toString())).not.toContain('(premium)');
   });
 
   test('every state points at who else is sharing', async () => {
-    for (const p of [null, { id: 1, label: 'x', channel_count: 1, shared: true }]) {
+    for (const p of [
+      null,
+      { id: 1, label: 'x', channel_count: 1, shared: true, share_audience: 'everyone' },
+    ]) {
       expect(await render(p)).toContain('href="/shared"');
     }
   });

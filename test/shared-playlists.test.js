@@ -65,17 +65,25 @@ beforeAll(async () => {
   ids.privateChannel = await channel(ids.quietList, 0, 'Dune Part Two');
 }, 60_000);
 
-/** Mirrors setPlaylistShared. */
-const setShared = async (userId, shared, label = null) =>
+/**
+ * Mirrors setPlaylistSharing.
+ *
+ * Writes the flag and the audience together, because the schema now refuses a row
+ * where they disagree -- which is the point of the constraint: a caller that sets
+ * one without the other fails here rather than leaving a row some later query
+ * reads as open. This helper setting only `shared` is exactly the bug it guards.
+ */
+const setShared = async (userId, shared, label = null, audience = 'everyone') =>
   (
     await db.query(
       `update user_playlists set
          shared = $2,
+         share_audience = case when $2 then $4 else 'none' end,
          shared_at = case when $2 and not shared then now() else shared_at end,
          shared_label = $3
        where user_id = $1
-       returning shared, shared_at, shared_label`,
-      [userId, shared, label],
+       returning shared, share_audience, shared_at, shared_label`,
+      [userId, shared, label, audience],
     )
   ).rows[0];
 
@@ -90,6 +98,12 @@ const sharedChannels = async (viewerId) =>
        join users u on u.id = p.user_id
        join user_playlist_channels c on c.playlist_id = p.id
        where p.shared
+         and (
+           p.share_audience = 'everyone'
+           or (p.share_audience = 'friends' and exists (
+                 select 1 from playlist_share_grants g
+                 where g.playlist_id = p.id and g.audience_user_id = $1::uuid))
+         )
          and ($1::uuid is null or p.user_id <> $1)
          and (c.is_live is not false or c.checked_at < now() - interval '30 minutes')
        order by c.position`,

@@ -188,7 +188,22 @@ export const Layout = (props) => (
           {/* Only once there is a handle: without one there is no page to link to,
               and an item that 404s is worse than no item. */}
           {props.user?.handle ? <a href={`/u/${props.user.handle}`}>Profile</a> : null}
+          {props.user ? (
+            <a href="/messages">
+              Messages
+              {props.user.unread ? (
+                <span class="unread-count">
+                  {props.user.unread > 99 ? '99+' : props.user.unread}
+                </span>
+              ) : null}
+            </a>
+          ) : null}
           {props.user ? <a href="/invite">Invite</a> : null}
+          {/* Shown to everybody, member or not. A member needs it to check what
+              they have earned, and somebody who is not needs to be able to find
+              out what it costs -- a link that disappears once you join is a link
+              nobody can use to look at their own balance. */}
+          <a href="/premium">Premium</a>
           {props.user ? (
             <a href="/settings">Settings</a>
           ) : (

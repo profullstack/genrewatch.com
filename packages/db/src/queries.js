@@ -2129,19 +2129,35 @@ export async function markSharedChannelChecked({ channelId, live, note }) {
  * off leaves the timestamp alone -- it is a record of when this started, and a
  * flag that is currently false makes the distinction unambiguous.
  */
-export async function setPlaylistShared({ userId, shared, label = null }) {
+export const SHARE_AUDIENCES = ['none', 'friends', 'everyone'];
+
+export async function setPlaylistSharing({ userId, audience, label = null }) {
+  /*
+   * An unrecognised audience closes the list rather than opening it.
+   *
+   * This value arrives from a form, and the failure to avoid is a typo or a stale
+   * client widening who can reach somebody's provider credentials. Defaulting the
+   * unknown case to 'none' means the worst a bad value can do is turn sharing off.
+   */
+  const wanted = SHARE_AUDIENCES.includes(audience) ? audience : 'none';
+  const shared = wanted !== 'none';
+
   const [row] = await sql`
     update user_playlists set
-      shared = ${Boolean(shared)},
+      -- Written together, always. The database has a constraint saying these two
+      -- agree, so any path that sets one without the other fails loudly here
+      -- rather than leaving a row some later query reads as open.
+      shared = ${shared},
+      share_audience = ${wanted},
       shared_at = case
-        when ${Boolean(shared)} and not shared then now()
+        when ${shared} and not shared then now()
         else shared_at
       end,
       -- Null clears it, which is the difference between "no label" and "do not
       -- change the label". The caller decides by passing one or not.
       shared_label = ${label === null ? null : String(label).slice(0, 80)}
     where user_id = ${userId}
-    returning shared, shared_at, shared_label
+    returning shared, share_audience, shared_at, shared_label
   `;
   return row ?? null;
 }
@@ -2174,6 +2190,21 @@ export async function sharedChannelCount({ viewerId = null } = {}) {
     from user_playlist_channels c
     join user_playlists p on p.id = c.playlist_id
     where p.shared
+      and (
+        -- WHO a list is open to, and the only place that question is answered.
+        -- 'everyone' is the original behaviour and still the common case; a
+        -- 'friends' list is visible only to the people its owner named, and to
+        -- nobody at all when the viewer is signed out, because the friends branch
+        -- compares against a null uuid and yields nothing.
+        p.share_audience = 'everyone'
+        or (
+          p.share_audience = 'friends'
+          and exists (
+            select 1 from playlist_share_grants g
+            where g.playlist_id = p.id and g.audience_user_id = ${viewerId}::uuid
+          )
+        )
+      )
       and (${viewerId}::uuid is null or p.user_id <> ${viewerId})
   `;
   return row?.n ?? 0;
@@ -2214,6 +2245,21 @@ export async function sharedPlaylistCandidates({ viewerId = null, terms = [], li
     join users u on u.id = p.user_id
     join user_playlist_channels c on c.playlist_id = p.id
     where p.shared
+      and (
+        -- WHO a list is open to, and the only place that question is answered.
+        -- 'everyone' is the original behaviour and still the common case; a
+        -- 'friends' list is visible only to the people its owner named, and to
+        -- nobody at all when the viewer is signed out, because the friends branch
+        -- compares against a null uuid and yields nothing.
+        p.share_audience = 'everyone'
+        or (
+          p.share_audience = 'friends'
+          and exists (
+            select 1 from playlist_share_grants g
+            where g.playlist_id = p.id and g.audience_user_id = ${viewerId}::uuid
+          )
+        )
+      )
       and (${viewerId}::uuid is null or p.user_id <> ${viewerId})
       -- Same freshness rule as a reader's own list: a "dead" verdict is respected
       -- only while it is recent, and NULL is never filtered out because unchecked
@@ -2226,15 +2272,28 @@ export async function sharedPlaylistCandidates({ viewerId = null, terms = [], li
 }
 
 /** Whose lists are open, for the page that says so. Never includes a URL. */
-export async function sharedPlaylistOwners() {
+export async function sharedPlaylistOwners({ viewerId = null } = {}) {
   return sql`
     select p.user_id as owner_id,
            u.handle::text as handle,
            coalesce(p.shared_label, u.display_name, '@' || u.handle::text, 'someone') as label,
-           p.channel_count, p.shared_at, p.last_synced_at
+           p.channel_count, p.shared_at, p.last_synced_at, p.share_audience
     from user_playlists p
     join users u on u.id = p.user_id
     where p.shared
+      and (
+        -- A list shared with named friends is not part of "who is sharing" for
+        -- anybody else. Listing its owner here would announce a line to people who
+        -- cannot open it: a privacy leak and a page of rows leading nowhere.
+        p.share_audience = 'everyone'
+        or (
+          p.share_audience = 'friends'
+          and exists (
+            select 1 from playlist_share_grants g
+            where g.playlist_id = p.id and g.audience_user_id = ${viewerId}::uuid
+          )
+        )
+      )
     order by p.channel_count desc nulls last, p.shared_at
   `;
 }
@@ -2247,7 +2306,7 @@ export async function sharedPlaylistOwners() {
  * `p.shared` is what authorises the read and it is checked here rather than by
  * the caller remembering to.
  */
-export async function sharedChannelById(channelId) {
+export async function sharedChannelById(channelId, { viewerId = null } = {}) {
   const [row] = await sql`
     select c.id, c.title, c.group_title, c.stream_url,
            p.user_id as owner_id,
@@ -2256,6 +2315,20 @@ export async function sharedChannelById(channelId) {
     join user_playlists p on p.id = c.playlist_id
     join users u on u.id = p.user_id
     where c.id = ${channelId} and p.shared
+      and (
+        p.share_audience = 'everyone'
+        -- The owner can always reach their own row through this path, which is what
+        -- the probe route uses. Without it, narrowing a list to friends would lock
+        -- its owner out of checking it.
+        or p.user_id = ${viewerId}::uuid
+        or (
+          p.share_audience = 'friends'
+          and exists (
+            select 1 from playlist_share_grants g
+            where g.playlist_id = p.id and g.audience_user_id = ${viewerId}::uuid
+          )
+        )
+      )
   `;
   return row ?? null;
 }
@@ -2525,4 +2598,377 @@ export async function playlistGroups(userId, { limit = 300 } = {}) {
     order by count desc, name
     limit ${limit}
   `;
+}
+
+/* ------------------------------------------------- following people, and messaging them -- */
+
+/*
+ * Ported verbatim from the sibling brand, which built this first. 0003 said this
+ * was coming and carried the naming columns so it would land on the same shapes;
+ * 0015 brought the tables and this brings the reads. Keeping the bodies identical
+ * is what lets a fix on either side cross as a diff -- and a whole-file port here
+ * has already cost account integrity once, when a `return row` came across where
+ * the original said `return row?.email`.
+ */
+
+export async function followUser({ followerId, followeeId }) {
+  if (followerId === followeeId) return false;
+  await sql`
+    insert into user_follows (follower_id, followee_id)
+    values (${followerId}, ${followeeId})
+    on conflict do nothing
+  `;
+  return true;
+}
+
+export async function unfollowUser({ followerId, followeeId }) {
+  await sql`
+    delete from user_follows where follower_id = ${followerId} and followee_id = ${followeeId}
+  `;
+}
+
+export async function isFollowingUser({ followerId, followeeId }) {
+  if (!followerId || !followeeId) return false;
+  const [row] = await sql`
+    select 1 as x from user_follows
+    where follower_id = ${followerId} and followee_id = ${followeeId}
+  `;
+  return Boolean(row);
+}
+/* --------------------------------------------------------------- blocking -- */
+
+export async function blockUser({ blockerId, blockedId }) {
+  if (blockerId === blockedId) return;
+  await sql`
+    insert into user_blocks (blocker_id, blocked_id) values (${blockerId}, ${blockedId})
+    on conflict do nothing
+  `;
+  // A block ends the relationship in both directions. Leaving the follow in place
+  // means the blocked account keeps receiving the blocker in its feed, which is
+  // exactly what the block was for.
+  await sql`
+    delete from user_follows
+    where (follower_id = ${blockerId} and followee_id = ${blockedId})
+       or (follower_id = ${blockedId} and followee_id = ${blockerId})
+  `;
+}
+
+export async function unblockUser({ blockerId, blockedId }) {
+  await sql`delete from user_blocks where blocker_id = ${blockerId} and blocked_id = ${blockedId}`;
+}
+
+/** Either direction: a block stops the conversation both ways, not just inbound. */
+export async function blockExists({ a, b }) {
+  const [row] = await sql`
+    select 1 as x from user_blocks
+    where (blocker_id = ${a} and blocked_id = ${b}) or (blocker_id = ${b} and blocked_id = ${a})
+  `;
+  return Boolean(row);
+}
+
+/* --------------------------------------------------------------- messages -- */
+
+/**
+ * How many messages this account has sent in the last hour.
+ *
+ * The cheapest useful spam brake: a new account cannot open a hundred
+ * conversations before anyone notices. Counted per sender rather than per pair,
+ * because the abuse worth stopping is breadth, not depth.
+ */
+export async function messagesSentSince({ senderId, minutes = 60 }) {
+  const [row] = await sql`
+    select count(*)::int as n from messages
+    where sender_id = ${senderId} and created_at > now() - (${minutes} || ' minutes')::interval
+  `;
+  return row.n;
+}
+
+export async function sendMessage({ senderId, recipientId, body }) {
+  const [row] = await sql`
+    insert into messages (sender_id, recipient_id, body)
+    values (${senderId}, ${recipientId}, ${body})
+    returning id, sender_id, recipient_id, body, created_at
+  `;
+  return row;
+}
+
+/**
+ * One conversation, oldest last.
+ *
+ * Both orderings of the pair, because a thread is the union of what each person
+ * sent. Reading it also marks the viewer's half as read, which is done in the same
+ * round trip rather than as a second call nobody remembers to make.
+ */
+/**
+ * One conversation, optionally only as far back as a window reaches.
+ *
+ * `sinceDays` is null for anybody entitled to their whole history and a number of
+ * days for anybody who is not. The policy of WHICH of those a reader is does not
+ * live here -- it is a membership question and it is answered at the route, so
+ * this stays a query with a parameter rather than a query that knows about money.
+ *
+ * Nothing is ever deleted to make this true. It bounds a select; the rows sit
+ * where they were, and widening the window (or joining) brings them all back.
+ */
+export async function thread({ userId, otherId, limit = 200, sinceDays = null }) {
+  const days =
+    Number.isFinite(Number(sinceDays)) && Number(sinceDays) > 0 ? Number(sinceDays) : null;
+
+  const rows = await sql`
+    select id, sender_id, recipient_id, body, created_at, read_at
+    from messages
+    where ((sender_id = ${userId} and recipient_id = ${otherId})
+        or (sender_id = ${otherId} and recipient_id = ${userId}))
+      and (${days}::int is null or created_at > now() - make_interval(days => ${days}::int))
+    order by created_at desc
+    limit ${Math.min(Math.max(Number(limit) || 200, 1), 500)}
+  `;
+
+  /*
+   * Everything is marked read, including what the window hid.
+   *
+   * Deliberately NOT scoped to the same window. An unread message older than the
+   * window is one the reader cannot open, so scoping this would leave the badge
+   * permanently showing a count they have no way to clear -- a number that follows
+   * them around the site and cannot be acted on.
+   */
+  await sql`
+    update messages set read_at = now()
+    where recipient_id = ${userId} and sender_id = ${otherId} and read_at is null
+  `;
+  return rows.reverse();
+}
+
+/**
+ * How much of this conversation the window is hiding.
+ *
+ * Separate from `thread` because an empty section and a withheld one must not look
+ * alike: "you have no older messages" and "there are 340 more, behind the tier you
+ * did not buy" are different sentences, and a page that cannot tell them apart
+ * reads as data loss.
+ */
+export async function olderMessageCount({ userId, otherId, sinceDays }) {
+  const days =
+    Number.isFinite(Number(sinceDays)) && Number(sinceDays) > 0 ? Number(sinceDays) : null;
+  if (days === null) return 0;
+  const [row] = await sql`
+    select count(*)::int as n
+    from messages
+    where ((sender_id = ${userId} and recipient_id = ${otherId})
+        or (sender_id = ${otherId} and recipient_id = ${userId}))
+      and created_at <= now() - make_interval(days => ${days}::int)
+  `;
+  return row?.n ?? 0;
+}
+
+/**
+ * The inbox: one row per correspondent, with the latest message.
+ *
+ * distinct on is the right tool and the reason the order by starts with the same
+ * expression it distinguishes on -- Postgres requires that, and getting it wrong
+ * returns an arbitrary message per thread rather than the newest.
+ */
+export async function conversations({ userId, limit = 50 }) {
+  return sql`
+    select distinct on (other_id)
+      other_id, u.handle, u.display_name, m.body, m.created_at,
+      (m.recipient_id = ${userId} and m.read_at is null) as unread,
+      m.sender_id = ${userId} as outgoing
+    from (
+      select *,
+             case when sender_id = ${userId} then recipient_id else sender_id end as other_id
+      from messages
+      where sender_id = ${userId} or recipient_id = ${userId}
+    ) m
+    join users u on u.id = m.other_id
+    order by other_id, m.created_at desc
+    limit ${Math.min(Math.max(Number(limit) || 50, 1), 200)}
+  `;
+}
+
+export async function unreadMessageCount(userId) {
+  if (!userId) return 0;
+  const [row] = await sql`
+    select count(*)::int as n from messages where recipient_id = ${userId} and read_at is null
+  `;
+  return row.n;
+}
+
+/* ------------------------------------------------------------- membership -- */
+
+/**
+ * The term this account currently holds, if any.
+ *
+ * `memberships` has one row per term paid for, so "are they a member" is a
+ * question about the furthest-out expiry rather than about a flag -- which is why
+ * there is no `users.is_premium` to fall out of step with what was actually paid
+ * for. Renewals stack, so ordering by expires_at and taking the first is both the
+ * current term and the answer.
+ */
+export async function activeMembership(userId) {
+  if (!userId) return null;
+  const [row] = await sql`
+    select id, user_id, payment_id, status, started_at, expires_at, price_cents, currency
+    from memberships
+    where user_id = ${userId} and status = 'active' and expires_at > now()
+    order by expires_at desc
+    limit 1
+  `;
+  return row ?? null;
+}
+
+/** Every term ever bought, newest first. For the account page's receipts. */
+export async function membershipTerms(userId, { limit = 20 } = {}) {
+  if (!userId) return [];
+  return sql`
+    select id, status, started_at, expires_at, price_cents, currency, created_at
+    from memberships
+    where user_id = ${userId}
+    order by expires_at desc
+    limit ${Math.min(Math.max(Number(limit) || 20, 1), 100)}
+  `;
+}
+
+/**
+ * Who this person has brought in, and whether any of them has ever paid.
+ *
+ * The paid flag is the honest number to show beside an earnings figure: an invite
+ * that was accepted is not an invite that earned anything, and a page reporting
+ * only the first reads as a promise.
+ */
+export async function invitedAccounts(inviterId, { limit = 50 } = {}) {
+  if (!inviterId) return [];
+  return sql`
+    select ic.invited_user_id, ic.claimed_at,
+           u.handle::text as handle, u.display_name,
+           exists (select 1 from referral_commissions rc
+                   where rc.buyer_id = ic.invited_user_id and rc.referrer_id = ${inviterId})
+             as has_earned
+    from invite_claims ic
+    join users u on u.id = ic.invited_user_id
+    where ic.inviter_id = ${inviterId}
+    order by ic.claimed_at desc
+    limit ${Math.min(Math.max(Number(limit) || 50, 1), 200)}
+  `;
+}
+
+/* ------------------------------------------------------------ commissions -- */
+
+/**
+ * What this account has earned, split by whether it has been settled.
+ *
+ * Grouped by currency rather than summed across it. Adding a USD commission to a
+ * EUR one produces a number that is wrong in a way nobody notices until somebody
+ * is paid it, and this ledger has a currency column precisely so that cannot
+ * happen here.
+ */
+export async function commissionSummary(referrerId) {
+  if (!referrerId) return [];
+  return sql`
+    select currency,
+           count(*)::int as n,
+           coalesce(sum(amount_cents) filter (where status = 'accrued'), 0)::int as accrued_cents,
+           coalesce(sum(amount_cents) filter (where status = 'paid'), 0)::int as paid_cents
+    from referral_commissions
+    where referrer_id = ${referrerId}
+    group by currency
+    order by currency
+  `;
+}
+
+/** The individual earnings, newest first. Never names what the buyer bought. */
+export async function commissionLedger(referrerId, { limit = 50 } = {}) {
+  if (!referrerId) return [];
+  return sql`
+    select rc.id, rc.amount_cents, rc.currency, rc.rate_bps, rc.status,
+           rc.created_at, rc.paid_at,
+           u.handle::text as buyer_handle, u.display_name as buyer_name
+    from referral_commissions rc
+    join users u on u.id = rc.buyer_id
+    where rc.referrer_id = ${referrerId}
+    order by rc.created_at desc
+    limit ${Math.min(Math.max(Number(limit) || 50, 1), 200)}
+  `;
+}
+
+/**
+ * Where to send this account's commission.
+ *
+ * Address and chain move together or not at all -- the database has a constraint
+ * saying so, because an address without a chain is not a payee: a BTC address is
+ * not somewhere an ETH payout can land. Clearing one clears both.
+ */
+export async function setPayoutInstruction({ userId, address, chain }) {
+  const address_ = String(address ?? '').trim() || null;
+  const chain_ =
+    String(chain ?? '')
+      .trim()
+      .toUpperCase() || null;
+  const usable = address_ && chain_;
+  const [row] = await sql`
+    update users set
+      payout_address = ${usable ? address_.slice(0, 120) : null},
+      payout_chain = ${usable ? chain_.slice(0, 16) : null}
+    where id = ${userId}
+    returning payout_address, payout_chain
+  `;
+  return row ?? null;
+}
+
+/* ------------------------------------------------- who a list is open to -- */
+
+/**
+ * The people this owner could name on their list, and which are already named.
+ *
+ * Candidates are mutual follows: somebody this account follows who follows it
+ * back. That is a suggestion, not the rule -- the rule is the grant row. Returning
+ * everybody eligible rather than only the current grants is what gives the owner a
+ * way to add the next person; a picker showing only who is already on the list
+ * cannot grow.
+ */
+export async function shareCandidates(userId) {
+  if (!userId) return [];
+  return sql`
+    select u.id, u.handle::text as handle, u.display_name,
+           exists (
+             select 1 from playlist_share_grants g
+             join user_playlists p on p.id = g.playlist_id
+             where p.user_id = ${userId} and g.audience_user_id = u.id
+           ) as granted
+    from user_follows mine
+    join user_follows theirs
+      on theirs.follower_id = mine.followee_id and theirs.followee_id = ${userId}
+    join users u on u.id = mine.followee_id
+    where mine.follower_id = ${userId}
+    order by coalesce(u.display_name, u.handle::text)
+    limit 200
+  `;
+}
+
+/**
+ * Add or remove one named person from this owner's list.
+ *
+ * Keyed through the owner's own playlist row, so there is no playlist id a caller
+ * could pass to hand out somebody else's line. A grant for an account that does
+ * not exist cannot be written -- the foreign key says so -- which keeps a mistyped
+ * id from silently becoming a row that matches nothing.
+ */
+export async function setPlaylistShareGrant({ userId, audienceUserId, allowed }) {
+  if (!userId || !audienceUserId || userId === audienceUserId) return false;
+  if (allowed) {
+    const [row] = await sql`
+      insert into playlist_share_grants (playlist_id, audience_user_id)
+      select p.id, ${audienceUserId}::uuid from user_playlists p where p.user_id = ${userId}
+      on conflict do nothing
+      returning audience_user_id
+    `;
+    return Boolean(row);
+  }
+  await sql`
+    delete from playlist_share_grants g
+    using user_playlists p
+    where g.playlist_id = p.id and p.user_id = ${userId}
+      and g.audience_user_id = ${audienceUserId}::uuid
+  `;
+  return true;
 }
