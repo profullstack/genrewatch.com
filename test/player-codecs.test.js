@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { codecName, effectiveCodec, unplayableReason } from '../apps/web/src/client/codecs.js';
+import { codecName, mseCandidates, unplayableReason } from '../apps/web/src/client/codecs.js';
 import { isTvBrowser, playerConfig, tvBrowserType } from '../apps/web/src/client/tv.js';
 
 /**
@@ -21,13 +21,22 @@ const plainBrowser = (type) => /avc1|mp4a\.40/.test(type);
 /**
  * Chromium, answering exactly as it really does.
  *
- * The difference from `plainBrowser` is the whole of the Silk bug: Chromium takes
- * AAC object types 2, 5 and 29 and refuses every other one, including 1 (Main).
- * Verified against Chrome 152 rather than assumed --
- * `MediaSource.isTypeSupported('audio/mp4; codecs="mp4a.40.1"')` is false, and
- * Amazon Silk is Chromium.
+ * Every line of this was measured in Chrome 152 rather than assumed, because
+ * guessing at it is what produced two rounds of channels being refused:
+ *
+ *   YES audio/mpeg                        YES audio/mp4; codecs="mp4a.40.2"
+ *   no  audio/mp4; codecs="mp3"           YES audio/mp4; codecs="mp4a.40.5"
+ *   no  audio/mp4; codecs="mp4a.69"       YES audio/mp4; codecs="mp4a.40.29"
+ *   no  audio/mp4; codecs="mp4a.40.1"     YES audio/mp4; codecs="opus"
+ *   no  audio/mp4; codecs="ac-3" / "ec-3" no  video/mp4; codecs="hvc1…" / "hev1…"
+ *
+ * Amazon Silk is Chromium, so this is the Fire TV's answer sheet too.
  */
-const chromium = (type) => /avc1|mp4a\.40\.(2|5|29)\b/.test(type);
+const chromium = (type) =>
+  /avc1/.test(type) ||
+  /mp4a\.40\.(2|5|29)\b/.test(type) ||
+  /codecs="opus"/i.test(type) ||
+  type === 'audio/mpeg';
 
 describe('naming a codec', () => {
   test('the names are the ones a person would recognise', () => {
@@ -120,26 +129,52 @@ describe('what this browser can actually decode', () => {
  * Source Extensions; the check was asking MSE about the codec the provider's
  * transport stream DECLARED, which is a string MSE is never handed.
  */
-describe('the declared codec is not the one MSE gets', () => {
+describe('what the demuxer declares is not what MSE is handed', () => {
   test('every AAC object type is asked about as LC', () => {
     // The remuxer emits 2 or 5 depending on platform and sampling rate. It never
     // emits what the ADTS header said.
-    expect(effectiveCodec('mp4a.40.1')).toBe('mp4a.40.2');
-    expect(effectiveCodec('mp4a.40.2')).toBe('mp4a.40.2');
-    expect(effectiveCodec('mp4a.40.5')).toBe('mp4a.40.2');
-    expect(effectiveCodec('mp4a.40.29')).toBe('mp4a.40.2');
+    for (const declared of ['mp4a.40.1', 'mp4a.40.2', 'mp4a.40.5', 'mp4a.40.29']) {
+      expect(mseCandidates('audio', declared)).toEqual(['audio/mp4; codecs="mp4a.40.2"']);
+    }
   });
 
-  test('codecs the remuxer passes through are left exactly alone', () => {
-    // ts-demuxer sets originalCodec equal to codec for all of these, and video is
-    // never rewritten, so the declared string IS the effective one.
-    expect(effectiveCodec('ac-3')).toBe('ac-3');
-    expect(effectiveCodec('ec-3')).toBe('ec-3');
-    expect(effectiveCodec('opus')).toBe('opus');
-    expect(effectiveCodec('mp3')).toBe('mp3');
-    expect(effectiveCodec('hvc1.1.6.L93.B0')).toBe('hvc1.1.6.L93.B0');
-    expect(effectiveCodec('avc1.64001f')).toBe('avc1.64001f');
-    expect(effectiveCodec(null)).toBeNull();
+  test('MP3 is asked about as a container, not as a codec', () => {
+    // The one that was missed first time round. mp4-remuxer sets
+    // _mp3UseMpegAudio = !Browser.firefox and then emits container 'audio/mpeg'
+    // with the codec field CLEARED, so `audio/mp4; codecs="mp3"` is a string no
+    // browser but Firefox is ever handed.
+    expect(mseCandidates('audio', 'mp3')).toEqual(['audio/mpeg', 'audio/mp4; codecs="mp3"']);
+  });
+
+  test('Opus is asked about in both the spellings Safari cares about', () => {
+    // mse-controller rewrites the codec to "Opus" on Safari and leaves it lower
+    // case everywhere else.
+    expect(mseCandidates('audio', 'opus')).toEqual([
+      'audio/mp4; codecs="opus"',
+      'audio/mp4; codecs="Opus"',
+    ]);
+  });
+
+  test('codecs the remuxer passes through are asked about exactly as declared', () => {
+    // ts-demuxer sets originalCodec equal to codec for these, and video is never
+    // rewritten, so the declared string IS the effective one.
+    expect(mseCandidates('audio', 'ac-3')).toEqual(['audio/mp4; codecs="ac-3"']);
+    expect(mseCandidates('audio', 'ec-3')).toEqual(['audio/mp4; codecs="ec-3"']);
+    expect(mseCandidates('video', 'hvc1.1.6.L93.B0')).toEqual([
+      'video/mp4; codecs="hvc1.1.6.L93.B0"',
+    ]);
+    expect(mseCandidates('video', 'avc1.64001f')).toEqual(['video/mp4; codecs="avc1.64001f"']);
+  });
+
+  test('nothing to ask about produces no question', () => {
+    expect(mseCandidates('audio', null)).toEqual([]);
+    expect(mseCandidates(null, 'mp3')).toEqual([]);
+  });
+
+  test('the audio rewrites do not leak onto the video track', () => {
+    // A video codec that happened to be spelled like one of these must still be
+    // asked about as video/mp4, not quietly turned into audio/mpeg.
+    expect(mseCandidates('video', 'mp3')).toEqual(['video/mp4; codecs="mp3"']);
   });
 
   test('AAC Main plays on Silk instead of being refused', () => {
@@ -172,6 +207,27 @@ describe('the declared codec is not the one MSE gets', () => {
     // is still the only thing that stops a black rectangle with no explanation.
     expect(unplayableReason({ videoCodec: 'hvc1.1.6.L93.B0' }, chromium)).toContain('H.265');
     expect(unplayableReason({ audioCodec: 'ec-3' }, chromium)).toContain('Dolby');
+  });
+
+  test('an MP3 channel plays instead of being sent to VLC', () => {
+    // The second report: "This channel is MP3 audio, which this browser cannot
+    // decode." It could. Chrome takes audio/mpeg, which is what it is handed.
+    const reason = unplayableReason({ videoCodec: 'avc1.64001f', audioCodec: 'mp3' }, chromium);
+    expect(reason).toBeNull();
+  });
+
+  test('a browser with no MP3 at all is still told so', () => {
+    // Neither form supported means the veto is right and the reader needs VLC.
+    const noMp3 = (type) => /avc1/.test(type);
+    const reason = unplayableReason({ videoCodec: 'avc1.64001f', audioCodec: 'mp3' }, noMp3);
+    expect(reason).toContain('MP3 audio');
+  });
+
+  test('Firefox takes the MP3 form Chrome refuses, and is not lectured either', () => {
+    // The mirror case: audio/mpeg is refused, audio/mp4;codecs="mp3" is taken.
+    // Exactly one candidate passes, and one is enough.
+    const firefox = (type) => /avc1/.test(type) || type === 'audio/mp4; codecs="mp3"';
+    expect(unplayableReason({ videoCodec: 'avc1.64001f', audioCodec: 'mp3' }, firefox)).toBeNull();
   });
 
   test('MP2 audio is still named MP2 rather than swept up as AAC', () => {

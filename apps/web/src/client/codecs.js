@@ -17,9 +17,10 @@
  * as H.265, which this browser cannot decode" is an answer, and the generic
  * sentence was not.
  *
- * The check has to ask about the right codec, though, and for a while it did not.
- * See effectiveCodec() below: what the transport stream DECLARES and what the
- * remuxer EMITS are different strings for AAC, and asking about the declared one
+ * The check has to ask about the right THING, though, and twice now it did not.
+ * See mseCandidates() below: what the transport stream declares and what the
+ * remuxer hands to MSE are different for AAC (a different codec string) and for
+ * MP3 (a different container entirely), and asking about the declared form
  * refused channels that would have played.
  */
 
@@ -52,40 +53,61 @@ export function codecName(codec) {
 }
 
 /**
- * The codec the browser is actually going to be asked for.
+ * The mime types MSE is actually going to be asked to take.
  *
  * MEDIA_INFO reports what the TRANSPORT STREAM declared. The source buffer is
- * opened with what the REMUXER emits, and for AAC those are routinely different
- * strings. mpegts.js rewrites every AAC AudioSpecificConfig before it builds the
- * init segment -- LC on Android, HE-AAC elsewhere, never the object type the ADTS
- * header carried -- so a channel that announces mp4a.40.1 is handed to MSE as
- * mp4a.40.2 and plays. In the demuxer's own media info that rewrite is invisible:
- * `audioCodec` is set from `originalCodec`, which is the header's value.
+ * opened with what the REMUXER emits, and those are not the same thing -- which
+ * is the mistake this function exists to stop being made a third time. Both known
+ * cases refused channels that play perfectly well:
  *
- * Asking MSE about mp4a.40.1 is therefore asking about a codec nothing will ever
- * be handed. Chrome answers no -- it accepts object types 2, 5 and 29 and nothing
- * else -- and Amazon Silk is Chromium, so on a Fire TV, which is the screen this
- * player exists for, that no tore down a stream that had already connected and
- * would have played. AAC Main in the header with ordinary LC in the payload is
- * the single most common thing an IPTV provider mis-signals.
+ * AAC is a different CODEC STRING. mpegts.js rewrites every AudioSpecificConfig
+ * before it builds the init segment -- LC on Android, HE-AAC elsewhere, never the
+ * object type the ADTS header carried -- so a channel announcing mp4a.40.1 is
+ * handed to MSE as mp4a.40.2 and plays. Chrome accepts object types 2, 5 and 29
+ * and nothing else, and Amazon Silk is Chromium, so asking about the declared
+ * mp4a.40.1 tore down a connected stream on exactly the screen this player is
+ * for. AAC Main in the header over ordinary LC payload is the single most common
+ * thing an IPTV provider mis-signals.
  *
- * Only AAC needs this. ts-demuxer sets `originalCodec` equal to `codec` for AC-3,
- * E-AC-3, Opus and MP3, and video is never rewritten at all, so for everything
- * else the declared codec IS the effective one and the check stands as it was.
+ * MP3 is a different CONTAINER, which is the subtler one and was missed on the
+ * first pass. `mp4-remuxer.js` sets `_mp3UseMpegAudio = !Browser.firefox`, and on
+ * every other browser it emits `container: 'audio/mpeg'` with the codec field
+ * cleared -- so the source buffer is opened as bare `audio/mpeg`, never
+ * `audio/mp4; codecs="mp3"`. Chrome says yes to the first and no to the second,
+ * so the codec-shaped question refused every MP3 channel.
+ *
+ * Several candidates rather than one, because for two of these mpegts.js picks
+ * per browser and this decides nothing: whichever form THIS browser will be
+ * handed is the one that has to pass, and only that one is ever true here anyway.
+ * That also means the check survives mpegts.js changing which it prefers.
+ *
+ * @returns {string[]} empty when there is nothing to ask about.
  */
-export function effectiveCodec(codec) {
-  if (!codec) return codec;
-  /*
-   * Any AAC object type collapses to LC.
-   *
-   * The remuxer picks 2 or 5 depending on the platform and the sampling rate, and
-   * both are supported everywhere AAC is supported at all -- so LC is the honest
-   * thing to ask about. A browser that says no to it has no AAC decoder, which is
-   * worth telling a reader; a browser that says no only to Main is answering
-   * about a string it will never be shown.
-   */
-  if (/^mp4a\.40\./i.test(codec)) return 'mp4a.40.2';
-  return codec;
+export function mseCandidates(kind, codec) {
+  if (!codec || !kind) return [];
+
+  if (kind === 'audio') {
+    /*
+     * Any AAC object type collapses to LC.
+     *
+     * The remuxer picks 2 or 5 by platform and sampling rate, and both are
+     * supported everywhere AAC is supported at all -- so LC is the honest thing
+     * to ask. A browser that says no to it has no AAC decoder, which is worth
+     * telling a reader; a browser that says no only to Main is answering about a
+     * string it will never be shown.
+     */
+    if (/^mp4a\.40\./i.test(codec)) return ['audio/mp4; codecs="mp4a.40.2"'];
+    // Firefox is the one that takes MP3 inside MP4; everything else gets the raw
+    // elementary stream, which is what mpegts.js hands it.
+    if (/^mp3$/i.test(codec)) return ['audio/mpeg', 'audio/mp4; codecs="mp3"'];
+    // mse-controller rewrites the codec to "Opus" on Safari and leaves it lower
+    // case everywhere else, and Safari is fussy about which it is given.
+    if (/^opus$/i.test(codec)) return ['audio/mp4; codecs="opus"', 'audio/mp4; codecs="Opus"'];
+  }
+
+  // Everything else is passed through untouched: ts-demuxer sets `originalCodec`
+  // equal to `codec` for AC-3 and E-AC-3, and video is never rewritten at all.
+  return [`${kind}/mp4; codecs="${codec}"`];
 }
 
 /**
@@ -106,16 +128,18 @@ export function unplayableReason(info, isTypeSupported) {
   const bad = [];
   for (const [kind, codec] of checks) {
     if (!codec) continue;
-    let ok = false;
-    try {
-      // The effective codec is what MSE is about to be handed. The declared one
-      // is what the reader is told about, because that is what their provider
-      // sends and what they would see named in VLC.
-      ok = isTypeSupported(`${kind}/mp4; codecs="${effectiveCodec(codec)}"`);
-    } catch {
-      // A browser that throws on a malformed codec string is telling us no.
-      ok = false;
-    }
+    // Any candidate passing is enough: they are the forms this one stream could
+    // be handed to MSE as, not a list of things it needs all of. The reader is
+    // still told about the DECLARED codec, because that is what their provider
+    // sends and what they would see named in VLC.
+    const ok = mseCandidates(kind, codec).some((type) => {
+      try {
+        return isTypeSupported(type);
+      } catch {
+        // A browser that throws on a malformed codec string is telling us no.
+        return false;
+      }
+    });
     if (!ok) bad.push(codecName(codec));
   }
 
