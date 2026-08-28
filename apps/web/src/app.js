@@ -2605,8 +2605,20 @@ app.get('/manifest.webmanifest', (c) =>
   }),
 );
 
+/*
+ * `Allow: /` with nothing excluded, which is what this said, is an invitation to
+ * crawl the sign-in page -- and one SEO bot took it, fetching /login about once a
+ * second, forty-seven percent of all traffic to the site. It was not doing
+ * anything wrong; nobody had told it not to.
+ *
+ * None of these paths should ever be crawled or indexed. They are the same page
+ * for every signed-out visitor, they carry nothing a search result should point
+ * at, and /api/ answers callers rather than readers.
+ */
 app.get('/robots.txt', (c) =>
-  c.text(`User-agent: *\nAllow: /\nSitemap: ${config.siteUrl}/sitemap.xml\n`),
+  c.text(
+    `User-agent: *\nAllow: /\nDisallow: /login\nDisallow: /signup\nDisallow: /auth/\nDisallow: /api/\nSitemap: ${config.siteUrl}/sitemap.xml\n`,
+  ),
 );
 
 const STATIC_FILES = [
