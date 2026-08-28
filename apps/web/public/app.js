@@ -700,7 +700,12 @@ initNavigation();
 /* --------------------------------------------------- your own channels -- */
 
 /**
- * On a phone, stop offering the download that cannot work.
+ * Offer each device the hand-off that works on it, and only that one.
+ *
+ * There are two ways off this page and into a real player, and they are exact
+ * opposites: a .m3u file, and a deep link into a player app. Neither works
+ * everywhere, and the page ships both because the markup is identical for every
+ * device -- so one of them is removed here, once it is known which device this is.
  *
  * The .m3u hand-off is right on a desktop, where the file opens in whatever player
  * is registered. On iOS it is a trap with two endings: Safari either offers to
@@ -709,20 +714,40 @@ initNavigation();
  * has no demuxer for it, which is a missing codec rather than a missing hint -- no
  * header changes it.
  *
- * So the file link is dropped on touch devices and the player deep links stay,
- * because those open an app that CAN demux TS. Done here rather than by sniffing
- * the User-Agent server-side: the markup stays the same for everyone, and a laptop
- * with a touchscreen keeps the download it can actually use.
+ * The deep links are the mirror image, and that was missed for a while. Both are
+ * `x-callback-url` schemes, which VLC and Infuse register on iOS and Android and
+ * which have no meaning on a desktop: the desktop app opens, is handed the whole
+ * `vlc-x-callback://...` string as its MRL, and fails to open it. So the button
+ * appeared to do something and then produced a player error, while the .m3u next to
+ * it worked -- which is exactly what was reported.
+ *
+ * Done here rather than by sniffing the User-Agent server-side: the markup stays
+ * the same for everyone, and a laptop with a touchscreen keeps the download it can
+ * actually use.
  */
 function initOwnChannelActions(root = document) {
   // Pointer, not screen width. A touchscreen laptop still has a filesystem and a
   // registered handler; a phone has neither.
   const phone = window.matchMedia?.('(hover: none) and (pointer: coarse)')?.matches;
-  if (!phone) return;
 
   for (const actions of root.querySelectorAll('.own-channel-actions')) {
     if (actions.dataset.mobile) continue;
     actions.dataset.mobile = '1';
+
+    if (!phone) {
+      /*
+       * A desktop keeps the file and loses the deep links.
+       *
+       * Not rewritten to some desktop equivalent, because there is no reliable
+       * one: `vlc://` is registered on some platforms and not others, and what it
+       * does with a URL after the scheme differs between them. The .m3u beside
+       * these opens VLC and plays, which is the thing the buttons were for.
+       */
+      for (const a of actions.querySelectorAll('a[href^="vlc-x-callback:"], a[href^="infuse:"]')) {
+        a.remove();
+      }
+      continue;
+    }
 
     for (const a of actions.querySelectorAll('a[href*="playlist.m3u"]')) a.remove();
 
@@ -1084,6 +1109,27 @@ function initPlayerSection(section) {
   };
 
   /*
+   * Something is being worked through, and the reader should not have to guess.
+   *
+   * Distinct from fail() in the two ways that matter: nothing is torn down, and
+   * the buttons keep saying Stop, because the channel they pressed is still the
+   * channel they are going to get. The player calls this while it rebuilds itself
+   * around a stream that changed shape or a connection that dropped -- roughly ten
+   * seconds during which a frozen picture with no message reads as a dead page.
+   *
+   * Same element and same class as fail() on purpose, so a notice and an error can
+   * never stack up two paragraphs deep; whichever came last is the true one.
+   */
+  const notice = (message) => {
+    section.querySelector('.player-error')?.remove();
+    if (!message) return;
+    const p = document.createElement('p');
+    p.className = 'feedback player-error';
+    p.textContent = message;
+    section.prepend(p);
+  };
+
+  /*
    * Play is offered per row, once that row's channel has answered.
    *
    * The button ships disabled from the server for a different reason -- this
@@ -1186,7 +1232,7 @@ function initPlayerSection(section) {
       stage.append(video);
       button.closest('li')?.after(stage);
 
-      stop = player.attach(video, button.dataset.play, fail);
+      stop = player.attach(video, button.dataset.play, fail, notice);
       button.dataset.playing = '1';
       button.textContent = 'Stop';
     });

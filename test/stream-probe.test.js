@@ -164,11 +164,23 @@ describe('the phone guard', () => {
 
     const removed = [];
     const appended = [];
+    // Selector-aware, because the function now asks two different questions: a
+    // phone loses the file link and a desktop loses the app deep links.
     const actions = {
       dataset: {},
-      querySelectorAll: () => [
-        { getAttribute: () => '/events/1/playlist.m3u?n=0', remove: () => removed.push('m3u') },
-      ],
+      querySelectorAll: (sel) => {
+        if (sel.includes('playlist.m3u')) {
+          return [
+            { getAttribute: () => '/events/1/playlist.m3u?n=0', remove: () => removed.push('m3u') },
+          ];
+        }
+        return [
+          {
+            getAttribute: () => 'vlc-x-callback://x-callback-url/stream?url=x',
+            remove: () => removed.push('vlc'),
+          },
+        ];
+      },
       closest: () => section,
     };
     const section = { querySelector: () => null, append: (el) => appended.push(el) };
@@ -188,8 +200,17 @@ describe('the phone guard', () => {
 
   test('a desktop keeps the download it can actually use', async () => {
     const { removed, appended } = await run({ phone: false });
-    expect(removed).toEqual([]);
+    expect(removed).not.toContain('m3u');
+    // No hint either: "Get VLC if nothing happens when you tap" is phone advice.
     expect(appended).toEqual([]);
+  });
+
+  test('a desktop loses the deep links, which are phone app schemes', async () => {
+    // `vlc-x-callback://` and `infuse://` mean nothing to a desktop app: it opens,
+    // is handed the whole scheme string as its MRL, and fails on it -- which read
+    // as the button being broken while the .m3u beside it played.
+    const { removed } = await run({ phone: false });
+    expect(removed).toEqual(['vlc']);
   });
 
   test('it is keyed on pointer, not on screen width', async () => {

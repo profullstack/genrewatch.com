@@ -16,6 +16,11 @@
  * feature costs by an order of magnitude -- but "your provider sends this channel
  * as H.265, which this browser cannot decode" is an answer, and the generic
  * sentence was not.
+ *
+ * The check has to ask about the right codec, though, and for a while it did not.
+ * See effectiveCodec() below: what the transport stream DECLARES and what the
+ * remuxer EMITS are different strings for AAC, and asking about the declared one
+ * refused channels that would have played.
  */
 
 /**
@@ -33,12 +38,53 @@ const NAMES = [
   [/^(ac-3|ac3)/i, 'Dolby Digital audio'],
   [/^(dts)/i, 'DTS audio'],
   [/^(mp4a\.69|mp4a\.6b)/i, 'MP2 audio'],
+  [/^mp3$/i, 'MP3 audio'],
+  // Last of the mp4a rules on purpose: 69 and 6b are MPEG-2 layer II, not AAC at
+  // all, so they have to be matched before this catches the rest.
+  [/^mp4a\.40\./i, 'AAC audio'],
 ];
 
 /** What to call a codec string in a sentence. */
 export function codecName(codec) {
   if (!codec) return null;
   for (const [re, name] of NAMES) if (re.test(codec)) return name;
+  return codec;
+}
+
+/**
+ * The codec the browser is actually going to be asked for.
+ *
+ * MEDIA_INFO reports what the TRANSPORT STREAM declared. The source buffer is
+ * opened with what the REMUXER emits, and for AAC those are routinely different
+ * strings. mpegts.js rewrites every AAC AudioSpecificConfig before it builds the
+ * init segment -- LC on Android, HE-AAC elsewhere, never the object type the ADTS
+ * header carried -- so a channel that announces mp4a.40.1 is handed to MSE as
+ * mp4a.40.2 and plays. In the demuxer's own media info that rewrite is invisible:
+ * `audioCodec` is set from `originalCodec`, which is the header's value.
+ *
+ * Asking MSE about mp4a.40.1 is therefore asking about a codec nothing will ever
+ * be handed. Chrome answers no -- it accepts object types 2, 5 and 29 and nothing
+ * else -- and Amazon Silk is Chromium, so on a Fire TV, which is the screen this
+ * player exists for, that no tore down a stream that had already connected and
+ * would have played. AAC Main in the header with ordinary LC in the payload is
+ * the single most common thing an IPTV provider mis-signals.
+ *
+ * Only AAC needs this. ts-demuxer sets `originalCodec` equal to `codec` for AC-3,
+ * E-AC-3, Opus and MP3, and video is never rewritten at all, so for everything
+ * else the declared codec IS the effective one and the check stands as it was.
+ */
+export function effectiveCodec(codec) {
+  if (!codec) return codec;
+  /*
+   * Any AAC object type collapses to LC.
+   *
+   * The remuxer picks 2 or 5 depending on the platform and the sampling rate, and
+   * both are supported everywhere AAC is supported at all -- so LC is the honest
+   * thing to ask about. A browser that says no to it has no AAC decoder, which is
+   * worth telling a reader; a browser that says no only to Main is answering
+   * about a string it will never be shown.
+   */
+  if (/^mp4a\.40\./i.test(codec)) return 'mp4a.40.2';
   return codec;
 }
 
@@ -62,7 +108,10 @@ export function unplayableReason(info, isTypeSupported) {
     if (!codec) continue;
     let ok = false;
     try {
-      ok = isTypeSupported(`${kind}/mp4; codecs="${codec}"`);
+      // The effective codec is what MSE is about to be handed. The declared one
+      // is what the reader is told about, because that is what their provider
+      // sends and what they would see named in VLC.
+      ok = isTypeSupported(`${kind}/mp4; codecs="${effectiveCodec(codec)}"`);
     } catch {
       // A browser that throws on a malformed codec string is telling us no.
       ok = false;
