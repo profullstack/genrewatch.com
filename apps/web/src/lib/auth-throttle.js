@@ -46,33 +46,41 @@
  * public sign-in page.
  */
 
-/** Attempts allowed from one caller in a quiet period before the penalty starts. */
-const FREE_ATTEMPTS = 8;
-
-/** The first penalty. Doubles with each subsequent trip. */
-const BASE_LOCK_MS = 60 * 1000;
-
 /**
- * The ceiling on a single lock.
+ * Two curves, because the two things being defended are not alike.
  *
- * A day, because the point is to make persistence pointless rather than to ban
- * anybody: one address can be a whole office or a mobile carrier's NAT, and a
- * permanent block on a public sign-in page eventually catches a real person with
- * no way to appeal it.
+ * `AUTH` guards the endpoints that try a credential. Eight attempts is more than
+ * anybody types by accident, and a caller that keeps going deserves the day-long
+ * ceiling.
+ *
+ * `VIEW` guards GET /login, which is a page a real person looks at. The shape is
+ * the same -- doubling, so a crawler at one a second is priced out within a
+ * minute -- but the allowance is far wider and the ceiling is an hour rather than
+ * a day. That matters because this is the one lock that can catch somebody with
+ * nothing to prove: an office or a mobile carrier behind one address shares this
+ * counter, and a person who cannot reach the sign-in page has no way around it.
+ * Thirty views before any penalty, and an hour is the worst a false positive can
+ * cost.
+ *
+ * In both, DECAY must exceed MAX_LOCK. If it does not, a caller that waits out
+ * the longest lock comes back to find its strikes already decayed, the penalty
+ * can never grow past that point, and the escalation quietly flattens into the
+ * fixed window this was built instead of. `the penalty keeps escalating` covers
+ * it; keep that test.
  */
-const MAX_LOCK_MS = 24 * 60 * 60 * 1000;
+export const AUTH = {
+  FREE_ATTEMPTS: 8,
+  BASE_LOCK_MS: 60 * 1000,
+  MAX_LOCK_MS: 24 * 60 * 60 * 1000,
+  DECAY_MS: 48 * 60 * 60 * 1000,
+};
 
-/**
- * How long a caller must be quiet before its strikes are forgotten.
- *
- * **Must be longer than `MAX_LOCK_MS`.** If it is shorter, a caller that earned
- * the longest lock comes back the moment it expires to find its strikes already
- * decayed, so the penalty can never grow past that point and the escalation
- * flattens into the fixed window this was built instead of. Two days against a
- * one-day ceiling, so waiting out even the longest lock is not by itself enough
- * to be forgiven. `the penalty keeps escalating` covers this; keep that test.
- */
-const DECAY_MS = 48 * 60 * 60 * 1000;
+export const VIEW = {
+  FREE_ATTEMPTS: 30,
+  BASE_LOCK_MS: 60 * 1000,
+  MAX_LOCK_MS: 60 * 60 * 1000,
+  DECAY_MS: 2 * 60 * 60 * 1000,
+};
 
 /** The key space is the internet, so it needs a bound. */
 const MAX_TRACKED = 50_000;
@@ -80,10 +88,17 @@ const MAX_TRACKED = 50_000;
 /** @type {Map<string, { strikes: number, lockedUntil: number, lastAt: number }>} */
 const seen = new Map();
 
-/** @param {number} now */
+/**
+ * @param {number} now
+ *
+ * Uses the LONGEST decay of the two curves, since the map is shared and a key
+ * does not carry which curve made it. Sweeping too late costs a little memory;
+ * sweeping too early forgives somebody who has not earned it.
+ */
 function sweep(now) {
+  const longest = Math.max(AUTH.DECAY_MS, VIEW.DECAY_MS);
   for (const [key, entry] of seen) {
-    if (entry.lockedUntil <= now && now - entry.lastAt > DECAY_MS) seen.delete(key);
+    if (entry.lockedUntil <= now && now - entry.lastAt > longest) seen.delete(key);
   }
 
   // Still over after dropping everything expired: shed oldest-inserted first
@@ -129,9 +144,11 @@ export function callerAddress(c) {
  *
  * @param {string} identity
  * @param {number} [now] injectable clock, for tests
+ * @param {typeof AUTH} [limits] which curve to apply
  * @returns {{ ok: boolean, retryAfter: number, strikes: number, lockedUntil: number }}
  */
-export function attempt(identity, now = Date.now()) {
+export function attempt(identity, now = Date.now(), limits = AUTH) {
+  const { FREE_ATTEMPTS, BASE_LOCK_MS, MAX_LOCK_MS, DECAY_MS } = limits;
   if (seen.size >= MAX_TRACKED) sweep(now);
 
   const entry = seen.get(identity) ?? { strikes: 0, lockedUntil: 0, lastAt: now };
@@ -190,4 +207,5 @@ export function reset() {
   seen.clear();
 }
 
-export const LIMITS = { FREE_ATTEMPTS, BASE_LOCK_MS, MAX_LOCK_MS, DECAY_MS, MAX_TRACKED };
+/** Kept for the tests and for the headers a refusal carries. */
+export const LIMITS = { ...AUTH, MAX_TRACKED };

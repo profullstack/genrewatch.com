@@ -29,7 +29,7 @@ import { connection } from '@genre/queue';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
-import { attempt, callerAddress, forgive } from './lib/auth-throttle.js';
+import { attempt, callerAddress, forgive, VIEW } from './lib/auth-throttle.js';
 import { buildCalendar } from './lib/ics.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
@@ -135,6 +135,32 @@ function respond(c, { json, redirectTo, status }) {
  * checks.
  */
 export const render = async (node) => `<!doctype html>${await node.toString()}`;
+
+/**
+ * Crawlers that are not welcome here at all.
+ *
+ * AwarioBot was 47% of all requests to tipoffwatch, fetching /login about once a
+ * second from a single address. It was told to stop in robots.txt, re-read that
+ * file, and carried on -- so being polite about it is finished. It is a
+ * brand-monitoring crawler: it sends nobody here and there is nothing on this
+ * site it needs.
+ *
+ * Matched on the user agent, which a determined caller can lie about. That is
+ * fine, and worth being clear about: this is here to stop a self-identifying bot
+ * that is merely rude, not to stop somebody hostile. Anything that lies its way
+ * past this still meets the backoff below.
+ *
+ * 403 rather than 429, because there is no wait that would make this allowed.
+ */
+const BLOCKED_AGENTS = ['awariobot'];
+
+app.use('*', async (c, next) => {
+  const ua = (c.req.header('user-agent') ?? '').toLowerCase();
+  if (BLOCKED_AGENTS.some((bot) => ua.includes(bot))) {
+    return c.text('Not available to this crawler.', 403);
+  }
+  return next();
+});
 
 app.use('*', async (c, next) => {
   const sid = getCookie(c, config.session.cookie);
@@ -1525,12 +1551,12 @@ function waitFor(seconds) {
  * fires for something reaching the app directly, and lumping those together
  * would let the first eight of them lock out the rest.
  */
-function authBackoff(bucket, refuse) {
+function authBackoff(bucket, refuse, limits = undefined) {
   return async (c, next) => {
     const caller = callerAddress(c);
     if (!caller) return next();
 
-    const verdict = attempt(`${bucket}:${caller}`);
+    const verdict = attempt(`${bucket}:${caller}`, Date.now(), limits);
     if (verdict.ok) return next();
 
     console.warn(
@@ -1544,9 +1570,26 @@ function authBackoff(bucket, refuse) {
   };
 }
 
+/*
+ * The sign-in PAGE, not the forms on it.
+ *
+ * A crawler that ignores robots.txt and is not caught by the user-agent block
+ * above still gets metered here. It is the same doubling curve as the forms, on
+ * the far gentler VIEW allowance -- thirty views before any penalty and an hour
+ * at worst -- because unlike the forms this is a page a real person looks at,
+ * and the cost of being wrong is somebody who cannot reach sign-in at all.
+ */
+const viewBackoff = authBackoff(
+  'view',
+  (c, retryAfter) => c.text(`Too many requests. Try again in ${waitFor(retryAfter)}.`, 429),
+  VIEW,
+);
+
+app.get('/login', viewBackoff);
 app.get('/login', async (c) =>
   c.html(await render(<SignIn mode="login" next={c.req.query('next')} />)),
 );
+app.get('/signup', viewBackoff);
 app.get('/signup', async (c) =>
   c.html(await render(<SignIn mode="signup" next={c.req.query('next')} />)),
 );
@@ -2617,7 +2660,7 @@ app.get('/manifest.webmanifest', (c) =>
  */
 app.get('/robots.txt', (c) =>
   c.text(
-    `User-agent: *\nAllow: /\nDisallow: /login\nDisallow: /signup\nDisallow: /auth/\nDisallow: /api/\nSitemap: ${config.siteUrl}/sitemap.xml\n`,
+    `User-agent: AwarioBot\nDisallow: /\n\nUser-agent: *\nAllow: /\nDisallow: /login\nDisallow: /signup\nDisallow: /auth/\nDisallow: /api/\nSitemap: ${config.siteUrl}/sitemap.xml\n`,
   ),
 );
 
