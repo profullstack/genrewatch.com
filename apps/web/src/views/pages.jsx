@@ -1796,6 +1796,8 @@ export const Settings = ({
   prefs,
   passkeys,
   playlist,
+  playlistMasked = null,
+  playlistUnreadable = false,
   playlistNotice,
   playlistError,
   profileNotice,
@@ -1839,6 +1841,52 @@ export const Settings = ({
             </p>
           </div>
           {playlist.last_error ? <p class="feedback error">{playlist.last_error}</p> : null}
+
+          {/*
+            The address, which used to be shown nowhere at all.
+
+            Masked in the served HTML: this page is rendered per request but a
+            credential in a page is a credential in a scrollback, a screenshot and
+            a back-forward cache. The whole thing is one press away, from a route
+            that answers `no-store` -- and it is the reader's own password, so
+            showing it back to the session that supplied it discloses nothing.
+          */}
+          {playlistUnreadable ? (
+            <p class="feedback error">
+              This address can no longer be decrypted, so it cannot be refreshed or shown. Paste it
+              again below to fix it.
+            </p>
+          ) : playlistMasked ? (
+            <div class="field">
+              <label class="field-label" for="playlist-url">
+                Address
+              </label>
+              <div class="copy-row">
+                <input
+                  id="playlist-url"
+                  class="input mono"
+                  type="text"
+                  readonly
+                  value={playlistMasked}
+                  data-playlist-url
+                  spellcheck="false"
+                  aria-label="Your playlist address"
+                  autocomplete="off"
+                />
+                <button type="button" class="ghost" hidden data-playlist-reveal>
+                  Show
+                </button>
+                <button type="button" class="ghost" data-copy="#playlist-url">
+                  Copy
+                </button>
+              </div>
+              <p class="muted small">
+                Masked because it carries your provider username and password. Show reveals it, and
+                Copy takes whatever is displayed.
+              </p>
+            </div>
+          ) : null}
+
           <div class="card-actions">
             <form method="post" action="/api/playlist/refresh" class="inline">
               <button class="ghost small-btn" type="submit">
@@ -1993,28 +2041,55 @@ export const Settings = ({
         </div>
       )}
 
-      <form method="post" action="/api/playlist">
+      {/*
+        Editing, rather than removing and starting again.
+
+        The address field is optional once a list exists, and blank means "leave it
+        alone" -- that is the whole point. Renaming a list used to require pasting
+        a URL with a password in it, which meant keeping a copy of that URL
+        somewhere outside here, which is the opposite of what sealing it was for.
+
+        The name is prefilled; the address is not, because a browser that offers to
+        remember a field it has seen is how a provider password ends up in a
+        password manager under the wrong entry. Fill it with the Show button
+        instead, which asks for it deliberately.
+      */}
+      <form method="post" action="/api/playlist" data-playlist-form>
+        <h3 class="card-title">{playlist ? 'Edit your list' : 'Add a list'}</h3>
         <label class="field">
           <span>Playlist URL</span>
           <input
             type="url"
             name="url"
-            required
-            placeholder="http://your-provider.example/playlist/…"
+            required={!playlist}
+            placeholder={
+              playlist
+                ? 'Leave blank to keep the current address'
+                : 'http://your-provider.example/playlist/…'
+            }
             autocomplete="off"
+            data-playlist-input
           />
         </label>
         <label class="field">
           <span>Name (optional)</span>
-          <input type="text" name="label" placeholder="My subscription" autocomplete="off" />
+          <input
+            type="text"
+            name="label"
+            value={playlist?.label ?? ''}
+            placeholder="My subscription"
+            autocomplete="off"
+          />
         </label>
         <button class="cta" type="submit">
-          {playlist ? 'Replace list' : 'Add list'}
+          {playlist ? 'Save changes' : 'Add list'}
         </button>
       </form>
       <p class="muted small">
         The address is stored encrypted because it usually contains your username and password. Only
-        you ever see it, and removing the list deletes it.
+        you ever see it, and removing the list deletes it. Saving the same address again keeps your
+        channels and their check results — nothing is re-imported unless your provider's file has
+        actually changed.
       </p>
     </section>
 

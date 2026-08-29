@@ -4,8 +4,10 @@ import { matchTerms, normaliseTitle, parseM3u, rankChannelsForTitle } from '@gen
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 
+export { maskPlaylistUrl } from './mask.js';
 export { firstLiveChannel, probeStream } from './probe.js';
 export { claimStreamSlot, openStream, streamSlotsOpen } from './proxy.js';
+export { playlistSource } from './source.js';
 
 /**
  * Importing and reading a reader's own channel list.
@@ -39,7 +41,40 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
     throw new Error('The list must be an http:// or https:// address.');
   }
 
+  /*
+   * What was stored before this attempt, so a failed one can be undone.
+   *
+   * The address is written before the fetch, because an error has to be recorded
+   * against a row and a first-time add has no row until this runs. The cost was
+   * that a typo replaced a working address with a broken one and there was no way
+   * to read the old value back -- the credential was sealed, so "paste it again"
+   * meant "keep a copy of it somewhere else", which is exactly what sealing it was
+   * supposed to make unnecessary.
+   */
+  const previous = await q.getPlaylist(userId);
+
   await q.savePlaylist({ userId, label: label || parsed.hostname, sourceUrl: seal(url) });
+
+  /**
+   * Put back the address that was working, and say which one failed.
+   *
+   * Only when the address actually changed. A refresh, or a save of the same URL,
+   * re-submits what is already stored, and rolling that back to itself would be a
+   * write for nothing -- and would clear an error the reader is meant to see.
+   */
+  const restorePrevious = async () => {
+    if (!previous) return false;
+    // Compared unsealed: seal() carries a random nonce, so two ciphertexts of the
+    // same URL never match and a ciphertext comparison would always roll back.
+    const before = open(previous.source_url);
+    if (!before || before === url) return false;
+    await q.savePlaylist({
+      userId,
+      label: previous.label,
+      sourceUrl: previous.source_url,
+    });
+    return true;
+  };
 
   let text;
   try {
@@ -61,8 +96,13 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
     }
   } catch (err) {
     const message = err.name === 'TimeoutError' ? 'the provider did not respond' : err.message;
+    const restored = await restorePrevious();
     await q.markPlaylistError({ userId, error: message });
-    throw new Error(`Could not read that list: ${message}`);
+    throw new Error(
+      restored
+        ? `Could not read that list: ${message}. Your previous address is still saved.`
+        : `Could not read that list: ${message}`,
+    );
   }
 
   // Hash the body before parsing it. The provider offers no conditional request --
@@ -109,8 +149,15 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
   }));
 
   if (channels.length === 0) {
+    // Reached something, but not a playlist. Same rollback as a failed fetch: a
+    // URL that answers with a login page is a typo like any other.
+    const restored = await restorePrevious();
     await q.markPlaylistError({ userId, error: 'no channels found in that file' });
-    throw new Error('No channels found in that file — is it an M3U playlist?');
+    throw new Error(
+      restored
+        ? 'No channels found in that file — is it an M3U playlist? Your previous address is still saved.'
+        : 'No channels found in that file — is it an M3U playlist?',
+    );
   }
 
   await q.replacePlaylistChannels({ userId, channels });
