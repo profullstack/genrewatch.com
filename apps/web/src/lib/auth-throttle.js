@@ -47,7 +47,8 @@
  */
 
 /**
- * Two curves, because the two things being defended are not alike.
+ * Three curves, because the things being defended are not alike. The third,
+ * `MISS`, is documented at its own definition below.
  *
  * `AUTH` guards the endpoints that try a credential. Eight attempts is more than
  * anybody types by accident, and a caller that keeps going deserves the day-long
@@ -62,7 +63,7 @@
  * Thirty views before any penalty, and an hour is the worst a false positive can
  * cost.
  *
- * In both, DECAY must exceed MAX_LOCK. If it does not, a caller that waits out
+ * In all of them, DECAY must exceed MAX_LOCK. If it does not, a caller that waits out
  * the longest lock comes back to find its strikes already decayed, the penalty
  * can never grow past that point, and the escalation quietly flattens into the
  * fixed window this was built instead of. `the penalty keeps escalating` covers
@@ -82,6 +83,38 @@ export const VIEW = {
   DECAY_MS: 2 * 60 * 60 * 1000,
 };
 
+/**
+ * A third curve, for callers that keep asking for things that are not here.
+ *
+ * The two above guard routes this app actually has. Neither of them saw the
+ * traffic that prompted them: on 2026-08-29 a single address spent four minutes
+ * asking genrewatch for `/wp-json/batch/v1`, `/wp/`, `/wordpress/`,
+ * `/blog/wp/v2/users` and `/index.php`, and POSTing to `/`, `/login`,
+ * `/dashboard` and `/register` -- 507 requests, every one of them answered with
+ * a 404 or refused by the edge, and not one of them on a route the auth backoff
+ * is attached to. A WordPress scanner does not need this site to be WordPress
+ * to keep asking, and nothing here counted how often it did.
+ *
+ * So this meters the misses themselves, on an allowance three times AUTH's and
+ * in the same band as VIEW -- because like VIEW, and unlike AUTH, it can be
+ * tripped by somebody who has done nothing wrong: a stale inbound link, a feed
+ * reader still asking for a path that moved. Measured against a day of both
+ * sites' logs, of 104 addresses that produced any 404 at all, three exceeded
+ * eight misses and all three were scanners; the busiest innocent caller managed
+ * twenty, following dead links from an old blog. Twenty-five leaves that caller
+ * clear with room to spare, and still turns a 507-request sweep into 25.
+ *
+ * The ceiling is an hour rather than a day for the same reason as VIEW: an hour
+ * is the worst a false positive can cost. DECAY still exceeds MAX_LOCK, which
+ * is the invariant the whole escalation rests on.
+ */
+export const MISS = {
+  FREE_ATTEMPTS: 25,
+  BASE_LOCK_MS: 60 * 1000,
+  MAX_LOCK_MS: 60 * 60 * 1000,
+  DECAY_MS: 2 * 60 * 60 * 1000,
+};
+
 /** The key space is the internet, so it needs a bound. */
 const MAX_TRACKED = 50_000;
 
@@ -91,12 +124,13 @@ const seen = new Map();
 /**
  * @param {number} now
  *
- * Uses the LONGEST decay of the two curves, since the map is shared and a key
- * does not carry which curve made it. Sweeping too late costs a little memory;
- * sweeping too early forgives somebody who has not earned it.
+ * Uses the LONGEST decay of every curve, since the map is shared and a key does
+ * not carry which curve made it -- add a curve and it must be named here too.
+ * Sweeping too late costs a little memory; sweeping too early forgives somebody
+ * who has not earned it.
  */
 function sweep(now) {
-  const longest = Math.max(AUTH.DECAY_MS, VIEW.DECAY_MS);
+  const longest = Math.max(AUTH.DECAY_MS, VIEW.DECAY_MS, MISS.DECAY_MS);
   for (const [key, entry] of seen) {
     if (entry.lockedUntil <= now && now - entry.lastAt > longest) seen.delete(key);
   }
