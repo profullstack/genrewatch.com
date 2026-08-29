@@ -17,6 +17,7 @@
     "@genre/payments": "workspace:*",
     "@genre/playlists": "workspace:*",
     "@genre/queue": "workspace:*",
+    "@profullstack/player": "0.3.1",
     "@simplewebauthn/browser": "^13.2.0",
     "hono": "^4.10.3",
     "mpegts.js": "1.8.2"
