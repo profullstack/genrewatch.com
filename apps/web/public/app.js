@@ -546,6 +546,76 @@ function initCopyButtons() {
   });
 }
 
+/* -------------------------------------------------------- playlist source -- */
+
+/**
+ * Show me the address I gave you.
+ *
+ * The settings page renders the playlist URL masked, because a credential printed
+ * into a page is a credential in a screenshot and a back-forward cache. The whole
+ * value lives behind `/api/playlist/source`, which is JSON, `no-store`, and keyed
+ * on the session's own row -- so this is a deliberate request rather than
+ * something a page view leaks.
+ *
+ * The button is `hidden` in the markup and unhidden here. Without script there is
+ * nothing to press and the masked value stands, which is the honest state: the
+ * reveal cannot work without a fetch.
+ *
+ * Revealing also fills the edit form's URL field, because the two things somebody
+ * does after looking at an address are copy it and change it, and re-typing a
+ * password-bearing URL to change the host is exactly the chore this replaces.
+ */
+function initPlaylistReveal(root = document) {
+  for (const btn of root.querySelectorAll?.('[data-playlist-reveal]') ?? []) {
+    btn.hidden = false;
+  }
+}
+
+document.addEventListener('click', async (event) => {
+  const btn = event.target?.closest?.('[data-playlist-reveal]');
+  if (!btn) return;
+
+  const field = document.querySelector('[data-playlist-url]');
+  if (!field) return;
+
+  // Second press hides it again, and puts back the mask the server sent rather
+  // than a mask computed here -- there is only one place that decides how much of
+  // a password is safe to show.
+  if (btn.dataset.shown === '1') {
+    field.value = btn.dataset.masked ?? field.value;
+    btn.dataset.shown = '0';
+    btn.textContent = 'Show';
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/playlist/source', {
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.url) {
+      btn.textContent = data.error ? 'Unavailable' : 'Failed';
+      return;
+    }
+    btn.dataset.masked = field.value;
+    field.value = data.url;
+    field.select?.();
+    btn.dataset.shown = '1';
+    btn.textContent = 'Hide';
+
+    // Fill the edit form too, so changing one character of the host does not mean
+    // typing the credential out again.
+    const input = document.querySelector('[data-playlist-input]');
+    if (input && !input.value) input.value = data.url;
+  } catch {
+    btn.textContent = 'Failed';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* ------------------------------------------------------------------ ajax -- */
 
 /**
@@ -654,6 +724,7 @@ function initNavigation() {
       // that pressing Play can abort a probe that would otherwise be a second
       // connection on a line that permits one.
       initInlinePlayer();
+      initPlaylistReveal();
     } catch {
       location.href = url;
     } finally {
@@ -695,6 +766,7 @@ initPasskeys();
 initConfirmForms();
 initFollowForms();
 initCopyButtons();
+initPlaylistReveal();
 initNavigation();
 
 /* --------------------------------------------------- your own channels -- */

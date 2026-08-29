@@ -16,9 +16,11 @@ import {
   claimStreamSlot,
   firstLiveChannel,
   importPlaylist,
+  maskPlaylistUrl,
   openStream,
   ownChannelsForEvent,
   ownChannelsForSubject,
+  playlistSource,
   probeStream,
   refreshPlaylist,
   sharedChannelsForEvent,
@@ -589,19 +591,58 @@ app.get('/my/channels', async (c) => {
  * is theirs: it is never pooled, never shown to another account, and never joined
  * to stream_offers -- this is a personal player feature, not a distribution one.
  */
+/**
+ * Where an import lands.
+ *
+ * `channels` is null when the provider's file hashed the same as last time, which
+ * is the common case for a save that only changed the name. Passing that straight
+ * into the notice produced "Imported NaN channels", so the two outcomes are named
+ * separately here rather than counted.
+ */
+function playlistNoticeFor(result) {
+  if (result?.renamed) return '/settings?playlist=renamed';
+  if (result?.unchanged || result?.channels == null) return '/settings?playlist=unchanged';
+  return `/settings?playlist=${result.channels}`;
+}
+
+/**
+ * Add a list, or edit the one already stored.
+ *
+ * One route for both, because from the reader's side it is one form. Leaving the
+ * address blank when a list exists means "keep it" -- that is what makes renaming
+ * possible without re-typing a URL that has a password in it, which was the only
+ * way to change anything here before.
+ *
+ * Re-submitting the SAME address is a save, not a re-import: the stored content
+ * hash goes with it, so an unchanged provider file leaves every channel row (and
+ * their probe verdicts) alone instead of deleting and reinserting them.
+ */
 app.post('/api/playlist', async (c) => {
   const user = requireUser(c);
   const body = await c.req.parseBody();
+  const url = String(body.url ?? '').trim();
+  const label = String(body.label ?? '').trim();
+
   try {
+    const existing = await q.getPlaylist(user.id);
+
+    if (!url) {
+      if (!existing) throw new Error('Add the address of your playlist.');
+      const row = await q.renamePlaylist({ userId: user.id, label: label || existing.label });
+      return respond(c, {
+        json: { renamed: true, label: row?.label ?? null },
+        redirectTo: playlistNoticeFor({ renamed: true }),
+      });
+    }
+
+    const same = existing ? auth.open(existing.source_url) === url : false;
     const result = await importPlaylist({
       userId: user.id,
-      url: String(body.url ?? '').trim(),
-      label: String(body.label ?? '').trim(),
+      url,
+      label,
+      knownHash: same ? (existing.content_hash ?? null) : null,
     });
-    return respond(c, {
-      json: result,
-      redirectTo: `/settings?playlist=${result.channels}`,
-    });
+    return respond(c, { json: result, redirectTo: playlistNoticeFor(result) });
   } catch (err) {
     return respond(c, {
       json: { error: err.message },
@@ -611,11 +652,30 @@ app.post('/api/playlist', async (c) => {
   }
 });
 
+/**
+ * Hand the stored address back to the account that stored it.
+ *
+ * `no-store` and JSON-only, because the body is a credential: it must not be
+ * written into the cached settings page, and it must not sit in a back-forward
+ * cache. Reaching it takes a session, and it answers with that session's own row
+ * -- there is no id in the request to point somewhere else.
+ */
+app.get('/api/playlist/source', async (c) => {
+  const user = requireUser(c);
+  const source = await playlistSource(user.id);
+  if (!source) return c.json({ error: 'You have not added a list.' }, 404);
+  c.header('cache-control', 'no-store');
+  if (!source.url) {
+    return c.json({ error: 'That stored address could not be read. Please add it again.' }, 409);
+  }
+  return c.json(source);
+});
+
 app.post('/api/playlist/refresh', async (c) => {
   const user = requireUser(c);
   try {
     const result = await refreshPlaylist(user.id);
-    return respond(c, { json: result, redirectTo: `/settings?playlist=${result.channels}` });
+    return respond(c, { json: result, redirectTo: playlistNoticeFor(result) });
   } catch (err) {
     return respond(c, {
       json: { error: err.message },
@@ -2144,9 +2204,26 @@ app.get('/settings', async (c) => {
     q.shareCandidates(user.id),
   ]);
   const added = c.req.query('playlist');
-  const playlistNotice = added
-    ? `Imported ${Number(added).toLocaleString('en-US')} channels.`
-    : null;
+  /*
+   * Three outcomes, not one count.
+   *
+   * A save that only renamed the list, and a save whose provider file had not
+   * changed, both come back without a channel count -- and both used to render as
+   * "Imported NaN channels", which reads as a failure of the thing that just
+   * worked.
+   */
+  const playlistNotice =
+    added === 'renamed'
+      ? 'Saved.'
+      : added === 'unchanged'
+        ? 'Saved. Your provider is serving the same list as last time, so your channels are unchanged.'
+        : added
+          ? `Imported ${Number(added).toLocaleString('en-US')} channels.`
+          : null;
+
+  // Masked here rather than in the view, so the unsealed URL exists for one
+  // expression and never becomes a prop that something else could render whole.
+  const playlistUrl = playlist ? auth.open(playlist.source_url) : null;
   return c.html(
     await render(
       <Settings
@@ -2160,6 +2237,8 @@ app.get('/settings', async (c) => {
         }
         passkeys={passkeys}
         playlist={playlist}
+        playlistMasked={playlistUrl ? maskPlaylistUrl(playlistUrl) : null}
+        playlistUnreadable={Boolean(playlist) && !playlistUrl}
         playlistNotice={playlistNotice}
         playlistError={c.req.query('playlist_error') ?? null}
         profileNotice={c.req.query('profile') ? 'Saved.' : null}

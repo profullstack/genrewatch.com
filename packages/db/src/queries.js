@@ -1900,6 +1900,25 @@ export async function savePlaylist({ userId, label, sourceUrl }) {
   `;
 }
 
+/**
+ * Rename a list without touching the address behind it.
+ *
+ * Separate from savePlaylist deliberately. Renaming through the upsert would mean
+ * carrying the source URL along on every edit, and the only place that URL exists
+ * unsealed is the moment the reader typed it -- so a rename would have to unseal,
+ * re-seal and rewrite a credential in order to change a piece of display text.
+ * This touches the one column it is about, and leaves the row's refresh state,
+ * error streak and channels exactly where they were.
+ */
+export async function renamePlaylist({ userId, label }) {
+  const [row] = await sql`
+    update user_playlists set label = ${label ?? null}
+    where user_id = ${userId}
+    returning id, user_id, label, channel_count, last_synced_at, last_error, created_at
+  `;
+  return row ?? null;
+}
+
 export async function getPlaylist(userId) {
   const [row] = await sql`select * from user_playlists where user_id = ${userId}`;
   return row ?? null;
