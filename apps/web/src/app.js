@@ -29,7 +29,7 @@ import { connection } from '@genre/queue';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
-import { attempt, callerAddress, forgive, VIEW } from './lib/auth-throttle.js';
+import { attempt, callerAddress, forgive, MISS, VIEW } from './lib/auth-throttle.js';
 import { buildCalendar } from './lib/ics.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
@@ -2758,4 +2758,47 @@ app.get('/favicon.ico', async (c) => {
   return c.body(await f.arrayBuffer());
 });
 
-app.notFound(async (c) => c.html(await render(<NotFound user={c.get('user')} />), 404));
+/*
+ * The last stop for a path this app does not have, and the only place a scanner
+ * can be counted.
+ *
+ * Mostly what lands here asked for a path this app has never had, which readers
+ * do rarely and scanners do hundreds of times in a row. The pages that answer a
+ * reader's dead link -- a title that is no longer listed, a profile that is
+ * private -- render `<NotFound>` inside their own route and never reach this
+ * handler, so a person following a stale link out of somebody's timeline is not
+ * metered at all.
+ *
+ * The exception is the machine-facing routes that answer with a bare
+ * `c.notFound()`: a calendar or RSS subscription to something that no longer
+ * exists, or an icon hash from a cached page. Those DO land here and are
+ * counted, and that is acceptable precisely because of the next paragraph -- a
+ * calendar client polling a dead feed hourly would need a day to reach the
+ * allowance, and all it would get for it is a 429 where it was already getting
+ * a 404.
+ *
+ * The refusal is deliberately confined to the miss itself. A locked caller is
+ * still served normally by every route that exists, because the counter only
+ * ever runs on this handler -- so the worst a false positive can do is answer
+ * 429 instead of 404 to somebody who was going to get nothing either way. That
+ * is the whole reason this can be turned on at all: unlike the auth curves,
+ * this one cannot lock anybody out of anything real.
+ */
+app.notFound(async (c) => {
+  const caller = callerAddress(c);
+  if (caller) {
+    const verdict = attempt(`miss:${caller}`, Date.now(), MISS);
+    if (!verdict.ok) {
+      console.warn(
+        `[auth] miss backoff: ${caller} strike ${verdict.strikes}, ${verdict.retryAfter}s`,
+      );
+      c.header('retry-after', String(verdict.retryAfter));
+      // A 429 that got cached would outlive the lock it was reporting.
+      c.header('cache-control', 'no-store');
+      // Text, not the rendered page: refusing has to be cheaper than answering,
+      // or a limiter on a flood is just a slower way to serve the flood.
+      return c.text(`Too many requests. Try again in ${waitFor(verdict.retryAfter)}.`, 429);
+    }
+  }
+  return c.html(await render(<NotFound user={c.get('user')} />), 404);
+});
