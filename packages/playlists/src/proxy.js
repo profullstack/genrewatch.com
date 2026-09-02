@@ -65,11 +65,21 @@ const PLAYER_UA = 'VLC/3.0.20 LibVLC/3.0.20';
  *   closes the tab drops the provider connection with it. Without it the line
  *   holds a slot open for a viewer who left, which is how a subscription reaches
  *   its concurrent-stream cap with nobody watching.
+ * @param {string|null} [opts.range] the reader's own Range header, passed straight
+ *   through. Only ever set for a FILE: a live channel has no end to seek within,
+ *   and asking a live slot for a byte range is a good way to be handed an error
+ *   page. For an on-demand entry it is the opposite of optional -- an MP4 with its
+ *   moov atom at the end of the file cannot begin playing until the player can
+ *   fetch that end, so a proxy that swallows Range turns every such film into a
+ *   spinner that never resolves.
  * @param {number} [opts.connectTimeoutMs] overridable so the timeout branch can be
  *   tested in milliseconds rather than by making a test wait eight seconds --
  *   which is how that branch ends up untested.
  */
-export async function openStream(url, { signal, connectTimeoutMs = CONNECT_TIMEOUT_MS } = {}) {
+export async function openStream(
+  url,
+  { signal, range = null, connectTimeoutMs = CONNECT_TIMEOUT_MS } = {},
+) {
   if (!url || !/^https?:\/\//i.test(url)) {
     return { ok: false, status: 502, note: 'not a fetchable url', definitive: true };
   }
@@ -86,7 +96,7 @@ export async function openStream(url, { signal, connectTimeoutMs = CONNECT_TIMEO
   let res;
   try {
     res = await fetch(url, {
-      headers: { 'user-agent': PLAYER_UA },
+      headers: range ? { 'user-agent': PLAYER_UA, range } : { 'user-agent': PLAYER_UA },
       redirect: 'follow',
       signal: controller.signal,
     });
@@ -123,6 +133,13 @@ export async function openStream(url, { signal, connectTimeoutMs = CONNECT_TIMEO
     signal?.removeEventListener('abort', abort);
     return { ok: false, status, note, definitive };
   };
+
+  // A seek past the end of a file, which is the reader's player being wrong about
+  // the length rather than the line being dead. Passed through as itself: mapped
+  // to 502 it would read as "your provider did not send a stream", and the next
+  // seek would work. Checked before the status split below, which is about a
+  // panel refusing a SLOT and has nothing to say about a range request.
+  if (res.status === 416) return fail(416, 'that range is past the end of the file');
 
   /*
    * A panel that says no is usually saying "not right now".
@@ -171,7 +188,27 @@ export async function openStream(url, { signal, connectTimeoutMs = CONNECT_TIMEO
     return fail(502, type ? `unexpected type ${type}` : 'no content type', true);
   }
 
-  return { ok: true, body: res.body, contentType: type, note: type };
+  /*
+   * The range facts travel back with the body, because only the caller knows
+   * whether they matter.
+   *
+   * A live route throws all four away and says `accept-ranges: none`. A file route
+   * has to mirror them: `status` so a 206 stays a 206 rather than being flattened
+   * into a 200 the player will read as the whole file, and `acceptRanges` because
+   * asserting `bytes` over a line that ignores Range is worse than admitting it --
+   * the player would seek, be handed the start of the file, and play the opening
+   * scene believing it was an hour in.
+   */
+  return {
+    ok: true,
+    body: res.body,
+    contentType: type,
+    note: type,
+    status: res.status,
+    acceptRanges: res.headers.get('accept-ranges'),
+    contentRange: res.headers.get('content-range'),
+    contentLength: res.headers.get('content-length'),
+  };
 }
 
 /**
