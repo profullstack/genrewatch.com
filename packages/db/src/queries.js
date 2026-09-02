@@ -819,6 +819,22 @@ export async function saveEventDetail(rows) {
  * cheaply -- most have no digital date yet, but the ones going straight to a
  * service do, and those are precisely the ones a theatrical-only calendar
  * mislabels worst.
+ *
+ * The ORDER is the other half, and getting it wrong wastes the whole budget on
+ * the films least likely to answer. A digital date is announced in the weeks
+ * after a film opens, so the ones worth asking about are those that came out
+ * recently: measured over sixty films, 15 in 20 released three months ago have a
+ * streaming date against 1 in 20 still to come.
+ *
+ * A plain `starts_at desc` reads as "newest first" and does the opposite of what
+ * is wanted here. The window has no upper bound, so descending starts at the
+ * FURTHEST-FUTURE row -- six months of forward calendar, plus the occasional
+ * sequel announced for 2031 -- and works back towards the films that actually
+ * have an answer. Those arrive last on every pass, and the far-future ones are
+ * re-asked every cycle to be told nothing again.
+ *
+ * So: released films first, most recent first, then the unreleased ones by how
+ * soon they open.
  */
 export async function eventsNeedingDigitalCheck({ limit = 80, staleDays = 10 } = {}) {
   return sql`
@@ -831,7 +847,10 @@ export async function eventsNeedingDigitalCheck({ limit = 80, staleDays = 10 } =
       and starts_at > now() - interval '9 months'
       and (digital_checked_at is null
            or digital_checked_at < now() - make_interval(days => ${staleDays}))
-    order by starts_at desc
+    order by
+      case when starts_at <= now() then 0 else 1 end,
+      case when starts_at <= now() then starts_at end desc nulls last,
+      starts_at
     limit ${limit}
   `;
 }
