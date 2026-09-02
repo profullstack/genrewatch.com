@@ -3,6 +3,7 @@ import {
   Ad,
   EventList,
   FollowButton,
+  fmtDayUtc,
   GenreChips,
   LocalTime,
   StartTime,
@@ -21,6 +22,32 @@ import { Layout } from './Layout.jsx';
  * without an account. It survives as a fallback for accounts that have not picked
  * a name, and nothing beyond the local part is ever rendered.
  */
+/**
+ * The home-release lines a film's page should carry, if any.
+ *
+ * Two rules, and the second is the one worth having a function for. A date is
+ * dropped when it is the date of the event being looked at -- the streaming row
+ * has its own page, and printing "Streaming: Sep 23" under a heading that already
+ * says Sep 23 reads like a bug. Comparing the YYYY-MM-DD prefix rather than the
+ * instants is deliberate: these are date-only rows anchored at noon UTC, so any
+ * comparison finer than the day is comparing an anchor nobody chose.
+ */
+function homeDates(event, detail) {
+  const own = new Date(event.starts_at).toISOString().slice(0, 10);
+  const out = [];
+
+  if (detail.digital && detail.digital !== own) {
+    out.push({ label: 'Rent or buy', text: fmtDayUtc(detail.digital) });
+  }
+  if (detail.streaming?.date && detail.streaming.date !== own) {
+    out.push({
+      label: 'Streaming',
+      text: `${detail.streaming.service}, ${fmtDayUtc(detail.streaming.date)}`,
+    });
+  }
+  return out;
+}
+
 function commenterName(c) {
   return c.display_name || (c.handle ? `@${c.handle}` : String(c.email ?? '?').split('@')[0]);
 }
@@ -831,6 +858,24 @@ export const EventPage = ({
                 {event.venue_region ? `, ${event.venue_region}` : ''}
               </li>
             ) : null}
+            {/*
+              When it reaches the reader's own television.
+
+              The single most-asked question a cinema date does not answer, and
+              the reason a release calendar was useless to anyone who does not go
+              to the cinema. Both dates are shown because they are different
+              answers: the first is a purchase, the second is included in a
+              subscription that is probably already being paid for.
+
+              Each is suppressed on its own event page, where it would be the same
+              date printed twice under two different headings.
+            */}
+            {homeDates(event, detail).map((h) => (
+              <li>
+                <span>{h.label}</span>
+                {h.text}
+              </li>
+            ))}
             {event.season ? (
               <li>
                 <span>Episode</span>

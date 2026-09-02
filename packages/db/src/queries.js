@@ -805,6 +805,68 @@ export async function saveEventDetail(rows) {
   return n;
 }
 
+/**
+ * Films whose home-release dates are worth asking about again.
+ *
+ * Theatrical rows only -- the digital and streaming rows are the OUTPUT of this
+ * pass, and including them would have the catalogue asking when the streaming
+ * date's streaming date is.
+ *
+ * The window is the interesting part. Nine months back because that is where the
+ * answer changes: a film released last month may have gained a Disney+ date this
+ * week, while one from 2019 settled its dates years ago and re-asking is a request
+ * spent to be told nothing. Forward of that, an unreleased film is asked too, and
+ * cheaply -- most have no digital date yet, but the ones going straight to a
+ * service do, and those are precisely the ones a theatrical-only calendar
+ * mislabels worst.
+ */
+export async function eventsNeedingDigitalCheck({ limit = 80, staleDays = 10 } = {}) {
+  return sql`
+    select id, provider_key, subject_id, name, summary, image_url, backdrop_url,
+           url, rating, rating_count
+    from events
+    where provider = 'tmdb'
+      and kind = 'release'
+      and provider_key like 'tmdb:release:%'
+      and starts_at > now() - interval '9 months'
+      and (digital_checked_at is null
+           or digital_checked_at < now() - make_interval(days => ${staleDays}))
+    order by starts_at desc
+    limit ${limit}
+  `;
+}
+
+/** Stamp a home-release lookup, found or not, so the cycle moves on. */
+export async function markDigitalChecked(eventIds) {
+  if (!eventIds?.length) return;
+  await sql`
+    update events set digital_checked_at = now()
+    where id = any(${pgArray(eventIds)}::bigint[])
+  `;
+}
+
+/**
+ * Give a new event the genres of the film it belongs to.
+ *
+ * A streaming row carries no genre ids of its own -- it is built from a row we
+ * already hold rather than from a provider payload with a genre list on it. And
+ * genres are denormalised onto events so a genre page is one index scan, which
+ * means a row without them is invisible on every page that matters: it would sit
+ * in the database, correct and unreachable.
+ */
+export async function copyEventGenres(pairs) {
+  const usable = (pairs ?? []).filter((p) => p.fromEventId && p.toEventId);
+  if (usable.length === 0) return;
+
+  for (const p of usable) {
+    await sql`
+      insert into event_genres (event_id, genre_id)
+      select ${p.toEventId}, genre_id from event_genres where event_id = ${p.fromEventId}
+      on conflict (event_id, genre_id) do nothing
+    `;
+  }
+}
+
 /** Mark an attempt that returned nothing, so it is not retried forever. */
 export async function markDetailAttempted(eventIds) {
   if (!eventIds?.length) return;

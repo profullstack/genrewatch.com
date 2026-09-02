@@ -18,7 +18,7 @@ const fmtTimeUtc = (d) =>
     minute: '2-digit',
   });
 
-const fmtDayUtc = (d) =>
+export const fmtDayUtc = (d) =>
   new Date(d).toLocaleDateString('en-US', {
     timeZone: 'UTC',
     weekday: 'short',
