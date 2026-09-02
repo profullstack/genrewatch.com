@@ -231,29 +231,29 @@ describe('an MSE failure is a reason to reconnect', () => {
     // Nothing reconnects instantly: that is a second connection on a line that
     // counts them, and the first has to be seen to close.
     expect(built).toHaveLength(1);
-    clock.advance(1500);
+    clock.advance(2000);
     expect(built).toHaveLength(2);
     expect(latest().destroyed).toBe(false);
   });
 
-  test('the waits double, and the whole sequence is over in about eleven seconds', () => {
+  test('the waits double from two seconds', () => {
     const { errors, latest } = play();
 
     latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
-    clock.advance(1500);
+    clock.advance(2000);
     latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
-    clock.advance(3000);
+    clock.advance(4000);
     latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
-    clock.advance(6000);
+    clock.advance(8000);
 
     expect(built).toHaveLength(4);
     expect(errors).toEqual([]);
   });
 
-  test('a fourth failure is the reader being told, in the original words', () => {
+  test('a sixth failure is the reader being told, in the original words', () => {
     const { errors, latest } = play();
 
-    for (const wait of [0, 1500, 3000, 6000]) {
+    for (const wait of [0, 2000, 4000, 8000, 16_000, 32_000]) {
       clock.advance(wait);
       latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
     }
@@ -271,7 +271,7 @@ describe('an MSE failure is a reason to reconnect', () => {
   test('a dropped connection reconnects too', () => {
     const { errors, latest } = play();
     latest().emit(EVENTS.ERROR, ERROR_TYPES.NETWORK_ERROR, 'Exception', {});
-    clock.advance(1500);
+    clock.advance(2000);
     expect(built).toHaveLength(2);
     expect(errors).toEqual([]);
   });
@@ -289,8 +289,10 @@ describe('what must never be reconnected', () => {
     [404, 'no longer on your list'],
     [415, 'needs a different player'],
     [429, 'line was busy'],
+    // 502 and only 502: the route has established something about the SLOT --
+    // an HTML apology, or a status that means the entry is gone. 503 and 504
+    // used to be here too, and they are the subject of the tests below.
     [502, 'did not send a stream'],
-    [504, 'did not send a stream'],
   ];
 
   for (const [code, expected] of terminal) {
@@ -304,6 +306,58 @@ describe('what must never be reconnected', () => {
       expect(built).toHaveLength(1);
     });
   }
+
+  /*
+   * A provider that is momentarily busy is the ordinary way these lines behave,
+   * and it used to end the stream: the panel answered 403 to a reconnect it had
+   * not yet noticed was replacing a session of its own, the route flattened that
+   * into 502, and 502 was in the list above.
+   */
+  test('503 -- the line is busy -- reconnects rather than ending the stream', () => {
+    const { errors, latest } = play();
+    latest().emit(EVENTS.ERROR, ERROR_TYPES.NETWORK_ERROR, 'Exception', { code: 503 });
+
+    expect(errors).toHaveLength(0);
+    // Six seconds, not two: the panel has said in words that it is still counting
+    // a connection, and asking again immediately spends an attempt to hear so.
+    clock.advance(5_999);
+    expect(built).toHaveLength(1);
+    clock.advance(1);
+    expect(built).toHaveLength(2);
+  });
+
+  test('a busy line still gives up eventually, in words that name it', () => {
+    /*
+     * Advanced by exactly the wait each time, which is not fussiness: the stall
+     * watcher is re-armed by every rebuild, and running the clock past fifteen
+     * seconds of a video whose currentTime never moves spends the budget on a
+     * stall instead -- so a looser test passes while measuring the wrong thing.
+     */
+    const waits = [6_000, 12_000, 24_000, 48_000, 96_000];
+    const { errors, latest } = play();
+
+    for (const wait of waits) {
+      latest().emit(EVENTS.ERROR, ERROR_TYPES.NETWORK_ERROR, 'Exception', { code: 503 });
+      expect(errors).toHaveLength(0);
+      clock.advance(wait);
+    }
+    expect(built).toHaveLength(1 + waits.length);
+
+    latest().emit(EVENTS.ERROR, ERROR_TYPES.NETWORK_ERROR, 'Exception', { code: 503 });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('busy');
+  });
+
+  test('504 -- the provider did not answer in time -- reconnects on the usual ladder', () => {
+    const { errors, latest } = play();
+    latest().emit(EVENTS.ERROR, ERROR_TYPES.NETWORK_ERROR, 'Exception', { code: 504 });
+
+    expect(errors).toHaveLength(0);
+    clock.advance(1_999);
+    expect(built).toHaveLength(1);
+    clock.advance(1);
+    expect(built).toHaveLength(2);
+  });
 
   test('a codec this browser cannot decode is terminal, not retried', () => {
     // A browser without an HEVC decoder will not have grown one by the second
@@ -364,35 +418,57 @@ describe('a stream that stops sending without ever erroring', () => {
 });
 
 describe('the reconnect budget', () => {
-  test('half a minute of real playback earns it back', () => {
-    // Otherwise a channel that hiccups once an hour spends its three restarts
-    // over an afternoon and then fails for good on a stream that is basically
-    // healthy.
+  /*
+   * When the allowance comes back, which is what "the stream dies after a minute
+   * or two" turned out to mean.
+   *
+   * It used to take thirty unbroken seconds, measured from the last restart and
+   * checked only from inside the stall watcher. So three hiccups inside half a
+   * minute spent the whole budget and the entry was given up on for good -- even
+   * though all three restarts had worked and the picture was back within seconds
+   * each time. On a provider line that drops a connection now and then, which is
+   * all of them, that is a hard ceiling of three recoveries per stream and about
+   * a minute of watching.
+   */
+  test('a picture earns it back, immediately', () => {
     const { video, latest, errors } = play();
 
     latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
-    clock.advance(1500);
+    clock.advance(2000);
     expect(built).toHaveLength(2);
 
-    for (let i = 0; i < 8; i += 1) {
-      video.currentTime += 5;
-      clock.advance(5000);
-    }
+    // Not thirty seconds of it. The event means the media element genuinely
+    // resumed, and that is the whole of what "recovered" needs to mean.
+    video.fire('playing');
 
-    // Budget restored, so this is a reconnect and not the reader being told.
     latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
-    clock.advance(1500);
+    clock.advance(2000);
     expect(built).toHaveLength(3);
     expect(errors).toEqual([]);
   });
 
-  test('a second of playback between two failures does not', () => {
+  test('a stream that recovers every time is never given up on', () => {
+    // The point of the change. Under the old rule this stream was dead on the
+    // fourth hiccup however well it played in between.
     const { video, latest, errors } = play();
-    for (let i = 0; i < 4; i += 1) {
+
+    for (let i = 0; i < 12; i += 1) {
       latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
-      clock.advance(1500 * 2 ** i);
-      video.currentTime += 1;
-      clock.advance(5000);
+      clock.advance(2000);
+      video.fire('playing');
+    }
+    expect(errors).toEqual([]);
+    expect(built).toHaveLength(13);
+  });
+
+  test('a stream that never plays still gives up', () => {
+    // The budget is spent by failures to RECOVER, not by failures -- so nothing
+    // firing `playing` still reaches the ceiling.
+    const { latest, errors } = play();
+
+    for (const wait of [0, 2000, 4000, 8000, 16_000, 32_000]) {
+      clock.advance(wait);
+      latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
     }
     expect(errors).toHaveLength(1);
   });
@@ -400,7 +476,7 @@ describe('the reconnect budget', () => {
   test('the notice comes off the page as soon as there is a picture', () => {
     const { video, notices, latest } = play();
     latest().emit(EVENTS.ERROR, ERROR_TYPES.MEDIA_ERROR, 'MediaMSEError', {});
-    clock.advance(1500);
+    clock.advance(2000);
     expect(notices.at(-1)).toContain('Reconnecting');
 
     video.fire('playing');

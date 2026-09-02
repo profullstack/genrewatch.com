@@ -5,7 +5,7 @@ import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 
 export { maskPlaylistUrl } from './mask.js';
-export { firstLiveChannel, probeStream } from './probe.js';
+export { firstLiveChannel, isDeadStatus, probeStream, verdictToStore } from './probe.js';
 export { claimStreamSlot, openStream, streamSlotsOpen } from './proxy.js';
 export { playlistSource } from './source.js';
 

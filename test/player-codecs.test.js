@@ -279,12 +279,38 @@ describe('the buffering profile follows the screen', () => {
     expect(tv.liveBufferLatencyChasing).toBe(false);
   });
 
-  test('everything else keeps the settings it already had', () => {
-    // Changing the desktop profile was not the point and would be a regression.
+  test('a desktop reads ahead and does not chase either', () => {
+    /*
+     * This used to assert the opposite -- no stash, chasing on -- on the
+     * reasoning that read-ahead is pure added latency for a screen with a real
+     * connection. Both halves were wrong, and together they were most of the
+     * desktop stutter.
+     *
+     * The latency a stash smooths is not the reader's bandwidth, it is the
+     * PROVIDER's pacing: a transport stream arrives in bursts, so with nothing
+     * buffered every gap between bursts is an underrun however fast the link.
+     * And chasing closes drift by assigning to `currentTime`, which is a hard
+     * seek that rebuilds the MSE decode pipeline, evaluated on every appended
+     * fragment, leaving one second of buffer behind -- a single jitter spike from
+     * the next underrun, which refills past the ceiling and seeks again. Each
+     * hitch was also a chance to spend a restart, which is how a stutter became a
+     * stream that ended.
+     *
+     * A desktop wants a smaller version of what the television gets, not the
+     * opposite of it.
+     */
     const desktop = playerConfig(false);
-    expect(desktop.enableStashBuffer).toBe(false);
-    expect(desktop.liveBufferLatencyChasing).toBe(true);
-    expect(desktop.liveBufferLatencyMaxLatency).toBe(6);
+    expect(desktop.enableStashBuffer).toBe(true);
+    expect(desktop.stashInitialSize).toBeGreaterThan(100 * 1024);
+    expect(desktop.liveBufferLatencyChasing).toBe(false);
+  });
+
+  test('neither screen closes drift by seeking', () => {
+    // The one setting that differed in kind rather than in degree. Stated once,
+    // over both profiles, so re-enabling it on either is a failing test.
+    for (const config of [playerConfig(true), playerConfig(false)]) {
+      expect(config.liveBufferLatencyChasing).toBe(false);
+    }
   });
 
   test('both profiles still drop what has been watched', () => {
