@@ -113,6 +113,29 @@ if (config.roles.includes('web')) {
   // still reports healthy.
   server = Bun.serve({ port: config.port, fetch: app.fetch, idleTimeout: 30 });
   console.log(`[web] listening on :${server.port} as ${config.roles.join('+')}`);
+} else {
+  /*
+   * A worker-only service still has to answer the healthcheck.
+   *
+   * `railway.json` sets `healthcheckPath: /healthz` for every service built from
+   * this repo, and Railway's config-as-code wins over anything set per service.
+   * So a container running ROLES=worker with no listener never answers, the
+   * deploy waits out its timeout and is marked failed -- and the split that was
+   * supposed to be "a variable change, not a code change" cannot be made at all.
+   *
+   * This is not the web app: no routes, no page cache, no database work on the
+   * path. It answers /healthz and nothing else, which is exactly what the probe
+   * asks and gives the worker the liveness signal it otherwise has none of.
+   */
+  server = Bun.serve({
+    port: config.port,
+    idleTimeout: 30,
+    fetch: (req) =>
+      new URL(req.url).pathname === '/healthz'
+        ? new Response('ok')
+        : new Response('not found', { status: 404 }),
+  });
+  console.log(`[worker] healthcheck on :${server.port} as ${config.roles.join('+')}`);
 }
 
 async function shutdown(signal) {
