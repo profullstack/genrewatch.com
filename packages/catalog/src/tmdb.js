@@ -44,15 +44,35 @@ const DIGITAL = 4;
 const HOME_REGION = 'US';
 
 /**
- * Notes on a digital release that name a WINDOW rather than a service.
+ * Notes on a digital release that do NOT name a service.
  *
  * A type-4 entry usually carries a note, and the note is the only thing that
- * separates the two dates below. Almost every note is a service name -- "Disney+",
- * "HBO Max", "Peacock" -- so the reliable test is the short list of words that are
- * NOT one.
+ * separates the two dates below. Most notes are service names -- "Disney+", "HBO
+ * Max", "Peacock" -- so the test is for the notes that are something else.
+ *
+ * Two kinds of something else, learned from what production actually wrote. The
+ * first is the release WINDOW ("Digital HD", "PVOD"), which is an exact phrase.
+ * The second is a CUT or FORMAT, and it is why this is not just a word list:
+ * "Subtitled Version" shipped as a streaming row whose service was, apparently,
+ * Subtitled Version. Those notes are open-ended -- extended, uncut, remastered,
+ * the 40th anniversary edition -- so they are matched on the descriptive word
+ * wherever it falls rather than by trying to enumerate the phrases.
+ *
+ * A note that is neither is taken to be a service. That direction is the safe one:
+ * the cost of a missed service is a date filed as a rental, while the cost of a
+ * false one is a venue that reads like nonsense.
  */
 const NOT_A_SERVICE =
   /^(digital|digital hd|vod|pvod|tvod|est|premium|premium vod|rental|rent|buy|purchase|streaming|online)$/i;
+
+/** Words that make a note a description of the release, not a place to watch it. */
+const A_FORMAT_NOTE =
+  /\b(version|edition|cut|subtitled|subtitles|dubbed|dub|remaster(ed)?|restored|anniversary|uncut|extended|unrated|imax|3-?d|re-?release|theatrical|director'?s)\b/i;
+
+/** True when a note names a service somebody could subscribe to. */
+function namesAService(note) {
+  return Boolean(note) && !NOT_A_SERVICE.test(note) && !A_FORMAT_NOTE.test(note);
+}
 
 /** Genres TMDB carries that this site files elsewhere. */
 const REROUTED = new Set(['tv movie']);
@@ -106,10 +126,10 @@ export function homeReleases(payload, { region = HOME_REGION } = {}) {
     // find() rather than needing a comparison at every use.
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  // The two are mutually exclusive by construction: an entry whose note names a
-  // service cannot also read as an unnamed window.
-  const named = entries.find((e) => e.note && !NOT_A_SERVICE.test(e.note));
-  const plain = entries.find((e) => !e.note || NOT_A_SERVICE.test(e.note));
+  // Mutually exclusive by construction, and everything that is not a service --
+  // no note, a window, or a description of the cut -- is a date you pay for.
+  const named = entries.find((e) => namesAService(e.note));
+  const plain = entries.find((e) => !namesAService(e.note));
 
   return {
     vod: plain?.date ?? null,
