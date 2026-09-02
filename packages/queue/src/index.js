@@ -104,6 +104,16 @@ export async function installSchedules({ log = console.log } = {}) {
   await queues.sync.add('digital', { kind: 'digital' }, { repeat: { every: 4 * 3600_000 } });
 
   /*
+   * Artwork for the IMDb rows, every twenty minutes.
+   *
+   * The most frequent of the three because it has the largest backlog and the
+   * most visible symptom: about a thousand upcoming titles showing a name and a
+   * year. At 120 a pass it drains in a few hours and then idles, because a title
+   * is stamped whether or not TMDB had anything.
+   */
+  await queues.sync.add('imdb-meta', { kind: 'imdb-meta' }, { repeat: { every: 20 * 60_000 } });
+
+  /*
    * Readers' own channel lists, on their own clock.
    *
    * Not folded into the sync tick: this polls other people's subscriptions rather
@@ -172,6 +182,13 @@ export async function installSchedules({ log = console.log } = {}) {
     'digital',
     { kind: 'digital' },
     { jobId: `digital-${minuteStamp()}`, delay: 40_000 },
+  );
+
+  // And the IMDb artwork pass, last of the three, for the same reason.
+  await queues.sync.add(
+    'imdb-meta',
+    { kind: 'imdb-meta' },
+    { jobId: `imdbmeta-${minuteStamp()}`, delay: 55_000 },
   );
 
   /*
