@@ -171,6 +171,53 @@ describe('the two dates a home release is made of', () => {
     }
   });
 
+  /*
+   * The other three that reached the live calendar.
+   *
+   * Every one is a true statement and none is an answer to "is this included
+   * where I already subscribe", which is the only question the streaming row
+   * exists to answer. A shop is not a subscription, and neither is a YouTube
+   * channel.
+   */
+  test('a shop, a route and a window are not services either', () => {
+    const noteFor = (note) =>
+      homeReleases({
+        results: [
+          { iso_3166_1: 'US', release_dates: [{ type: 4, release_date: '2026-12-25', note }] },
+        ],
+      });
+    for (const note of [
+      'PVOD Rent/Buy',
+      'Letterboxd Video Store - Unreleased Gems (30 days)',
+      'Netflix / Rockstar Games official YouTube channel',
+    ]) {
+      expect(noteFor(note).streaming).toBeNull();
+      expect(noteFor(note).vod).toBe('2026-12-25');
+    }
+  });
+
+  /*
+   * The rule that a length cap would have broken.
+   *
+   * Capping the note length was the obvious way to reject the two long ones
+   * above, and it is wrong: a film can genuinely land on three services at once,
+   * and that note is longer than either piece of junk it would have caught.
+   */
+  test('several services at once is still an answer', () => {
+    for (const note of [
+      'Apple TV, YouTube & Prime Video',
+      'Apple TV & Amazon Prime',
+      'Apple TV / Prime Video',
+    ]) {
+      const got = homeReleases({
+        results: [
+          { iso_3166_1: 'US', release_dates: [{ type: 4, release_date: '2026-12-25', note }] },
+        ],
+      });
+      expect(got.streaming).toEqual({ date: '2026-12-25', service: note });
+    }
+  });
+
   /* The other direction still has to work, or the fix above trades one wrong
      answer for a worse one: every service filed as a rental. */
   test('but a real service is still recognised', () => {
