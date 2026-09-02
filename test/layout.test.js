@@ -25,9 +25,16 @@ describe('Layout', () => {
     expect(out).not.toContain('data-known-tz');
   });
 
-  test('names the data source on every page', async () => {
+  test('names the data sources on every page', async () => {
+    // ESPN supplies this site with nothing -- it was the sibling sports site's
+    // provider and rode along in the port. Name the ones the catalogue is really
+    // built from, and keep TMDB's required disclaimer with them.
     const out = await html({ user: null, children: 'x' });
-    expect(out).toContain('ESPN');
+    for (const source of ['TMDB', 'TVmaze', 'AniList', 'MusicBrainz', 'The Space Devs', 'IMDb']) {
+      expect(out).toContain(source);
+    }
+    expect(out).toContain('not endorsed or certified by TMDB');
+    expect(out).not.toContain('ESPN');
   });
 });
 
