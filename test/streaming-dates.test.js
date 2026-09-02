@@ -356,10 +356,16 @@ describe('which films get asked again', () => {
       );
 
     await ev('tmdb:release:recent', 1);
+    await ev('tmdb:release:older', 5);
     await ev('tmdb:release:ancient', 40);
     await ev('tmdb:release:upcoming', -2);
+    // Six months out, and the row a plain `starts_at desc` would have asked
+    // about first, every pass, forever.
+    await ev('tmdb:release:faroff', -6);
     await ev('tmdb:release:justasked', 1, new Date().toISOString());
-    await ev('tmdb:release:askedages', 1, new Date(Date.now() - 40 * 86_400_000).toISOString());
+    // Two months back rather than one, so the ordering assertions below have an
+    // unambiguous most-recent row to name.
+    await ev('tmdb:release:askedages', 2, new Date(Date.now() - 40 * 86_400_000).toISOString());
     // The output of the pass, which must never become its input.
     await ev('tmdb:digital:recent', 1);
     await ev('tmdb:stream:recent', 1);
@@ -374,7 +380,10 @@ describe('which films get asked again', () => {
            and starts_at > now() - interval '9 months'
            and (digital_checked_at is null
                 or digital_checked_at < now() - make_interval(days => $1))
-         order by starts_at desc`,
+         order by
+           case when starts_at <= now() then 0 else 1 end,
+           case when starts_at <= now() then starts_at end desc nulls last,
+           starts_at`,
         [staleDays],
       )
     ).rows.map((r) => r.provider_key);
@@ -409,9 +418,35 @@ describe('which films get asked again', () => {
     expect(keys).not.toContain('tmdb:stream:recent');
   });
 
-  test('the newest release is asked first, where announcements happen', async () => {
+  /*
+   * The budget goes where the answers are.
+   *
+   * A digital date is announced in the weeks after a film opens: 15 in 20 films
+   * released three months ago have one, against 1 in 20 still to come. So the
+   * films that have already come out are asked first, most recent first.
+   */
+  test('a film that has come out is asked before one that has not', async () => {
     const keys = await due();
-    expect(keys[0]).toBe('tmdb:release:upcoming');
+    expect(keys.indexOf('tmdb:release:recent')).toBeLessThan(keys.indexOf('tmdb:release:upcoming'));
+    expect(keys[0]).toBe('tmdb:release:recent');
+  });
+
+  test('and the more recently it came out, the sooner it is asked', async () => {
+    const keys = await due();
+    expect(keys.indexOf('tmdb:release:recent')).toBeLessThan(keys.indexOf('tmdb:release:older'));
+  });
+
+  /*
+   * The bug this ordering replaced. The window has no upper bound, so a plain
+   * `starts_at desc` reads as "newest first" and actually starts at the
+   * furthest-future row -- a sequel dated six months out, asked first on every
+   * pass to be told it has no digital date, while the films that do have one
+   * wait behind six months of forward calendar.
+   */
+  test('and a film half a year away is asked last, not first', async () => {
+    const keys = await due();
+    expect(keys[0]).not.toBe('tmdb:release:faroff');
+    expect(keys[keys.length - 1]).toBe('tmdb:release:faroff');
   });
 
   test('genres copy from the film to its streaming row', async () => {
