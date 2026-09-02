@@ -93,6 +93,17 @@ export async function installSchedules({ log = console.log } = {}) {
   await queues.sync.add('detail', { kind: 'detail' }, { repeat: { every: 30 * 60_000 } });
 
   /*
+   * Home-release dates, four-hourly.
+   *
+   * Slower than detail on purpose. A studio announces a digital date on the scale
+   * of weeks, and the pass re-asks each film only once its stamp has gone stale,
+   * so running it more often would find the same nulls and spend a budget that
+   * buys nothing. Four hours is frequent enough that a date announced this morning
+   * is on the site today, which is the only deadline that matters.
+   */
+  await queues.sync.add('digital', { kind: 'digital' }, { repeat: { every: 4 * 3600_000 } });
+
+  /*
    * Readers' own channel lists, on their own clock.
    *
    * Not folded into the sync tick: this polls other people's subscriptions rather
@@ -153,6 +164,14 @@ export async function installSchedules({ log = console.log } = {}) {
     'detail',
     { kind: 'detail' },
     { jobId: `detail-${minuteStamp()}`, delay: 25_000 },
+  );
+
+  // And one home-release pass on boot, for the same reason and behind detail, so
+  // the two budgeted passes do not open on the same second.
+  await queues.sync.add(
+    'digital',
+    { kind: 'digital' },
+    { jobId: `digital-${minuteStamp()}`, delay: 40_000 },
   );
 
   /*

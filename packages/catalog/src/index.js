@@ -353,16 +353,32 @@ export async function syncDetail({ log = console.log, limit = 120 } = {}) {
   const pending = await q.eventsNeedingDetail({ provider: 'tmdb', limit });
   if (pending.length === 0) return { enriched: 0 };
 
-  // provider_key is "tmdb:release:<id>"; the id is the last segment.
-  const byId = new Map(pending.map((r) => [String(r.provider_key).split(':').pop(), r.id]));
+  /*
+   * provider_key is "tmdb:<slot>:<id>"; the id is the last segment.
+   *
+   * A LIST per id, not a single event. One film now has up to three rows -- its
+   * cinema date, its rent-or-buy date and its streaming date -- and they share
+   * that trailing id. Keyed one-to-one, the last row seen would win and its
+   * siblings would be stamped as answered while never being written to, so a
+   * film's streaming page would sit permanently blank however many passes ran.
+   */
+  const byId = new Map();
+  for (const r of pending) {
+    const id = String(r.provider_key).split(':').pop();
+    const seen = byId.get(id);
+    if (seen) seen.push(r.id);
+    else byId.set(id, [r.id]);
+  }
+
   const details = await tmdb.fetchDetail([...byId.keys()], {
     apiKey: config.catalog.tmdbKey,
     limit,
   });
 
-  const rows = details
-    .map((d) => ({ ...d, eventId: byId.get(d.providerId) }))
-    .filter((d) => d.eventId);
+  // One TMDB answer, applied to every row that asked the question.
+  const rows = details.flatMap((d) =>
+    (byId.get(d.providerId) ?? []).map((eventId) => ({ ...d, eventId })),
+  );
   const saved = await q.saveEventDetail(rows);
 
   /*
@@ -378,6 +394,96 @@ export async function syncDetail({ log = console.log, limit = 120 } = {}) {
 
   log(`[sync] detail: ${saved} enriched, ${silent.length} had nothing`);
   return { enriched: saved, empty: silent.length };
+}
+
+/**
+ * When each film reaches the reader's own television.
+ *
+ * The gap this closes is a timing one. A digital date does not exist when a film
+ * is first swept -- it is announced two to ten weeks AFTER the film opens -- so
+ * the enrichment pass above, which asks once and stamps the answer forever, asks
+ * at the only moment the answer is guaranteed to be absent. Every film would carry
+ * a cinema date and nothing else, which is the state that made a release calendar
+ * useless to anyone who does not go to the cinema.
+ *
+ * So this one re-asks, on a slow cycle, for as long as the answer can still
+ * change. It is budgeted like the detail pass and for the same reason: one request
+ * per film, so its cost scales with the catalogue rather than with the number of
+ * pages, and an unbounded version would spend the whole hour here.
+ *
+ * What it writes are EVENTS -- up to two more per film, keyed apart from the
+ * theatrical row -- because that is the only shape this site can remind anyone
+ * about.
+ */
+export async function syncDigital({ log = console.log, limit = 80 } = {}) {
+  if (!brandProviders().includes('tmdb')) return { skipped: 'tmdb not enabled' };
+
+  const pending = await q.eventsNeedingDigitalCheck({ limit });
+  if (pending.length === 0) return { added: 0 };
+
+  const byId = new Map(pending.map((r) => [String(r.provider_key).split(':').pop(), r]));
+  const found = await tmdb.fetchHomeReleases([...byId.keys()], {
+    apiKey: config.catalog.tmdbKey,
+    limit,
+  });
+
+  const rows = [];
+  const parentOf = new Map();
+  for (const f of found) {
+    const base = byId.get(f.providerId);
+    if (!base) continue;
+
+    const events = tmdb.homeReleaseEvents({
+      providerId: f.providerId,
+      home: f.home,
+      base: {
+        // The theatrical row is the template: a streaming date on a page with no
+        // poster, no blurb and no rating is a worse answer than no page at all.
+        name: base.name,
+        summary: base.summary,
+        imageUrl: base.image_url,
+        backdropUrl: base.backdrop_url,
+        url: base.url,
+        rating: base.rating,
+        ratingCount: base.rating_count,
+      },
+    });
+
+    for (const e of events) {
+      /*
+       * The subject id is taken from the parent rather than resolved from a key.
+       *
+       * These events are built from a row we already hold, so its subject is
+       * already known and already correct. Looking it up again by provider key
+       * would be a second query to learn something the row in hand is carrying,
+       * and would fail on exactly the films whose subject key has been rewritten.
+       */
+      rows.push({ ...e, subjectId: base.subject_id });
+      parentOf.set(e.providerKey, base.id);
+    }
+  }
+
+  let written = 0;
+  if (rows.length > 0) {
+    const eventIds = await q.upsertEvents(rows);
+    await q.copyEventGenres(
+      rows
+        .map((e) => ({
+          toEventId: eventIds.get(e.providerKey),
+          fromEventId: parentOf.get(e.providerKey),
+        }))
+        .filter((p) => p.toEventId && p.fromEventId),
+    );
+    written = rows.length;
+  }
+
+  // Stamped whether or not anything was found. A film with no digital date yet is
+  // the normal case, and it has to fall to the back of the queue rather than be
+  // re-asked every pass while the rest of the catalogue waits.
+  await q.markDigitalChecked(pending.map((p) => p.id));
+
+  log(`[sync] digital: ${written} home releases from ${pending.length} films`);
+  return { added: written, checked: pending.length };
 }
 
 /** The provider names this deployment has switched on. */

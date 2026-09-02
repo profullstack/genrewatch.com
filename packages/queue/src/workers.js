@@ -1,4 +1,4 @@
-import { syncAll, syncBackCatalogue, syncDetail, syncImdb } from '@genre/catalog';
+import { syncAll, syncBackCatalogue, syncDetail, syncDigital, syncImdb } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendEmail, sendPush } from '@genre/notify';
@@ -269,6 +269,15 @@ export function startWorkers({ concurrency = {} } = {}) {
          * must not drag the whole catalogue sweep along behind it.
          */
         if (job.data?.kind === 'detail') return { detail: await syncDetail({ log }) };
+        /*
+         * Home-release dates run on their own clock too, and a slower one.
+         *
+         * The answer only changes when a studio announces a date, which happens
+         * on the scale of weeks. Asking more often does not make it arrive
+         * sooner; it just re-reads the same nulls with a budget the detail pass
+         * could have spent on something new.
+         */
+        if (job.data?.kind === 'digital') return { digital: await syncDigital({ log }) };
 
         const results = await syncAll({ force: Boolean(job.data?.force) });
         // After the catalogue, top up the per-title detail within its budget.
