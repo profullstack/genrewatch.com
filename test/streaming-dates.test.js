@@ -126,6 +126,67 @@ describe('the two dates a home release is made of', () => {
     expect(got.streaming).toBeNull();
   });
 
+  /*
+   * The row production actually wrote, and the reason the format branch exists.
+   *
+   * "Subtitled Version" is a description of the cut, not a place to watch it, and
+   * the first version of this shipped it to the calendar as a film streaming on a
+   * service called Subtitled Version. Notes like it are open-ended -- extended,
+   * uncut, the 40th anniversary edition -- so they are caught on the descriptive
+   * word rather than by enumerating phrases, and the date falls back to being one
+   * you pay for.
+   */
+  test('a note describing the cut is not a service', () => {
+    const subtitled = {
+      results: [
+        {
+          iso_3166_1: 'US',
+          release_dates: [{ type: 4, release_date: '2026-12-25', note: 'Subtitled Version' }],
+        },
+      ],
+    };
+    const got = homeReleases(subtitled);
+    expect(got.streaming).toBeNull();
+    expect(got.vod).toBe('2026-12-25');
+  });
+
+  test('and neither are the other shapes those notes take', () => {
+    const noteFor = (note) =>
+      homeReleases({
+        results: [
+          { iso_3166_1: 'US', release_dates: [{ type: 4, release_date: '2026-12-25', note }] },
+        ],
+      });
+    for (const note of [
+      "Director's Cut",
+      '40th Anniversary Edition',
+      'Extended Version',
+      'Remastered',
+      'IMAX',
+      'Dubbed',
+      'Re-release',
+    ]) {
+      expect(noteFor(note).streaming).toBeNull();
+      expect(noteFor(note).vod).toBe('2026-12-25');
+    }
+  });
+
+  /* The other direction still has to work, or the fix above trades one wrong
+     answer for a worse one: every service filed as a rental. */
+  test('but a real service is still recognised', () => {
+    for (const service of ['Netflix', 'Disney+', 'HBO Max', 'Prime Video', 'Peacock', 'MUBI']) {
+      const got = homeReleases({
+        results: [
+          {
+            iso_3166_1: 'US',
+            release_dates: [{ type: 4, release_date: '2026-12-25', note: service }],
+          },
+        ],
+      });
+      expect(got.streaming).toEqual({ date: '2026-12-25', service });
+    }
+  });
+
   test('the earliest of several is the one taken', () => {
     const many = {
       results: [
