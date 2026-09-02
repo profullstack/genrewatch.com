@@ -26,6 +26,7 @@ import {
   sharedChannelsForEvent,
   sharedChannelsForSubject,
   streamSlotsOpen,
+  verdictToStore,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
 import { Hono } from 'hono';
@@ -852,7 +853,11 @@ app.get('/shared/:channelId/stream.ts', async (c) => {
     // rather than about who asked. Not for a reader who simply closed the tab.
     if (!result.silent) {
       await q
-        .markSharedChannelChecked({ channelId: row.id, live: false, note: result.note })
+        .markSharedChannelChecked({
+          channelId: row.id,
+          live: verdictToStore(result),
+          note: result.note,
+        })
         .catch(() => {});
     }
     return c.json({ error: result.note }, result.status === 499 ? 499 : result.status);
@@ -891,7 +896,11 @@ app.get('/shared/:channelId/check', async (c) => {
 
   const result = await probeStream(auth.open(row.stream_url), { signal: c.req.raw.signal });
   await q
-    .markSharedChannelChecked({ channelId: row.id, live: result.live, note: result.note })
+    .markSharedChannelChecked({
+      channelId: row.id,
+      live: verdictToStore(result),
+      note: result.note,
+    })
     .catch(() => {});
   return c.json(result);
 });
@@ -987,7 +996,7 @@ app.get('/events/:id/channel-check', async (c) => {
       .markChannelChecked({
         userId: user.id,
         channelId: pick.id,
-        live: result.live,
+        live: verdictToStore(result),
         note: result.note,
       })
       .catch(() => {});
@@ -1074,7 +1083,12 @@ app.get('/events/:id/stream.ts', async (c) => {
     // closed the tab: that says nothing about the entry.
     if (!result.silent && pick.id) {
       await q
-        .markChannelChecked({ userId: user.id, channelId: pick.id, live: false, note: result.note })
+        .markChannelChecked({
+          userId: user.id,
+          channelId: pick.id,
+          live: verdictToStore(result),
+          note: result.note,
+        })
         .catch(() => {});
     }
     return c.json({ error: result.note }, result.status === 499 ? 499 : result.status);
@@ -1158,7 +1172,7 @@ app.get('/events/:id/playlist.m3u', async (c) => {
         .markChannelChecked({
           userId: user.id,
           channelId: ch.id,
-          live: result.live,
+          live: verdictToStore(result),
           note: result.note,
         })
         .catch(() => {});
@@ -1212,7 +1226,12 @@ app.get('/my/channels/:channelId/check', async (c) => {
 
   const result = await probeStream(ch.url, { signal: c.req.raw.signal });
   await q
-    .markChannelChecked({ userId: user.id, channelId: ch.id, live: result.live, note: result.note })
+    .markChannelChecked({
+      userId: user.id,
+      channelId: ch.id,
+      live: verdictToStore(result),
+      note: result.note,
+    })
     .catch(() => {});
   return c.json(result);
 });
@@ -1260,7 +1279,12 @@ app.get('/my/channels/:channelId/stream.ts', async (c) => {
     release();
     if (!result.silent) {
       await q
-        .markChannelChecked({ userId: user.id, channelId: ch.id, live: false, note: result.note })
+        .markChannelChecked({
+          userId: user.id,
+          channelId: ch.id,
+          live: verdictToStore(result),
+          note: result.note,
+        })
         .catch(() => {});
     }
     return c.json({ error: result.note }, result.status === 499 ? 499 : result.status);

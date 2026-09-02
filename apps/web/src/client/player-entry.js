@@ -41,23 +41,29 @@ function supported() {
 /**
  * How many times a stream is rebuilt before the reader is told it failed.
  *
- * Three, with the wait doubling, so the whole sequence is over in about eleven
- * seconds. It has to be bounded and it has to be short: every restart is a fresh
- * connection to the provider, and the line permits one.
+ * Five, doubling from two seconds. It still has to be bounded -- every restart is
+ * a fresh connection and the line permits one -- but the number matters far less
+ * than when the budget refills; see `onPlaying`.
  */
-const MAX_RESTARTS = 3;
-const RESTART_BASE_MS = 1500;
+const MAX_RESTARTS = 5;
+const RESTART_BASE_MS = 2000;
+
+/**
+ * The same ladder, started further along, for a line we KNOW is busy.
+ *
+ * A generic network error is worth retrying immediately -- wifi came back, the
+ * socket was replaced, two seconds is plenty. A 503 is different: the panel has
+ * told us in words that it is still counting a connection, and the one it is
+ * counting is usually the stream that just dropped. Reconnecting two seconds
+ * later asks a question whose answer we already know, and spends an attempt to
+ * hear it. Six seconds is roughly how long these panels take to notice a session
+ * has ended, so the first attempt lands after that rather than during it.
+ */
+const BUSY_BASE_MS = 6000;
 
 /** How a stall is noticed: the clock is read this often, this many times. */
 const STALL_CHECK_MS = 5000;
 const STALL_LIMIT = 3;
-
-/**
- * Playback this long since the last restart means the trouble is over, and the
- * budget goes back to full. Without it a channel that breaks once an hour spends
- * its three restarts over an afternoon and then fails for good.
- */
-const RECOVERED_AFTER_MS = 30_000;
 
 /**
  * Attach a stream to a <video> and start it.
@@ -78,7 +84,6 @@ function attach(video, url, onError, onNotice = () => {}) {
   let restarts = 0;
   let restartTimer = null;
   let stallTimer = null;
-  let startedAt = 0;
   let lastTime = -1;
   let stalls = 0;
 
@@ -128,7 +133,7 @@ function attach(video, url, onError, onNotice = () => {}) {
    * stream's current shape and simply works. That is a reconnect, so it is
    * bounded, spaced out, and it says so on the page rather than freezing.
    */
-  const restart = (finalMessage) => {
+  const restart = (finalMessage, baseMs = RESTART_BASE_MS) => {
     if (stopped) return;
     if (restarts >= MAX_RESTARTS) return giveUp(finalMessage);
     restarts += 1;
@@ -140,7 +145,7 @@ function attach(video, url, onError, onNotice = () => {}) {
         restartTimer = null;
         if (!stopped) start();
       },
-      RESTART_BASE_MS * 2 ** (restarts - 1),
+      baseMs * 2 ** (restarts - 1),
     );
   };
 
@@ -171,20 +176,14 @@ function attach(video, url, onError, onNotice = () => {}) {
         }
         return;
       }
-      // It is moving. If it has been moving for a while, the earlier trouble is
-      // over and this counts as a healthy stream again.
+      // It is moving, so nothing is wrong right now. The restart budget is not
+      // touched here -- that is `onPlaying`'s job, for the reason given there.
       lastTime = video.currentTime;
       stalls = 0;
-      if (restarts > 0 && Date.now() - startedAt > RECOVERED_AFTER_MS) {
-        restarts = 0;
-        onNotice(null);
-      }
     }, STALL_CHECK_MS);
   };
 
   function start() {
-    startedAt = Date.now();
-
     /*
      * The buffering profile is picked per screen, not once for the site.
      *
@@ -258,8 +257,30 @@ function attach(video, url, onError, onNotice = () => {}) {
       }
       if (code === 404) return giveUp('That channel is no longer on your list.');
       if (code === 415) return giveUp('That channel needs a different player. Try VLC.');
-      if (code === 502 || code === 504) {
+      /*
+       * The provider is not answering with video, and there are two very
+       * different reasons for that.
+       *
+       * 502 is the route having established something about the SLOT: it served
+       * an HTML apology, or the panel answered with a status that means the
+       * entry is gone. Nothing about that improves on the second attempt, so it
+       * is still final.
+       *
+       * 503 and 504 are the route having established something about the last
+       * few seconds: a busy line, a panel having a bad minute, a connection that
+       * did not open in time. Every one of those is the ordinary way a provider
+       * behaves, and every one used to arrive here as 502 and end the stream.
+       * They reconnect -- 503 further down the ladder, because a busy line is
+       * the one failure whose cause we can name and wait out.
+       */
+      if (code === 502) {
         return giveUp('Your provider did not send a stream for that channel.');
+      }
+      if (code === 503) {
+        return restart('Your provider kept the line busy. Try again in a minute.', BUSY_BASE_MS);
+      }
+      if (code === 504) {
+        return restart('Your provider did not send a stream for that channel.');
       }
       if (type === mpegts.ErrorTypes.NETWORK_ERROR) {
         /*
@@ -296,11 +317,27 @@ function attach(video, url, onError, onNotice = () => {}) {
    *
    * "Reconnecting…" has to come off the page the moment the stream is back, and
    * the event that means it is back is this one -- not the absence of another
-   * error, which is also what a permanently frozen player looks like. The restart
-   * budget is NOT cleared here: a second of playback between two failures is not
-   * a recovery, and thirty are (see the stall watcher).
+   * error, which is also what a permanently frozen player looks like.
+   *
+   * The budget used to be deliberately NOT cleared here, on the reasoning that a
+   * second of playback between two failures is not a recovery and thirty are.
+   * That reasoning is what killed streams. Thirty unbroken seconds, measured from
+   * the last restart and checked only from inside the stall watcher, meant three
+   * hiccups inside half a minute spent the entire allowance -- and the entry was
+   * given up on for good, even though all three restarts had worked and the
+   * picture was back within seconds each time. On a provider line that drops a
+   * connection now and then, which is all of them, that is a hard ceiling of
+   * three recoveries per stream, and reaching it takes about a minute. "It dies
+   * after a minute or two" was this line.
+   *
+   * The budget should be spent by failures to RECOVER, not by failures. An entry
+   * that never plays still gives up after MAX_RESTARTS, because nothing ever
+   * fires this.
    */
-  const onPlaying = () => onNotice(null);
+  const onPlaying = () => {
+    restarts = 0;
+    onNotice(null);
+  };
   video.addEventListener('playing', onPlaying);
 
   start();

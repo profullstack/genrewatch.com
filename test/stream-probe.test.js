@@ -62,7 +62,9 @@ describe('what counts as a live stream', () => {
       throw new Error('ECONNREFUSED');
     };
     const r = await probeStream('http://x/1');
-    expect(r).toEqual({ live: false, note: 'could not connect' });
+    // Not definitive: a fact about the last six seconds rather than about the
+    // entry, so it is stored as unknown and the row stays offerable.
+    expect(r).toEqual({ live: false, definitive: false, note: 'could not connect' });
   });
 
   test('something that is not a URL is refused without a request', async () => {

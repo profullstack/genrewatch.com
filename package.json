@@ -1,6 +1,6 @@
 {
   "name": "genrewatch.com",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "A release calendar for every genre. Follow a genre or a name, get told before it drops.",

@@ -73,6 +73,10 @@ export function isTvBrowser(userAgent) {
  * comments on those live with the values rather than in the caller, because the
  * reason a value differs is the only interesting thing about it.
  *
+ * Neither screen chases the live edge any more. That was the one setting that
+ * genuinely differed in kind rather than in degree, and it was the desktop's
+ * stutter; see below.
+ *
  * @param {boolean} isTv
  */
 export function playerConfig(isTv) {
@@ -120,18 +124,33 @@ export function playerConfig(isTv) {
   return {
     ...shared,
     /*
-     * Live settings for a screen with a real connection, and each one is
-     * load-bearing.
+     * A desktop wants a SMALLER version of what the television gets, not the
+     * opposite of it. It was given the opposite, and both halves were wrong.
      *
-     * The stash exists to smooth a seekable file; here it is pure added latency,
-     * so it is off and the initial chunk is small. Latency chasing skips the
-     * player forward when it drifts behind -- without it a stall is never
-     * recovered from and the stream just plays permanently late.
+     * The stash was off, on the reasoning that read-ahead is pure added latency
+     * on a real connection. But the latency being smoothed is not the reader's
+     * bandwidth, it is the PROVIDER's pacing: a transport stream arrives in
+     * bursts, and with nothing buffered every gap between bursts is an underrun
+     * however fast the link. 384KB is mpegts.js's own default, roughly a second.
+     *
+     * Latency chasing was on, to skip forward when the stream drifts behind.
+     * mpegts.js implements that by assigning to `currentTime` -- a hard seek, on
+     * every appended fragment, and MSE rebuilds the decode pipeline for each one.
+     * It leaves only `MinRemain` seconds of buffer behind, which was one: a
+     * single jitter spike from an underrun, the underrun refills past the
+     * ceiling, and it seeks again. That sawtooth was most of the desktop stutter,
+     * and each hitch was also a chance to spend a restart -- which is how a
+     * stutter became a stream that ended.
+     *
+     * Both screens now read ahead and neither seeks. They differ in how much they
+     * hold and how close they sit to the edge, which is the only thing the device
+     * should have been deciding. The two bounds are inert while chasing is off,
+     * and are kept as the bound anyone re-enabling it would want.
      */
-    enableStashBuffer: false,
-    stashInitialSize: 128,
-    liveBufferLatencyChasing: true,
-    liveBufferLatencyMaxLatency: 6,
+    enableStashBuffer: true,
+    stashInitialSize: 384 * 1024,
+    liveBufferLatencyChasing: false,
+    liveBufferLatencyMaxLatency: 5,
     liveBufferLatencyMinRemain: 1,
   };
 }
