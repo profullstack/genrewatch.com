@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@genre/config": "workspace:*",
-    "@genre/db": "workspace:*"
+    "@genre/db": "workspace:*",
+    "@profullstack/player": "0.5.0"
   }
 }

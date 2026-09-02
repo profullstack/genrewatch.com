@@ -280,6 +280,7 @@ export {
   matchTerms,
   oneChannelM3u,
   parseM3u,
+  parseM3uStream,
   rankChannelsForTitle,
 } from './m3u.js';
 export { keyFor, normaliseTitle, slugify } from './slug.js';

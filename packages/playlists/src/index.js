@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { open, seal } from '@genre/auth';
-import { matchTerms, normaliseTitle, parseM3u, rankChannelsForTitle } from '@genre/catalog';
+import { matchTerms, normaliseTitle, parseM3uStream, rankChannelsForTitle } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 
@@ -76,7 +76,25 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
     return true;
   };
 
-  let text;
+  /*
+   * Read, hashed and parsed in one pass, holding none of it.
+   *
+   * This used to be `text = await res.text()` followed by a hash of that string
+   * and a parse that split it into an array of every line. On the catalogue this
+   * actually serves -- 300,000 entries -- those three copies were most of a
+   * gigabyte, and doing it beside the HTTP server starved it: the accept queue
+   * filled, the edge reported "connection dial timeout", and the site 502'd every
+   * five minutes for as long as it was left alone. The worker has its own service
+   * now, but a worker that wedges just fails more quietly.
+   *
+   * The digest still covers the whole body -- `onChunk` sees every chunk, in
+   * order, and the stream is read to the end even once the entry ceiling is hit --
+   * because the unchanged-poll short circuit below is only as good as its hash.
+   */
+  const hash = createHash('sha256');
+  let bytes = 0;
+  /** The stream result. Not `parsed` -- that name is the URL, twenty lines up. */
+  let list;
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(60_000),
@@ -90,10 +108,21 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
     if (len > config.playlists.maxBytes) {
       throw new Error(`that list is ${Math.round(len / 1e6)}MB, which is larger than we store`);
     }
-    text = await res.text();
-    if (text.length > config.playlists.maxBytes) {
-      throw new Error('that list is larger than we store');
-    }
+    if (!res.body) throw new Error('the provider sent no body');
+
+    list = await parseM3uStream(res.body, {
+      max: config.playlists.maxChannels,
+      onChunk: (chunk) => {
+        bytes += chunk.byteLength ?? chunk.length;
+        // Throwing here aborts the parse and cancels the download. A provider
+        // that lies in its content-length, or sends none at all, is stopped
+        // mid-flight rather than after we have already taken the whole thing.
+        if (bytes > config.playlists.maxBytes) {
+          throw new Error('that list is larger than we store');
+        }
+        hash.update(chunk);
+      },
+    });
   } catch (err) {
     const message = err.name === 'TimeoutError' ? 'the provider did not respond' : err.message;
     const restored = await restorePrevious();
@@ -105,12 +134,13 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
     );
   }
 
-  // Hash the body before parsing it. The provider offers no conditional request --
-  // no ETag, no Last-Modified, and If-Modified-Since is answered with a full 200 --
-  // so the download cannot be avoided, but the rewrite behind it can. Most polls see
-  // a byte-identical file: a provider rewrites the handful of slots that changed and
-  // leaves the other several thousand entries sitting still.
-  const contentHash = createHash('sha256').update(text).digest('hex');
+  // The hash of the body, accumulated above as it arrived. The provider offers no
+  // conditional request -- no ETag, no Last-Modified, and If-Modified-Since is
+  // answered with a full 200 -- so the download cannot be avoided, but the rewrite
+  // behind it can. Most polls see a byte-identical file: a provider rewrites the
+  // handful of slots that changed and leaves the other several thousand sitting
+  // still.
+  const contentHash = hash.digest('hex');
   /*
    * ...unless the rows we already hold predate a column a fresh parse would fill.
    *
@@ -123,11 +153,11 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
    */
   const stale = await q.playlistNeedsReparse(userId);
   if (knownHash && knownHash === contentHash && !stale) {
-    await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(text.length) });
+    await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(bytes) });
     return { channels: null, unchanged: true };
   }
 
-  const channels = parseM3u(text, { max: config.playlists.maxChannels }).map((c) => ({
+  const channels = list.entries.map((c) => ({
     title: c.title,
     // The provider's own group-title, verbatim. This is what makes a reader's own
     // list browsable by genre without any of it leaving their account.
@@ -161,10 +191,12 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
   }
 
   await q.replacePlaylistChannels({ userId, channels });
-  await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(text.length) });
+  await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(bytes) });
   return {
     channels: channels.length,
-    truncated: channels.length >= config.playlists.maxChannels,
+    // The parser says so directly now: it knows it stopped feeding entries,
+    // where a length comparison could only infer it.
+    truncated: list.truncated,
     unchanged: false,
   };
 }

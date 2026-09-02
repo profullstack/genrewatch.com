@@ -30,14 +30,25 @@ describe('the byte ceiling', () => {
     expect(cfg).toContain("num('PLAYLIST_MAX_BYTES', 100 * 1024 * 1024)");
   });
 
-  /* It is still a ceiling: the body is read into memory as one string. */
-  test('is still checked before and after the download', () => {
+  /*
+   * Checked before the download from the header, and then again DURING it.
+   *
+   * It used to be measured on the finished string, which meant a provider that
+   * understated its content-length -- or sent none, which is common -- had
+   * already been read into memory in full by the time the limit was consulted.
+   * The ceiling is now counted off the wire, so an oversized list is abandoned
+   * mid-flight and the download is cancelled with it.
+   */
+  test('is checked from the header and again as the bytes arrive', () => {
     const src = readFileSync(
       new URL('../packages/playlists/src/index.js', import.meta.url).pathname,
       'utf8',
     );
     expect(src).toContain("res.headers.get('content-length')");
-    expect(src).toContain('text.length > config.playlists.maxBytes');
+    expect(src).toContain('bytes > config.playlists.maxBytes');
+    // Counted inside the chunk callback, which is what makes it mid-flight.
+    const cb = src.slice(src.indexOf('onChunk: (chunk)'));
+    expect(cb.slice(0, cb.indexOf('},'))).toContain('bytes > config.playlists.maxBytes');
   });
 });
 
@@ -64,7 +75,9 @@ describe('the entry ceiling', () => {
       new URL('../packages/playlists/src/index.js', import.meta.url).pathname,
       'utf8',
     );
-    expect(src).toContain('truncated: channels.length >= config.playlists.maxChannels');
+    // The parser reports it now, rather than the caller inferring it from a
+    // length: it is the half that knows it stopped accepting entries.
+    expect(src).toContain('truncated: list.truncated');
   });
 });
 
@@ -87,8 +100,29 @@ describe('polling a large list', () => {
   });
 
   test('and the size actually reaches it', () => {
-    expect(src).toContain('nextRefreshAt(text.length)');
+    // Counted off the wire now rather than measured on a string, because there is
+    // no longer a string: bytes is what the download actually cost anyway.
+    expect(src).toContain('nextRefreshAt(bytes)');
     expect(src).not.toMatch(/nextRefreshAt\(\)/);
+  });
+
+  /*
+   * The regression this whole change exists to prevent.
+   *
+   * `await res.text()` held a 300,000-entry catalogue as one string, hashed it
+   * into a second copy and split it into an array of every line. Beside the HTTP
+   * server that starved it: 513 connections banked up in the accept queue, the
+   * edge answering "connection dial timeout", every five minutes after boot.
+   */
+  test('the body is never buffered whole', () => {
+    // Comments stripped first: the one above the fetch quotes the old call by
+    // name, and a guard that its own explanation trips is worse than none.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    expect(code).not.toContain('res.text()');
+    expect(code).toContain('parseM3uStream(res.body');
+    // The digest is fed chunk by chunk. A hash of most of a file would silently
+    // break the unchanged-poll short circuit rather than fail.
+    expect(code).toContain('hash.update(chunk)');
   });
 });
 
