@@ -221,15 +221,38 @@ export const Layout = (props) => (
           GenreWatch is free. Times are shown in your own time zone (
           <span data-tz-label>your device</span>).
         </p>
+        {/* The providers this catalogue is actually built from. The sports wording
+            here was inherited from the sibling site and named ESPN, which supplies
+            nothing to this one. TMDB's terms require the disclaimer verbatim. */}
         <p class="muted">
-          Schedule data from{' '}
-          <a href="https://www.espn.com" rel="noopener nofollow">
-            ESPN
+          Catalogue data from{' '}
+          <a href="https://www.themoviedb.org" rel="noopener nofollow">
+            TMDB
           </a>
-          's public API. Not affiliated with ESPN.
+          ,{' '}
+          <a href="https://www.tvmaze.com" rel="noopener nofollow">
+            TVmaze
+          </a>
+          ,{' '}
+          <a href="https://anilist.co" rel="noopener nofollow">
+            AniList
+          </a>
+          ,{' '}
+          <a href="https://musicbrainz.org" rel="noopener nofollow">
+            MusicBrainz
+          </a>
+          ,{' '}
+          <a href="https://thespacedevs.com" rel="noopener nofollow">
+            The Space Devs
+          </a>{' '}
+          and{' '}
+          <a href="https://developer.imdb.com/non-commercial-datasets/" rel="noopener nofollow">
+            IMDb
+          </a>
+          . This product uses the TMDB API but is not endorsed or certified by TMDB.
         </p>
         <p class="muted">
-          <a href="/sports">Browse sports</a> · <a href="/about">About</a> ·{' '}
+          <a href="/genres">Browse genres</a> · <a href="/about">About</a> ·{' '}
           <a href="/feeds">RSS &amp; calendars</a> · <a href="/api/v1">Public API</a>
         </p>
       </footer>
