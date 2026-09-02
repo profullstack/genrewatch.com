@@ -69,9 +69,41 @@ const NOT_A_SERVICE =
 const A_FORMAT_NOTE =
   /\b(version|edition|cut|subtitled|subtitles|dubbed|dub|remaster(ed)?|restored|anniversary|uncut|extended|unrated|imax|3-?d|re-?release|theatrical|director'?s)\b/i;
 
+/**
+ * A window word anywhere in the note, not just as the whole of it.
+ *
+ * "PVOD Rent/Buy" reached the calendar as a service. The exact-match list above
+ * catches a note that IS a window; this catches one that mentions being a window
+ * while saying something else too, which is the commoner shape.
+ */
+const A_WINDOW_PHRASE = /\b(pvod|tvod|vod|rent|buy|purchase|rental|est)\b/i;
+
+/**
+ * Notes that describe a shop or a route rather than a subscription.
+ *
+ * Two of these shipped: "Letterboxd Video Store - Unreleased Gems (30 days)" and
+ * "Netflix / Rockstar Games official YouTube channel". Both are true statements
+ * and neither is an answer to "is this included where I already subscribe", which
+ * is the only question the streaming row exists to answer.
+ *
+ * A parenthesis is the reliable tell. A service name never has one; a note
+ * qualifying what it means -- a window, a territory, a duration -- usually does.
+ *
+ * Note the deliberate absence of a length rule. It was the obvious test and it is
+ * wrong: "Apple TV, YouTube & Prime Video" is thirty-one characters and a
+ * perfectly good answer, while a short note can still be junk.
+ */
+const NOT_A_PLACE = /[()]|\b(store|channel|official|unreleased|theatres?|cinemas?)\b/i;
+
 /** True when a note names a service somebody could subscribe to. */
 function namesAService(note) {
-  return Boolean(note) && !NOT_A_SERVICE.test(note) && !A_FORMAT_NOTE.test(note);
+  if (!note) return false;
+  return (
+    !NOT_A_SERVICE.test(note) &&
+    !A_FORMAT_NOTE.test(note) &&
+    !A_WINDOW_PHRASE.test(note) &&
+    !NOT_A_PLACE.test(note)
+  );
 }
 
 /** Genres TMDB carries that this site files elsewhere. */
