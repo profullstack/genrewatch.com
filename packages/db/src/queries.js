@@ -855,6 +855,99 @@ export async function eventsNeedingDigitalCheck({ limit = 80, staleDays = 10 } =
   `;
 }
 
+/**
+ * IMDb titles with nothing to show, soonest first.
+ *
+ * Restricted to those with an UPCOMING event, and that restriction is the whole
+ * design. There are 314,000 IMDb subjects and about a thousand of them are things
+ * somebody is waiting for; a reader meets this gap on the calendar, so the budget
+ * goes there rather than being spread evenly over a third of a million rows that
+ * nobody has asked about. The rest stay reachable by search and can fill in later.
+ *
+ * `image_url is null` is the test for "has nothing" because it is the field a page
+ * most visibly lacks, and IMDb never supplies it -- so it cannot be true of a row
+ * this pass has already filled.
+ */
+export async function imdbSubjectsNeedingMeta({ limit = 120 } = {}) {
+  return sql`
+    select s.id, s.provider_key, min(e.starts_at) as soonest
+    from subjects s
+    join events e on e.subject_id = s.id and e.state = 'upcoming'
+    where s.provider = 'imdb'
+      and s.meta_checked_at is null
+      and s.image_url is null
+    group by s.id, s.provider_key
+    order by soonest
+    limit ${limit}
+  `;
+}
+
+/**
+ * Write what TMDB knew, to the title and to every event that shows it.
+ *
+ * Both, because they are two different surfaces: the subject page renders the
+ * subject's own artwork, and a calendar row renders the event's. Filling one and
+ * not the other leaves the film illustrated on its own page and blank in every
+ * list that mentions it, which is the half-fixed state that looks like a bug.
+ *
+ * Every field is coalesced. A later, richer pass must not be undone by an earlier
+ * one, and a title that TMDB has no synopsis for must not have an existing one
+ * blanked.
+ */
+export async function saveImdbMeta(rows) {
+  let n = 0;
+  for (const r of rows ?? []) {
+    if (!r?.subjectId) continue;
+
+    if (r.matched) {
+      await sql`
+        update subjects set
+          image_url = coalesce(${r.imageUrl ?? null}, image_url),
+          backdrop_url = coalesce(${r.backdropUrl ?? null}, backdrop_url),
+          description = coalesce(${r.summary ?? null}, description),
+          tmdb_id = coalesce(${r.tmdbId ?? null}, tmdb_id),
+          meta_checked_at = now()
+        where id = ${r.subjectId}
+      `;
+      await sql`
+        update events set
+          image_url = coalesce(${r.imageUrl ?? null}, image_url),
+          backdrop_url = coalesce(${r.backdropUrl ?? null}, backdrop_url),
+          summary = coalesce(${r.summary ?? null}, summary),
+          rating = coalesce(${r.rating ?? null}, rating),
+          rating_count = coalesce(${r.ratingCount ?? null}, rating_count),
+          updated_at = now()
+        where subject_id = ${r.subjectId}
+      `;
+
+      /*
+       * And a real date, where there is one.
+       *
+       * Only over year precision, never over a day. An IMDb row is anchored to 1
+       * January because a year is all it had, so the calendar shows every 2027
+       * film arriving together on New Year's Day. TMDB often knows the actual
+       * day. Guarding on precision means a date another provider established is
+       * never overwritten by this -- the same rule the IMDb pass itself follows.
+       */
+      if (r.releaseDate) {
+        await sql`
+          update events set
+            starts_at = ${r.releaseDate},
+            precision = 'day',
+            updated_at = now()
+          where subject_id = ${r.subjectId}
+            and precision = 'year'
+            and time_known = false
+        `;
+      }
+      n++;
+    } else {
+      await sql`update subjects set meta_checked_at = now() where id = ${r.subjectId}`;
+    }
+  }
+  return n;
+}
+
 /** Stamp a home-release lookup, found or not, so the cycle moves on. */
 export async function markDigitalChecked(eventIds) {
   if (!eventIds?.length) return;

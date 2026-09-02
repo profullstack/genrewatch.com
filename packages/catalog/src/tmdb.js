@@ -206,6 +206,97 @@ export function homeReleaseEvents({ providerId, home, base }) {
  * can say a film has a digital date this week without saying which day or on what
  * service -- neither of the two things a reader needs.
  */
+/**
+ * What TMDB knows about a title we learned about from IMDb.
+ *
+ * IMDb's dumps are the reason this site knows about 314,000 titles, and the
+ * reason a third of the forward calendar is a name and a year with nothing else:
+ * title.basics carries no artwork, no synopsis and no finer date than a year. So
+ * an upcoming film reads "Star Wars: New Jedi Order, 2027" and stops there, which
+ * is a search result rather than a page.
+ *
+ * The join is EXACT, and that is what makes this safe to run unattended. Every
+ * IMDb row is keyed by its tconst, and TMDB indexes the same identifier, so this
+ * asks "what is tt10300398" rather than guessing from a title and a year. Fuzzy
+ * matching on titles would put the wrong poster on a film, which is worse than no
+ * poster -- there are a dozen films called Rebirth and no way to tell from a name
+ * and a year which one a stranger meant.
+ *
+ * Not everything is found, and not every hit is complete: measured over eight
+ * upcoming titles, six matched, four had a synopsis and three a poster. TMDB is
+ * thin on the same obscure titles IMDb is thin on. What it does have is the
+ * notable ones, which are the rows anybody was going to open.
+ *
+ * @param {string[]} tconsts IMDb ids, e.g. "tt10300398"
+ */
+export async function fetchByImdbIds(
+  tconsts,
+  { apiKey = process.env.TMDB_API_KEY, limit = 120 } = {},
+) {
+  if (!apiKey || !tconsts?.length) return [];
+  const out = [];
+
+  for (const tconst of tconsts.slice(0, limit)) {
+    let res;
+    try {
+      res = await getJson(
+        `${BASE}/find/${encodeURIComponent(tconst)}?api_key=${apiKey}&external_source=imdb_id`,
+        { minGapMs: MIN_GAP_MS },
+      );
+    } catch {
+      // One bad id must not end the pass. It is stamped either way, so it comes
+      // round again on a later cycle rather than blocking this one.
+      continue;
+    }
+
+    /*
+     * Films first, then television.
+     *
+     * IMDb's dumps carry both and this site files them in different categories,
+     * but for the purpose of "put a poster on it" either answer is the right one.
+     * Taking movie_results first only decides which wins for the rare id that
+     * appears in both.
+     */
+    const m = res?.movie_results?.[0] ?? res?.tv_results?.[0];
+    if (!m?.id) {
+      // A miss is a result. Recording it is what stops the next pass spending its
+      // budget re-asking about the same unmatched titles forever.
+      out.push({ tconst, matched: false });
+      continue;
+    }
+
+    const votes = Number(m.vote_count ?? 0);
+    out.push({
+      tconst,
+      matched: true,
+      tmdbId: String(m.id),
+      imageUrl: m.poster_path ? `${POSTER}${m.poster_path}` : null,
+      backdropUrl: m.backdrop_path ? `${BACKDROP}${m.backdrop_path}` : null,
+      summary: m.overview?.trim() || null,
+      rating: votes > 0 ? Number(m.vote_average) : null,
+      ratingCount: votes || null,
+      /*
+       * A real date, where TMDB has one.
+       *
+       * The most valuable field here and the least obvious. An IMDb row is stored
+       * at year precision -- anchored to 1 January, because that is all a year
+       * can mean -- so the calendar shows a 2027 film as arriving on New Year's
+       * Day alongside every other 2027 film. TMDB frequently knows the actual
+       * day, which turns a shrug into a date somebody can be reminded about.
+       */
+      releaseDate: /^\d{4}-\d{2}-\d{2}$/.test(m.release_date ?? m.first_air_date ?? '')
+        ? (m.release_date ?? m.first_air_date)
+        : null,
+    });
+  }
+
+  return out;
+}
+
+/** Noon UTC for a YYYY-MM-DD, exported so the sync layer anchors dates the same
+ *  way this adapter does rather than reimplementing the rule. */
+export const dayAnchor = noonUtc;
+
 export async function fetchHomeReleases(
   ids,
   { apiKey = process.env.TMDB_API_KEY, limit = 80 } = {},

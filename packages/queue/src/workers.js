@@ -1,4 +1,11 @@
-import { syncAll, syncBackCatalogue, syncDetail, syncDigital, syncImdb } from '@genre/catalog';
+import {
+  syncAll,
+  syncBackCatalogue,
+  syncDetail,
+  syncDigital,
+  syncImdb,
+  syncImdbMeta,
+} from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { sendEmail, sendPush } from '@genre/notify';
@@ -278,6 +285,15 @@ export function startWorkers({ concurrency = {} } = {}) {
          * could have spent on something new.
          */
         if (job.data?.kind === 'digital') return { digital: await syncDigital({ log }) };
+        /*
+         * Artwork for the IMDb rows, on its own clock and not behind the sweep.
+         *
+         * It is the same shape of job as detail -- one request per title against
+         * a provider that tolerates fifty a second -- and there are about a
+         * thousand upcoming titles waiting on it, so it wants to run often enough
+         * to drain rather than once per catalogue pass.
+         */
+        if (job.data?.kind === 'imdb-meta') return { imdbMeta: await syncImdbMeta({ log }) };
 
         const results = await syncAll({ force: Boolean(job.data?.force) });
         // After the catalogue, top up the per-title detail within its budget.

@@ -397,6 +397,46 @@ export async function syncDetail({ log = console.log, limit = 120 } = {}) {
 }
 
 /**
+ * Give the titles IMDb told us about something to show.
+ *
+ * The IMDb backfill is what makes this catalogue large and what makes a third of
+ * the forward calendar unreadable: title.basics has a name, a type and a year, and
+ * no poster, synopsis or finer date. In production every one of the 1,204 upcoming
+ * IMDb events was missing its image, its summary and its trailer.
+ *
+ * The join is on the tconst, which both sites index, so this asks TMDB "what is
+ * tt10300398" rather than guessing from a title and a year. That is the property
+ * that makes it safe unattended -- a fuzzy title match would eventually put a
+ * confidently wrong poster on a film, which is worse than a blank one.
+ *
+ * Budgeted and stamped like the other per-title passes, and stamping the MISSES
+ * matters most here: about a quarter of these ids are in neither site's good
+ * graces, and without recording the attempt the pass would re-ask the same
+ * unmatched titles every cycle and never reach the rest.
+ */
+export async function syncImdbMeta({ log = console.log, limit = 120 } = {}) {
+  if (!brandProviders().includes('tmdb')) return { skipped: 'tmdb not enabled' };
+
+  const pending = await q.imdbSubjectsNeedingMeta({ limit });
+  if (pending.length === 0) return { enriched: 0 };
+
+  const bySubject = new Map(pending.map((r) => [r.provider_key, r.id]));
+  const found = await tmdb.fetchByImdbIds([...bySubject.keys()], {
+    apiKey: config.catalog.tmdbKey,
+    limit,
+  });
+
+  const rows = found
+    .map((f) => ({ ...f, subjectId: bySubject.get(f.tconst) }))
+    .filter((f) => f.subjectId);
+  const saved = await q.saveImdbMeta(rows);
+
+  const misses = rows.length - saved;
+  log(`[sync] imdb meta: ${saved} illustrated, ${misses} not in TMDB`);
+  return { enriched: saved, missed: misses };
+}
+
+/**
  * When each film reaches the reader's own television.
  *
  * The gap this closes is a timing one. A digital date does not exist when a film
