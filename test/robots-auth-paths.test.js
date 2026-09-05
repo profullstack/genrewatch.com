@@ -130,6 +130,25 @@ describe('training crawlers that come in anyway are sold a pass', () => {
     expect(session).toBeGreaterThan(gate);
   });
 
+  /*
+   * The crawlers that do not say who they are: a hosting fleet is refused by
+   * address, a copied Chrome string is charged, and a signed-in reader is
+   * never judged by either.
+   */
+  test('hosting ranges are refused, spoofed browsers charged, sessions exempt', async () => {
+    const src = await readFile(APP, 'utf8');
+    const wiring = src.slice(
+      src.indexOf('createGateway({'),
+      src.indexOf('x402Gateway(crawlGateway)'),
+    );
+    expect(wiring).toContain('denyCidrs: OVH_RANGES');
+    expect(wiring).toContain('chargeSpoofedBrowsers: true');
+    expect(wiring).toMatch(/exempt: \(request\) =>[\s\S]*config\.session\.cookie/);
+    for (const range of ['51.38.0.0/16', '54.38.0.0/16', '141.94.0.0/16', '151.80.0.0/16']) {
+      expect(src).toContain(`'${range}'`);
+    }
+  });
+
   test('it sells what config says, to the address config names', async () => {
     const src = await readFile(APP, 'utf8');
     const wiring = src.slice(
