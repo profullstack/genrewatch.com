@@ -29,11 +29,14 @@ import {
   verdictToStore,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
+import { createGateway, isTrainingAgent } from '@profullstack/x402-gateway';
+import { x402Gateway } from '@profullstack/x402-gateway/hono';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { attempt, callerAddress, forgive, MISS, VIEW } from './lib/auth-throttle.js';
 import { buildCalendar } from './lib/ics.js';
+import { robotsTxt } from './lib/robots.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
 import {
@@ -164,6 +167,42 @@ app.use('*', async (c, next) => {
   }
   return next();
 });
+
+/*
+ * Crawlers that may come in, for a price.
+ *
+ * Search and retrieval crawlers read the site free, the same as people: they
+ * send readers back. A TRAINING crawler copies pages into a corpus and sends
+ * nobody back, and here Meta's alone was 30,000 to 49,000 hits a day, more
+ * than 95% of all traffic. robots.txt (lib/robots.js) asks those to stay out;
+ * this is what happens when they come in anyway: every page answers 402 with
+ * an x402 offer, or the sales page at /crawl, and paying it buys a signed pass
+ * for a day.
+ *
+ * After the outright block above -- a crawler refused everywhere is not sold
+ * anything -- and before the session lookup, which a 402 does not need. With
+ * no COINPAY_X402_KEY or CRAWL_PAY_TO the gateway still answers 402, with an
+ * empty offer: nothing is sold, but nothing is given away either.
+ */
+const crawlGateway = createGateway({
+  siteUrl: config.siteUrl,
+  siteName: 'GenreWatch',
+  coinpay: { apiKey: config.coinpay.x402Key, baseUrl: config.coinpay.baseUrl },
+  payTo: config.crawl.payTo,
+  priceCents: config.crawl.priceCents,
+  currency: config.crawl.currency,
+  passMinutes: config.crawl.passMinutes,
+  /*
+   * Lightpanda is a headless browser sold to scrapers, and on 2026-09-02 a
+   * fleet of it fetched 8,500 pages from the sibling site in a day, from 104
+   * countries. It is not on any robots list because it reads none, and it
+   * self-identifies, which is all the gate needs. A scraper is a crawler that
+   * has not paid yet.
+   */
+  isPaidAgent: (ua) => isTrainingAgent(ua) || /lightpanda/i.test(ua),
+  contact: `${config.siteUrl}/contact`,
+});
+app.use('*', x402Gateway(crawlGateway));
 
 app.use('*', async (c, next) => {
   const sid = getCookie(c, config.session.cookie);
@@ -2819,11 +2858,7 @@ app.get('/manifest.webmanifest', (c) =>
  * for every signed-out visitor, they carry nothing a search result should point
  * at, and /api/ answers callers rather than readers.
  */
-app.get('/robots.txt', (c) =>
-  c.text(
-    `User-agent: AwarioBot\nDisallow: /\n\nUser-agent: *\nAllow: /\nDisallow: /login\nDisallow: /signup\nDisallow: /auth/\nDisallow: /api/\nSitemap: ${config.siteUrl}/sitemap.xml\n`,
-  ),
-);
+app.get('/robots.txt', (c) => c.text(robotsTxt()));
 
 const STATIC_FILES = [
   ['/styles.css', 'styles.css', 'text/css'],
