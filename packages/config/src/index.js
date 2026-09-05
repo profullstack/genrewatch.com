@@ -405,6 +405,17 @@ export const config = {
     get webhookSecret() {
       return opt('COINPAY_WEBHOOK_SECRET');
     },
+    /**
+     * A SCOPED key (Businesses -> API Keys), separate from `apiKey` above.
+     *
+     * CoinPay's x402 verify and settle routes resolve the merchant from
+     * `business_api_keys` only; the legacy business key that checkout uses is
+     * refused there with "Invalid or inactive API key". Same shape, different
+     * table, and the failure is only visible at the moment a crawler pays.
+     */
+    get x402Key() {
+      return opt('COINPAY_X402_KEY');
+    },
     baseUrl: opt('COINPAY_BASE_URL', 'https://coinpayportal.com'),
     get enabled() {
       return Boolean(this.apiKey && this.businessId && this.webhookSecret);
@@ -425,6 +436,38 @@ export const config = {
     from: opt('MAIL_FROM', 'GenreWatch <alerts@genrewatch.com>'),
     get enabled() {
       return Boolean(this.resendKey);
+    },
+  },
+
+  /**
+   * Selling crawl access to training crawlers.
+   *
+   * People and search crawlers read the site free. A training crawler -- one that
+   * copies pages into a corpus and sends nobody back -- is answered with 402 and
+   * an x402 offer instead, and paying it buys a pass. Both numbers are
+   * commercial decisions, so both are configuration. Neither is a secret: the
+   * price is printed on the page that sells the thing.
+   */
+  crawl: {
+    /** $1, in cents, because money is never a float. */
+    priceCents: num('CRAWL_PRICE_CENTS', 100),
+    currency: opt('CRAWL_CURRENCY', 'USD'),
+    /** What a payment buys: a day of requests. */
+    passMinutes: num('CRAWL_PASS_MINUTES', 1440),
+    /**
+     * The EVM address the USDC lands in, on Base, Polygon and Ethereum alike.
+     *
+     * The one payee the business cannot resolve for itself: CoinPay's x402
+     * verify holds the proof to whatever address the offer named, and never
+     * looks the merchant's wallets up. Read on use, like the CoinPay keys.
+     */
+    get payTo() {
+      return opt('CRAWL_PAY_TO');
+    },
+    /** Nothing can be sold without a way to take the money. Off still answers
+     *  a training crawler with 402, but with an empty offer -- a refusal. */
+    get enabled() {
+      return Boolean(config.coinpay.x402Key && this.payTo);
     },
   },
 

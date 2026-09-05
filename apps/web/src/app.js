@@ -29,6 +29,8 @@ import {
   verdictToStore,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
+import { createGateway } from '@profullstack/x402-gateway';
+import { x402Gateway } from '@profullstack/x402-gateway/hono';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
@@ -165,6 +167,34 @@ app.use('*', async (c, next) => {
   }
   return next();
 });
+
+/*
+ * Crawlers that may come in, for a price.
+ *
+ * Search and retrieval crawlers read the site free, the same as people: they
+ * send readers back. A TRAINING crawler copies pages into a corpus and sends
+ * nobody back, and here Meta's alone was 30,000 to 49,000 hits a day, more
+ * than 95% of all traffic. robots.txt (lib/robots.js) asks those to stay out;
+ * this is what happens when they come in anyway: every page answers 402 with
+ * an x402 offer, or the sales page at /crawl, and paying it buys a signed pass
+ * for a day.
+ *
+ * After the outright block above -- a crawler refused everywhere is not sold
+ * anything -- and before the session lookup, which a 402 does not need. With
+ * no COINPAY_X402_KEY or CRAWL_PAY_TO the gateway still answers 402, with an
+ * empty offer: nothing is sold, but nothing is given away either.
+ */
+const crawlGateway = createGateway({
+  siteUrl: config.siteUrl,
+  siteName: 'GenreWatch',
+  coinpay: { apiKey: config.coinpay.x402Key, baseUrl: config.coinpay.baseUrl },
+  payTo: config.crawl.payTo,
+  priceCents: config.crawl.priceCents,
+  currency: config.crawl.currency,
+  passMinutes: config.crawl.passMinutes,
+  contact: `${config.siteUrl}/contact`,
+});
+app.use('*', x402Gateway(crawlGateway));
 
 app.use('*', async (c, next) => {
   const sid = getCookie(c, config.session.cookie);

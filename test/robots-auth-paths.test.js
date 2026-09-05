@@ -65,8 +65,7 @@ describe('crawlers are kept off the auth pages', () => {
  */
 describe('training crawlers are refused, retrieval crawlers are not', () => {
   test.each(TRAINING)('%s is disallowed everywhere', (agent) => {
-    const group = groupFor(agent);
-    expect(group).toBe(`User-agent: ${agent}\nDisallow: /`);
+    expect(groupFor(agent)).toBe(`User-agent: ${agent}\nDisallow: /\nAllow: /crawl`);
   });
 
   /*
@@ -83,8 +82,9 @@ describe('training crawlers are refused, retrieval crawlers are not', () => {
     expect(RETRIEVAL).toContain(retrieval);
   });
 
-  test('the biggest offender is named', () => {
+  test('the biggest offender is named, and may still read the page that sells a pass', () => {
     expect(groupFor('meta-externalagent')).toContain('Disallow: /');
+    expect(groupFor('meta-externalagent')).toContain('Allow: /crawl');
   });
 
   test('Applebot itself is not named, so Siri and Spotlight keep the wildcard rules', () => {
@@ -110,5 +110,44 @@ describe('the crawler that ignores the file', () => {
   test('and it is refused outright, not merely asked nicely', async () => {
     const src = await readFile(APP, 'utf8');
     expect(src).toContain("BLOCKED_AGENTS = ['awariobot']");
+  });
+});
+
+/*
+ * The gateway is what happens when a refused crawler comes in anyway: 402 with
+ * an x402 offer, or the sales page. Its order in app.js is the whole point --
+ * after the outright block, so a crawler refused everywhere is not sold
+ * anything, and before the session lookup, which a 402 does not need.
+ */
+describe('training crawlers that come in anyway are sold a pass', () => {
+  test('the gateway is registered after the block and before the session', async () => {
+    const src = await readFile(APP, 'utf8');
+    const block = src.indexOf("BLOCKED_AGENTS = ['awariobot']");
+    const gate = src.indexOf('x402Gateway(crawlGateway)');
+    const session = src.indexOf('auth.userFromRequest(sid)');
+    expect(block).toBeGreaterThan(0);
+    expect(gate).toBeGreaterThan(block);
+    expect(session).toBeGreaterThan(gate);
+  });
+
+  test('it sells what config says, to the address config names', async () => {
+    const src = await readFile(APP, 'utf8');
+    const wiring = src.slice(
+      src.indexOf('createGateway({'),
+      src.indexOf('x402Gateway(crawlGateway)'),
+    );
+    for (const key of [
+      'config.coinpay.x402Key',
+      'config.crawl.payTo',
+      'config.crawl.priceCents',
+      'config.crawl.passMinutes',
+    ]) {
+      expect(wiring).toContain(key);
+    }
+  });
+
+  test('the page says where to ask for more than a day at a time', async () => {
+    const src = await readFile(APP, 'utf8');
+    expect(src).toMatch(/contact: `\$\{config\.siteUrl\}\/contact`/);
   });
 });
