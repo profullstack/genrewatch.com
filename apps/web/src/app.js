@@ -34,6 +34,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { attempt, callerAddress, forgive, MISS, VIEW } from './lib/auth-throttle.js';
 import { buildCalendar } from './lib/ics.js';
+import { robotsTxt } from './lib/robots.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
 import {
@@ -2819,11 +2820,7 @@ app.get('/manifest.webmanifest', (c) =>
  * for every signed-out visitor, they carry nothing a search result should point
  * at, and /api/ answers callers rather than readers.
  */
-app.get('/robots.txt', (c) =>
-  c.text(
-    `User-agent: AwarioBot\nDisallow: /\n\nUser-agent: *\nAllow: /\nDisallow: /login\nDisallow: /signup\nDisallow: /auth/\nDisallow: /api/\nSitemap: ${config.siteUrl}/sitemap.xml\n`,
-  ),
-);
+app.get('/robots.txt', (c) => c.text(robotsTxt()));
 
 const STATIC_FILES = [
   ['/styles.css', 'styles.css', 'text/css'],
