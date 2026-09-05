@@ -29,7 +29,7 @@ import {
   verdictToStore,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
-import { createGateway } from '@profullstack/x402-gateway';
+import { createGateway, isTrainingAgent } from '@profullstack/x402-gateway';
 import { x402Gateway } from '@profullstack/x402-gateway/hono';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -192,6 +192,14 @@ const crawlGateway = createGateway({
   priceCents: config.crawl.priceCents,
   currency: config.crawl.currency,
   passMinutes: config.crawl.passMinutes,
+  /*
+   * Lightpanda is a headless browser sold to scrapers, and on 2026-09-02 a
+   * fleet of it fetched 8,500 pages from the sibling site in a day, from 104
+   * countries. It is not on any robots list because it reads none, and it
+   * self-identifies, which is all the gate needs. A scraper is a crawler that
+   * has not paid yet.
+   */
+  isPaidAgent: (ua) => isTrainingAgent(ua) || /lightpanda/i.test(ua),
   contact: `${config.siteUrl}/contact`,
 });
 app.use('*', x402Gateway(crawlGateway));
