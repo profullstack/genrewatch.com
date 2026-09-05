@@ -184,6 +184,18 @@ app.use('*', async (c, next) => {
  * no COINPAY_X402_KEY or CRAWL_PAY_TO the gateway still answers 402, with an
  * empty offer: nothing is sold, but nothing is given away either.
  */
+/** OVH's VPS ranges, the fleet's home. Measured 2026-08-28; see the note below. */
+const OVH_RANGES = [
+  '51.38.0.0/16',
+  '54.38.0.0/16',
+  '57.129.0.0/16',
+  '141.94.0.0/16',
+  '145.239.0.0/16',
+  '149.202.0.0/16',
+  '151.80.0.0/16',
+  '213.32.0.0/16',
+];
+
 const crawlGateway = createGateway({
   siteUrl: config.siteUrl,
   siteName: 'GenreWatch',
@@ -200,6 +212,20 @@ const crawlGateway = createGateway({
    * has not paid yet.
    */
   isPaidAgent: (ua) => isTrainingAgent(ua) || /lightpanda/i.test(ua),
+  /*
+   * Crawlers that do not say who they are.
+   *
+   * A VPS fleet at OVH spent August walking the sibling directory wearing
+   * "Chrome/148" with no bot token (vps-*.vps.ovh.net by rDNS, measured
+   * 2026-08-28): hosting ranges serve no readers, so those are refused
+   * outright. And a request that claims Chrome but does not send the
+   * Sec-Fetch-Mode header every Chromium sends is an HTTP client with a
+   * copied string; it is charged like any other crawler. Signed-in readers
+   * are never judged by either: their session cookie is the proof.
+   */
+  denyCidrs: OVH_RANGES,
+  chargeSpoofedBrowsers: true,
+  exempt: (request) => (request.headers.get('cookie') ?? '').includes(`${config.session.cookie}=`),
   contact: `${config.siteUrl}/contact`,
 });
 app.use('*', x402Gateway(crawlGateway));
