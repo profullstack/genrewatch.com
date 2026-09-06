@@ -388,6 +388,65 @@ export const config = {
     },
   },
 
+  /**
+   * Live TV passes: a line of our own, sold by the week, month or year.
+   *
+   * Prices are configuration for the same reason membership's is: each is a
+   * commercial decision that outlives the deploy, and none is a secret -- they are
+   * printed on the page that sells the thing. The provider's details ARE secrets,
+   * and the provider is never named to a reader anywhere; the page sells "live
+   * TV", not a brand we resell.
+   *
+   * Same names and same defaults as the sibling brand, so a price change is one
+   * variable set twice rather than two different products.
+   */
+  live: {
+    /** A week for a dollar; a month for ten; a year for the price of four a month. */
+    weekCents: num('LIVE_PASS_WEEK_CENTS', 100),
+    monthCents: num('LIVE_PASS_MONTH_CENTS', 1000),
+    yearCents: num('LIVE_PASS_YEAR_CENTS', 4800),
+    currency: opt('LIVE_PASS_CURRENCY', 'USD'),
+    /**
+     * How many streams a sold line permits at once. One is what a line costs by
+     * default; more is bought from the provider per line (additional connections).
+     * Changing it affects lines created afterwards only.
+     */
+    connections: num('LIVE_PASS_CONNECTIONS', 1),
+    /**
+     * How long after a pass expires the managed list stays before it is taken
+     * down. A day: a renewal that settles a few hours late should not cost the
+     * reader their channels in between.
+     */
+    graceHours: num('LIVE_PASS_GRACE_HOURS', 24),
+
+    provider: {
+      /* Read on use, like the CoinPay keys, and for the same reason. */
+      get apiKey() {
+        return opt('IPTV_ARGON_API_KEY');
+      },
+      baseUrl: opt('IPTV_ARGON_API_BASE_URL', 'https://api.argontv.nl'),
+      /** The channel bouquet a new line gets. From the reseller dashboard. */
+      get templateId() {
+        const v = opt('IPTV_ARGON_TEMPLATE_ID');
+        return v ? Number(v) : null;
+      },
+      /**
+       * The provider's package ids for the two line lengths we buy. A weekly pass
+       * rides a monthly line -- the provider sells nothing shorter -- and access
+       * is gated on the pass, so the extra three weeks are ours, not the buyer's.
+       */
+      packageMonth: num('IPTV_ARGON_PACKAGE_MONTH', 113653),
+      packageYear: num('IPTV_ARGON_PACKAGE_YEAR', 113656),
+    },
+
+    /** Money can be taken, a line can be bought, and the player can play it. */
+    get enabled() {
+      return Boolean(
+        config.coinpay.enabled && this.provider.apiKey && config.playlists.proxy.enabled,
+      );
+    },
+  },
+
   coinpay: {
     /** Must be a MERCHANT api key (cp_live_/cp_test_ + 32 hex). An OAuth client id
      *  (cp_ + 24 hex) authenticates but cannot create payments -- it fails only at

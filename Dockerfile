@@ -16,6 +16,7 @@ COPY packages/playlists/package.json packages/playlists/
 COPY packages/queue/package.json packages/queue/
 COPY packages/catalog/package.json packages/catalog/
 COPY packages/payments/package.json packages/payments/
+COPY packages/live/package.json packages/live/
 RUN bun install --frozen-lockfile || bun install
 
 FROM base AS runtime

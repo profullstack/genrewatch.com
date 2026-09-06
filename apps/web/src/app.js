@@ -9,6 +9,7 @@ import {
 } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
+import * as live from '@genre/live';
 import { sendInviteEmail, sendLoginLink } from '@genre/notify';
 import * as pay from '@genre/payments';
 import * as member from '@genre/payments/membership';
@@ -39,6 +40,7 @@ import { agentName, leaderboard } from './lib/leaderboard.js';
 import { robotsTxt } from './lib/robots.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
+import { LivePage } from './views/live.jsx';
 import {
   About,
   CategoryPage,
@@ -502,6 +504,11 @@ app.get('/subjects/:slug', async (c) => {
     }),
   ]);
 
+  // Ours or theirs decides what a row may hand over; see the event route.
+  if (ownChannels.hasList) ownChannels.managed = await q.playlistIsManaged(user.id);
+  const liveOffer =
+    config.live.enabled && !ownChannels.hasList ? { plans: live.plansForSale() } : null;
+
   return c.html(
     await render(
       <SubjectPage
@@ -660,6 +667,15 @@ app.get('/events/:id', async (c) => {
     sharedChannelsForEvent({ viewerId: user?.id ?? null, event }),
   ]);
 
+  // Whether that list is OUR line (a pass), which decides what an entry row may
+  // hand over. One flag read, only when there is a list to ask about.
+  if (ownChannels.hasList) ownChannels.managed = await q.playlistIsManaged(user.id);
+  // The pass for sale, for a reader with no list at all.
+  const liveOffer =
+    config.live.enabled && !ownChannels.hasList
+      ? { plans: live.plansForSale(), eventId: event.id }
+      : null;
+
   return c.html(
     await render(
       <EventPage
@@ -670,6 +686,7 @@ app.get('/events/:id', async (c) => {
         following={following}
         ownChannels={ownChannels}
         sharedChannels={sharedChannels}
+        liveOffer={liveOffer}
         streamDead={c.req.query('stream_dead') ?? null}
       />,
     ),
@@ -760,6 +777,9 @@ app.post('/api/playlist', async (c) => {
       label,
       knownHash: same ? (existing.content_hash ?? null) : null,
     });
+    // An address of their own makes the list theirs again. Their pass keeps
+    // running and /live offers to switch back; nothing here provisions.
+    if (existing?.managed) await q.setPlaylistManaged({ userId: user.id, managed: false });
     return respond(c, { json: result, redirectTo: playlistNoticeFor(result) });
   } catch (err) {
     return respond(c, {
@@ -780,6 +800,11 @@ app.post('/api/playlist', async (c) => {
  */
 app.get('/api/playlist/source', async (c) => {
   const user = requireUser(c);
+  // Our line's address is not the reader's to see. The settings card for a
+  // managed list has no Show button; this is the route it would have called.
+  if (await q.playlistIsManaged(user.id)) {
+    return c.json({ error: 'That list came with your pass and has no address to show.' }, 403);
+  }
   const source = await playlistSource(user.id);
   if (!source) return c.json({ error: 'You have not added a list.' }, 404);
   c.header('cache-control', 'no-store');
@@ -817,6 +842,18 @@ app.post('/api/playlist/share', async (c) => {
   const user = requireUser(c);
   const body = await c.req.parseBody();
   const label = String(body.label ?? '').trim();
+
+  // A pass is one person's. Opening a managed list to others is reselling our
+  // line to people who did not pay for it, so the card is not drawn and the
+  // route refuses whatever an old page sends.
+  if (await q.playlistIsManaged(user.id)) {
+    return respond(c, {
+      json: { error: 'a list that came with a pass cannot be shared' },
+      status: 403,
+      redirectTo:
+        '/settings?playlist_error=A%20list%20that%20came%20with%20a%20pass%20cannot%20be%20shared.',
+    });
+  }
 
   /*
    * Still accepts the old `shared=1`, which is what an unreloaded page sends.
@@ -871,6 +908,17 @@ app.post('/api/playlist/share/grant', async (c) => {
   const body = await c.req.parseBody();
   const audienceUserId = String(body.user_id ?? '');
   const allowed = String(body.allowed ?? '') === '1';
+
+  // Same refusal as /api/playlist/share, and for the same reason. Revoking is
+  // never gated anywhere, so only a grant is refused.
+  if (allowed && (await q.playlistIsManaged(user.id))) {
+    return respond(c, {
+      json: { error: 'a list that came with a pass cannot be shared' },
+      status: 403,
+      redirectTo:
+        '/settings?playlist_error=A%20list%20that%20came%20with%20a%20pass%20cannot%20be%20shared.',
+    });
+  }
 
   if (allowed && !(await isMember(user))) {
     return respond(c, {
@@ -1097,6 +1145,29 @@ app.get('/shared/:channelId/check', async (c) => {
 
 app.post('/api/playlist/delete', async (c) => {
   const user = requireUser(c);
+  /*
+   * Removing a managed list gives back the list it replaced, if there was one.
+   * Deleting the row outright would take the parked address with it, and that
+   * address is the one thing the reader cannot re-type from memory.
+   */
+  const existing = await q.getPlaylist(user.id);
+  const stashed =
+    existing?.managed && existing.stashed_source_url
+      ? auth.open(existing.stashed_source_url)
+      : null;
+  if (stashed) {
+    await q.setPlaylistManaged({ userId: user.id, managed: false });
+    try {
+      await importPlaylist({ userId: user.id, url: stashed, label: existing.stashed_label ?? '' });
+    } catch (err) {
+      return respond(c, {
+        json: { error: err.message },
+        status: 400,
+        redirectTo: `/settings?playlist_error=${encodeURIComponent(err.message)}`,
+      });
+    }
+    return respond(c, { json: { restored: true }, redirectTo: '/settings?playlist=restored' });
+  }
   await q.deletePlaylist(user.id);
   return respond(c, { json: { deleted: true }, redirectTo: '/settings' });
 });
@@ -1322,6 +1393,9 @@ app.get('/events/:id/playlist.m3u', async (c) => {
   const event = await q.getEvent(Number(c.req.param('id')));
   if (!event) return c.notFound();
 
+  // Same rule as the single-entry .m3u: a managed list plays in the page only.
+  if (await q.playlistIsManaged(user.id)) return c.redirect(`/events/${event.id}`, 303);
+
   const own = await ownChannelsForEvent({ userId: user.id, event });
 
   const { list, asked } = pickOwnChannel(c, own);
@@ -1389,6 +1463,10 @@ app.get('/events/:id/playlist.m3u', async (c) => {
 async function ownEntryOr404(c, user) {
   const row = await q.ownChannelById(user.id, Number(c.req.param('channelId')));
   if (!row) return null;
+  // A managed list is ours, and it plays for as long as the pass runs. The line
+  // itself outlives a weekly pass by three weeks, so the pass -- not the list,
+  // not the line -- is what is checked, on every start.
+  if (row.managed && !(await q.activeLivePass(user.id))) return null;
   const url = auth.open(row.stream_url);
   return url ? { ...row, url } : null;
 }
@@ -1417,7 +1495,10 @@ app.get('/my/channels/:channelId/check', async (c) => {
 app.get('/my/channels/:channelId/playlist.m3u', async (c) => {
   const user = requireUser(c);
   const ch = await ownEntryOr404(c, user);
-  if (!ch) return c.notFound();
+  // The body is the stream address. On a managed list that is our reseller
+  // credential, and it goes to no external player: the row has no such button,
+  // and the route it would have pointed at is not there either.
+  if (!ch || ch.managed) return c.notFound();
 
   c.header('content-type', 'audio/x-mpegurl; charset=utf-8');
   const name = (ch.title || 'channel').slice(0, 60);
@@ -1514,6 +1595,17 @@ app.post('/api/webhooks/coinpay', async (c) => {
        * bought. `kind` is the whole attribution, so a payment arriving without it
        * is recorded and grants nothing rather than being guessed at.
        */
+      if (meta.kind === live.LIVE_PASS_KIND) {
+        return live.grantLivePass(tx, {
+          userId: meta.user_id,
+          paymentId: payment?.id ?? null,
+          plan: meta.plan,
+          // What we CHARGED, from our own row, rather than what the payload says
+          // was paid. A term is a term whatever the wire claims.
+          priceCents: payment?.amount_cents ?? live.planFor(meta.plan)?.priceCents ?? 0,
+          currency: payment?.currency ?? config.live.currency,
+        });
+      }
       if (meta.kind !== member.MEMBERSHIP_KIND) return null;
 
       const granted = await member.grantMembership(tx, {
@@ -1545,7 +1637,144 @@ app.post('/api/webhooks/coinpay', async (c) => {
       return { ...granted, commissionCents: commission?.amount_cents ?? 0 };
     },
   });
+
+  /*
+   * A pass was granted: make it usable, now, outside the transaction.
+   *
+   * The provider call is a network round trip and must not hold a database
+   * transaction open; and it must not fail the webhook, because the money is
+   * settled and the pass is recorded whatever the provider says today. A failure
+   * here leaves /live showing "set up my channels", which calls the same thing.
+   */
+  if (result.granted && result.result?.kind === live.LIVE_PASS_KIND) {
+    const meta = JSON.parse(raw)?.metadata ?? {};
+    try {
+      const outcome = await live.ensureLine(meta.user_id);
+      console.log(`[live] pass for ${meta.user_id}: ${outcome.done?.join(', ') || outcome.reason}`);
+    } catch (err) {
+      console.error(`[live] pass for ${meta.user_id} granted but not set up: ${err.message}`);
+    }
+  }
   return c.json(result);
+});
+
+/* ------------------------------------------------------------- live passes -- */
+
+/**
+ * The page that sells a pass, and reports on the one held.
+ *
+ * Readable signed out for the same reason /premium is. Every number on it comes
+ * from configuration through live.plansForSale(), which is also what the buy
+ * route charges -- one source, so the page can never advertise one price and the
+ * checkout take another.
+ */
+app.get('/live', async (c) => {
+  const user = c.get('user');
+  const [pass, playlist, history] = user
+    ? await Promise.all([
+        q.activeLivePass(user.id),
+        q.getPlaylist(user.id),
+        q.livePassHistory(user.id),
+      ])
+    : [null, null, []];
+
+  const eventId = Number(c.req.query('event'));
+  const notice =
+    c.req.query('paid') === '1'
+      ? 'Payment started. Your channels are set up the moment it settles on chain, usually within a few minutes.'
+      : c.req.query('setup') === '1'
+        ? 'Your channels are set up.'
+        : null;
+
+  c.header('cache-control', 'no-store, private');
+  return c.html(
+    await render(
+      <LivePage
+        user={user}
+        plans={live.plansForSale()}
+        pass={pass}
+        managed={Boolean(playlist?.managed)}
+        hasOwnList={Boolean(playlist) && !playlist.managed}
+        history={history}
+        paymentsEnabled={pay.paymentsEnabled()}
+        enabled={config.live.enabled}
+        eventId={Number.isInteger(eventId) && eventId > 0 ? eventId : null}
+        notice={notice}
+        error={c.req.query('error') ?? null}
+      />,
+    ),
+  );
+});
+
+/**
+ * Buy a term. Renewal is the same call: the grant stacks the new term onto the
+ * end of what is held, so there is nothing to check first. `plan` travels in the
+ * metadata because the settled payload carries no product of its own, and the
+ * webhook needs to know how long a term it is granting.
+ */
+app.post('/api/live/buy', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const plan = live.planFor(String(body.plan ?? ''));
+
+  if (!config.live.enabled || !pay.paymentsEnabled()) {
+    return respond(c, {
+      json: { error: 'passes are off' },
+      status: 503,
+      redirectTo: '/live?error=Passes%20are%20not%20on%20sale%20right%20now.',
+    });
+  }
+  if (!plan) {
+    return respond(c, {
+      json: { error: 'no such plan' },
+      status: 400,
+      redirectTo: '/live?error=Pick%20a%20pass.',
+    });
+  }
+
+  const eventId = Number(body.event);
+  const back = Number.isInteger(eventId) && eventId > 0 ? `/events/${eventId}` : '/live';
+  const { checkoutUrl } = await pay.createCheckout({
+    user,
+    amountCents: plan.priceCents,
+    currency: plan.currency,
+    // What the buyer reads at checkout. "Live TV", never the provider.
+    description: `GenreWatch Live TV, ${plan.days} days`,
+    metadata: { kind: live.LIVE_PASS_KIND, plan: plan.key },
+    blockchain: config.payments.blockchain,
+    payTo: config.payments.payoutAddress || undefined,
+    successUrl: `${config.siteUrl}/live?paid=1${back !== '/live' ? `&event=${eventId}` : ''}`,
+    cancelUrl: `${config.siteUrl}${back}`,
+  });
+  return respond(c, { json: { checkoutUrl }, redirectTo: checkoutUrl });
+});
+
+/**
+ * Make a held pass usable: the button behind "set up my channels" and "use the
+ * pass instead of my list". The same call the webhook makes, so a provider
+ * failure at payment time is one press away from being retried.
+ */
+app.post('/api/live/use', async (c) => {
+  const user = requireUser(c);
+  try {
+    const outcome = await live.ensureLine(user.id);
+    if (!outcome.ok) {
+      return respond(c, {
+        json: { error: outcome.reason },
+        status: 409,
+        redirectTo: '/live?error=You%20do%20not%20hold%20a%20pass%20right%20now.',
+      });
+    }
+    return respond(c, { json: outcome, redirectTo: '/live?setup=1' });
+  } catch (err) {
+    console.error(`[live] set up for ${user.id} failed: ${err.message}`);
+    return respond(c, {
+      json: { error: 'setup failed' },
+      status: 502,
+      redirectTo:
+        '/live?error=Your%20channels%20could%20not%20be%20set%20up%20just%20now.%20Try%20again%20in%20a%20minute.',
+    });
+  }
 });
 
 /* --------------------------------------------------------------- messages -- */
@@ -2411,14 +2640,19 @@ app.get('/settings', async (c) => {
    * "Imported NaN channels", which reads as a failure of the thing that just
    * worked.
    */
+  // The pass behind a managed list, for its card. Its own read, only when the
+  // list is ours; a list of their own has no pass to report on.
+  const livePass = playlist?.managed ? await q.activeLivePass(user.id) : null;
   const playlistNotice =
     added === 'renamed'
       ? 'Saved.'
-      : added === 'unchanged'
-        ? 'Saved. Your provider is serving the same list as last time, so your channels are unchanged.'
-        : added
-          ? `Imported ${Number(added).toLocaleString('en-US')} channels.`
-          : null;
+      : added === 'restored'
+        ? 'Your own list is back.'
+        : added === 'unchanged'
+          ? 'Saved. Your provider is serving the same list as last time, so your channels are unchanged.'
+          : added
+            ? `Imported ${Number(added).toLocaleString('en-US')} channels.`
+            : null;
 
   // Masked here rather than in the view, so the unsealed URL exists for one
   // expression and never becomes a prop that something else could render whole.
@@ -2436,7 +2670,9 @@ app.get('/settings', async (c) => {
         }
         passkeys={passkeys}
         playlist={playlist}
-        playlistMasked={playlistUrl ? maskPlaylistUrl(playlistUrl) : null}
+        livePass={livePass}
+        // Never for a managed list: the address is ours, not theirs to see.
+        playlistMasked={playlistUrl && !playlist?.managed ? maskPlaylistUrl(playlistUrl) : null}
         playlistUnreadable={Boolean(playlist) && !playlistUrl}
         playlistNotice={playlistNotice}
         playlistError={c.req.query('playlist_error') ?? null}

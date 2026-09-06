@@ -2348,3 +2348,44 @@ li.result img {
 .live-now .empty {
   color: var(--muted);
 }
+
+/* Live TV passes: the three plans side by side, and the card on a title page. */
+.plan-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.6rem 0;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.plan .cta {
+  margin-top: auto;
+}
+.plan-best {
+  outline: 2px solid var(--accent, #6cf);
+  outline-offset: -2px;
+}
+.plan-price {
+  font-size: 1.05rem;
+  color: var(--fg, #eee);
+}
+.live-upsell {
+  margin-bottom: 0.8rem;
+}
+.ledger {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.ledger li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--line, #2a2f3a);
+}
