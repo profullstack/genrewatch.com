@@ -59,8 +59,13 @@ export function agentName(userAgent) {
   const ua = String(userAgent ?? '');
   const known = KNOWN_AGENTS.find((k) => ua.toLowerCase().includes(k.toLowerCase()));
   if (known) return known;
+  // A spoofed browser is charged like a crawler, so it reaches the board. Its
+  // first token is "Mozilla", which every browser string starts with and which
+  // names nothing: shown raw it becomes a meaningless row that climbs. Say what
+  // it actually is instead.
   const token = ua.match(/([A-Za-z][\w.-]{2,30})\/[\d.]+/)?.[1];
-  return token ?? 'unidentified';
+  if (!token || /^mozilla$/i.test(token)) return 'unidentified';
+  return token;
 }
 
 const shortWallet = (p) => (p.length > 14 ? `${p.slice(0, 6)}…${p.slice(-4)}` : p);
