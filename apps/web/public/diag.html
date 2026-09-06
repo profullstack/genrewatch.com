@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Browser support · diagnostics</title>
+    <!--
+      Deliberately plain. No stylesheet of the site's, no app.js, no fonts.
+
+      This page exists to be readable on a device where the ordinary pages are
+      not working, so anything it shares with them is a way for it to fail for
+      the same reason. Two files, both served from this origin, both allowed by
+      the site's Content-Security-Policy without widening it: no inline style
+      and no inline script appear here.
+    -->
+    <link rel="stylesheet" href="/diag.css" />
+  </head>
+  <body>
+    <main>
+      <h1>What this browser can do</h1>
+      <p class="lead">
+        Measured on the device you are holding, not guessed from its name. Nothing here asks for a
+        permission, so opening this page cannot put a prompt on your screen.
+      </p>
+
+      <div id="report">
+        <p class="lead">If this line is still here, the script did not run at all.</p>
+      </div>
+
+      <h2>What your remote sends</h2>
+      <p class="lead">
+        Press buttons on the remote. Every key this browser reports appears below, newest first.
+        Arrow keys and OK are the ones the grid uses; Back and the media keys differ by device,
+        which is exactly why they are worth reading rather than assuming.
+      </p>
+      <pre id="keylog">Press a button…</pre>
+
+      <h2>Send it</h2>
+      <p class="lead">
+        Puts this report in the server log so it does not have to be read aloud. You must be
+        signed in on this device.
+      </p>
+      <p><button id="send" type="button">Send report to the server</button></p>
+      <p class="lead" id="send-msg"></p>
+
+      <p class="lead"><a href="/">Back to the site</a></p>
+    </main>
+    <script src="/diag.js"></script>
+  </body>
+</html>

@@ -3174,9 +3174,59 @@ app.get('/manifest.webmanifest', (c) =>
  */
 app.get('/robots.txt', (c) => c.text(robotsTxt()));
 
+/**
+ * A browser's own account of itself, written to the server log.
+ *
+ * The diagnostics page can print its findings, but reading them off a television
+ * and typing them somewhere else is how a measurement turns back into a guess.
+ * This takes the report and logs one line, so `railway logs` has the answer.
+ *
+ * Signed in only. Not because the contents are sensitive -- they are facts about
+ * a browser -- but because an unauthenticated endpoint that writes attacker text
+ * into our logs is a log-injection tool, and the only person who needs this is
+ * already signed in on the device being tested.
+ */
+app.post('/api/diag', async (c) => {
+  const user = requireUser(c);
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object') return c.json({ error: 'bad report' }, 400);
+
+  /*
+   * Truncated hard, and newlines flattened.
+   *
+   * A user agent is attacker-controlled text even from a friendly browser, and a
+   * log line that can contain a newline is a log line that can forge a second
+   * entry. One line in, one line out.
+   */
+  const clean = (v) =>
+    String(v ?? '')
+      .replace(/[\r\n]+/g, ' ')
+      .slice(0, 300);
+  const findings = Object.entries(body.findings ?? {})
+    .slice(0, 60)
+    .map(([k, v]) => `${clean(k)}=${clean(v)}`)
+    .join('; ');
+
+  console.log(`[diag] user=${user.id} ua=${clean(body.ua)} :: ${findings.slice(0, 4000)}`);
+  return c.json({ ok: true });
+});
+
 const STATIC_FILES = [
   ['/styles.css', 'styles.css', 'text/css'],
   ['/app.js', 'app.js', 'text/javascript'],
+  /*
+   * The diagnostics page and its two files.
+   *
+   * Served as plain assets rather than rendered through the Layout, and that is
+   * the point: it must keep working on a browser where the ordinary pages do
+   * not. It shares no stylesheet and no script with them, so it cannot fail for
+   * the same reason as the thing it is measuring. Byte-identical to the sibling
+   * brand's copy, so a fix crosses as a `cp`.
+   */
+  ['/diag', 'diag.html', 'text/html'],
+  ['/diag.html', 'diag.html', 'text/html'],
+  ['/diag.css', 'diag.css', 'text/css'],
+  ['/diag.js', 'diag.js', 'text/javascript'],
   ['/push-check.js', 'push-check.js', 'text/javascript'],
   ['/vendor-webauthn.js', 'vendor-webauthn.js', 'text/javascript'],
   // The transport-stream demuxer. Served like the others but never linked from

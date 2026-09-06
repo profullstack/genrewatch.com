@@ -1,0 +1,137 @@
+/*
+ * Ten-foot type. This is read across a room, off a television, by somebody
+ * holding a remote -- so everything is large, high contrast, and never relies on
+ * colour alone to say yes or no, because a report that only differs by hue is
+ * unreadable on a badly calibrated TV and to anybody who cannot tell red from
+ * green.
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #10131a;
+  --fg: #e8ecf3;
+  --muted: #98a2b3;
+  --line: #2a2f3a;
+  --yes: #6ee7a8;
+  --no: #ff8f8f;
+  --warn: #ffd27f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    20px / 1.5 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    Arial,
+    sans-serif;
+  /* A television overscans: the outer few percent of the picture can be off the
+     panel entirely, so nothing important starts at the edge. */
+  padding: 4vh 5vw;
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 2rem;
+  margin: 0 0 0.4rem;
+}
+
+h2 {
+  font-size: 1.3rem;
+  margin: 1.6rem 0 0.5rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 2px solid var(--line);
+}
+
+.lead {
+  color: var(--muted);
+  margin: 0.3rem 0 0.8rem;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 16rem) 3.5rem 1fr;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.k {
+  font-weight: 600;
+}
+
+/* The verdict is a WORD, not a colour: "YES" and "NO" are legible on a washed
+   out panel and to a reader who cannot separate the two hues. */
+.v {
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.row.yes .v {
+  color: var(--yes);
+}
+
+.row.no .v {
+  color: var(--no);
+}
+
+.row.warn .v {
+  color: var(--warn);
+}
+
+.d {
+  color: var(--muted);
+  /* A user agent string is one very long word; it must wrap rather than push the
+     page sideways, because a TV browser has no comfortable horizontal scroll. */
+  overflow-wrap: anywhere;
+}
+
+pre {
+  background: #0a0c11;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.8rem;
+  font-size: 1.05rem;
+  min-height: 6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  color: #06202a;
+  background: #6cf;
+  border: 0;
+  border-radius: 8px;
+  padding: 0.7rem 1.2rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+/* A remote moves focus rather than a pointer, so focus has to be impossible to
+   miss. Never `outline: none` on this page. */
+button:focus-visible,
+a:focus-visible {
+  outline: 4px solid #6cf;
+  outline-offset: 3px;
+}
+
+a {
+  color: #9ad8ff;
+}
