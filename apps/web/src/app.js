@@ -235,21 +235,26 @@ const crawlGateway = createGateway({
   /*
    * Write the sale down. Until now a pass existed only for as long as the
    * response took to send, so neither "what did this earn" nor "who is the
-   * customer" could be answered afterwards. Never awaited into the answer: a
-   * bookkeeping failure must not fail a payment the buyer already made.
+   * customer" could be answered afterwards.
+   *
+   * The promise is returned rather than dropped: the gateway awaits this hook
+   * before the receipt goes out, so returning it is what makes the sale land
+   * before the buyer is told it succeeded. The gateway swallows a rejection,
+   * so a database failure still sells the pass it was paid for.
    */
-  onSale: (sale) => {
-    q.recordCrawlSale({
-      payer: sale.payer,
-      ref: sale.ref,
-      days: sale.days,
-      priceCents: sale.priceCents,
-      totalCents: sale.totalCents,
-      currency: sale.currency,
-      userAgent: sale.userAgent,
-      expiresAt: sale.expiresAt,
-    }).catch((err) => console.error('[x402] could not record the sale', err));
-  },
+  onSale: (sale) =>
+    q
+      .recordCrawlSale({
+        payer: sale.payer,
+        ref: sale.ref,
+        days: sale.days,
+        priceCents: sale.priceCents,
+        totalCents: sale.totalCents,
+        currency: sale.currency,
+        userAgent: sale.userAgent,
+        expiresAt: sale.expiresAt,
+      })
+      .catch((err) => console.error('[x402] could not record the sale', err)),
 });
 
 /*
