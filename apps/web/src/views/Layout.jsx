@@ -203,6 +203,9 @@ export const Layout = (props) => (
               they have earned, and somebody who is not needs to be able to find
               out what it costs -- a link that disappears once you join is a link
               nobody can use to look at their own balance. */}
+          {/* Shown to everybody when passes are on sale: the price has to be
+              findable before there is an account to buy it with. */}
+          {config.live.enabled ? <a href="/live">Live TV</a> : null}
           <a href="/premium">Premium</a>
           {props.user ? (
             <a href="/settings">Settings</a>

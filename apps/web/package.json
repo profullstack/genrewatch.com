@@ -13,6 +13,7 @@
     "@genre/catalog": "workspace:*",
     "@genre/config": "workspace:*",
     "@genre/db": "workspace:*",
+    "@genre/live": "workspace:*",
     "@genre/notify": "workspace:*",
     "@genre/payments": "workspace:*",
     "@genre/playlists": "workspace:*",

@@ -25,6 +25,8 @@ export const QUEUES = {
   batch: 'reminder-batch',
   /** Re-fetches readers' own channel lists from their providers. */
   playlists: 'playlist-refresh',
+  /** Takes down managed lists whose live TV pass has lapsed. Down only. */
+  livePasses: 'live-pass-reconcile',
   /**
    * Walks IMDb's daily dumps and fills in what the five providers never mentioned.
    *
@@ -57,7 +59,13 @@ export const queues = Object.fromEntries(
  * every boot makes the code the single source of truth for what is scheduled.
  */
 export async function installSchedules({ log = console.log } = {}) {
-  for (const queue of [queues.scan, queues.sync, queues.playlists, queues.imdb]) {
+  for (const queue of [
+    queues.scan,
+    queues.sync,
+    queues.playlists,
+    queues.imdb,
+    queues.livePasses,
+  ]) {
     for (const r of await queue.getRepeatableJobs()) await queue.removeRepeatableByKey(r.key);
   }
 
@@ -127,6 +135,14 @@ export async function installSchedules({ log = console.log } = {}) {
     'playlists',
     {},
     { repeat: { every: config.playlists.refreshMinutes * 60_000 }, jobId: 'playlists' },
+  );
+
+  // Lapsed passes come down within the grace window plus a quarter of an hour.
+  // Cheap: one query that is usually empty.
+  await queues.livePasses.add(
+    'live-pass-reconcile',
+    {},
+    { repeat: { every: 15 * 60_000 }, jobId: 'live-passes' },
   );
 
   /*

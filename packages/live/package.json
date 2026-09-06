@@ -1,0 +1,16 @@
+{
+  "name": "@genre/live",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./provider": "./src/provider.js"
+  },
+  "dependencies": {
+    "@genre/auth": "workspace:*",
+    "@genre/config": "workspace:*",
+    "@genre/db": "workspace:*",
+    "@genre/playlists": "workspace:*"
+  }
+}

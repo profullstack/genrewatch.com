@@ -2677,7 +2677,8 @@ export async function playlistNeedsReparse(userId) {
  */
 export async function ownChannelById(userId, channelId) {
   const [row] = await sql`
-    select c.id, c.title, c.group_title, c.kind, c.stream_url, c.is_live, c.checked_at
+    select c.id, c.title, c.group_title, c.kind, c.stream_url, c.is_live, c.checked_at,
+           p.managed
     from user_playlist_channels c
     join user_playlists p on p.id = c.playlist_id
     where p.user_id = ${userId} and c.id = ${channelId}
@@ -3210,4 +3211,129 @@ export async function recordCrawlDemand(agent, at = new Date()) {
     insert into crawl_demand (agent, day, hits)
     values (${agent}, ${new Date(at).toISOString().slice(0, 10)}, 1)
     on conflict (agent, day) do update set hits = crawl_demand.hits + 1`;
+}
+
+/* --------------------------------------------------------------- live passes -- */
+
+/**
+ * The live TV pass this reader holds right now, or null.
+ *
+ * Read on every stream start for a managed list and on the page that sells the
+ * pass, so it is the narrowest query that answers the question.
+ */
+export async function activeLivePass(userId) {
+  if (!userId) return null;
+  const [row] = await sql`
+    select id, user_id, payment_id, plan, status, started_at, expires_at, price_cents, currency
+    from live_passes
+    where user_id = ${userId} and status = 'active' and expires_at > now()
+    order by expires_at desc
+    limit 1
+  `;
+  return row ?? null;
+}
+
+/** Every term ever bought, newest first. For the pass page's receipts. */
+export async function livePassHistory(userId, { limit = 12 } = {}) {
+  if (!userId) return [];
+  return sql`
+    select id, plan, started_at, expires_at, price_cents, currency
+    from live_passes
+    where user_id = ${userId}
+    order by started_at desc
+    limit ${Math.min(Math.max(Number(limit) || 12, 1), 100)}
+  `;
+}
+
+/** The line the provider issued this reader, credentials sealed. */
+export async function providerLine(userId) {
+  if (!userId) return null;
+  const [row] = await sql`select * from provider_lines where user_id = ${userId}`;
+  return row ?? null;
+}
+
+export async function saveProviderLine({
+  userId,
+  lineId,
+  lineUser,
+  lineSecret,
+  sourceUrl,
+  expiresAt = null,
+  maxConnections = null,
+}) {
+  const [row] = await sql`
+    insert into provider_lines (user_id, line_id, line_user, line_secret, source_url, expires_at, max_connections)
+    values (${userId}, ${lineId}, ${lineUser}, ${lineSecret}, ${sourceUrl}, ${expiresAt}, ${maxConnections})
+    on conflict (user_id) do update set
+      line_id = excluded.line_id,
+      line_user = excluded.line_user,
+      line_secret = excluded.line_secret,
+      source_url = excluded.source_url,
+      expires_at = excluded.expires_at,
+      max_connections = excluded.max_connections,
+      updated_at = now()
+    returning *
+  `;
+  return row;
+}
+
+/** What the provider said about the line after an extension. Nulls leave a column alone. */
+export async function touchProviderLine({ userId, expiresAt = null, maxConnections = null }) {
+  const [row] = await sql`
+    update provider_lines set
+      expires_at = coalesce(${expiresAt}, expires_at),
+      max_connections = coalesce(${maxConnections}, max_connections),
+      updated_at = now()
+    where user_id = ${userId}
+    returning *
+  `;
+  return row ?? null;
+}
+
+/**
+ * Mark the reader's list as ours (or theirs again), parking or clearing the
+ * address they had before. The three columns move together on purpose: a managed
+ * row with no stash means "they had nothing", and an unmanaged row must never
+ * carry a stash for the tick to trip over.
+ */
+export async function setPlaylistManaged({
+  userId,
+  managed,
+  stashedSourceUrl = null,
+  stashedLabel = null,
+}) {
+  await sql`
+    update user_playlists set
+      managed = ${Boolean(managed)},
+      stashed_source_url = ${managed ? stashedSourceUrl : null},
+      stashed_label = ${managed ? stashedLabel : null}
+    where user_id = ${userId}
+  `;
+}
+
+/** Whether this reader's list is our line. False when they have no list. */
+export async function playlistIsManaged(userId) {
+  if (!userId) return false;
+  const [row] = await sql`select managed from user_playlists where user_id = ${userId}`;
+  return Boolean(row?.managed);
+}
+
+/**
+ * Managed lists whose holder's pass ran out more than `graceHours` ago, with
+ * whatever list they had before. The tick's whole input.
+ */
+export async function managedPlaylistsLapsed({ graceHours = 24, limit = 100 } = {}) {
+  const hours = Math.max(0, Number(graceHours) || 0);
+  return sql`
+    select p.user_id, p.stashed_source_url, p.stashed_label
+    from user_playlists p
+    where p.managed = true
+      and not exists (
+        select 1 from live_passes l
+        where l.user_id = p.user_id and l.status = 'active'
+          and l.expires_at + make_interval(hours => ${hours}::int) > now()
+      )
+    order by p.user_id
+    limit ${Math.min(Math.max(Number(limit) || 100, 1), 500)}
+  `;
 }

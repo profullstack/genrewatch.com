@@ -11,6 +11,7 @@ import {
   whenLabel,
 } from './components.jsx';
 import { Layout } from './Layout.jsx';
+import { LiveUpsell } from './live.jsx';
 
 /**
  * What to sign a comment with.
@@ -365,6 +366,9 @@ export const SubjectPage = ({
   following,
   ownChannels = null,
   sharedChannels = null,
+  // The live TV pass for sale, or null when passes are off or the reader
+  // already has entries of their own. Null draws no card.
+  liveOffer = null,
 }) => (
   <Layout title={subject.display_name} user={user}>
     <header class="page-head">
@@ -403,7 +407,13 @@ export const SubjectPage = ({
       It goes above the schedule because for a back catalogue title it IS the
       answer, and the schedule is the empty part.
     */}
-    <OwnLine own={ownChannels} shared={sharedChannels} title={subject.display_name} />
+    <OwnLine
+      own={ownChannels}
+      shared={sharedChannels}
+      title={subject.display_name}
+      liveOffer={liveOffer}
+      signedIn={Boolean(user)}
+    />
 
     <section>
       <h2>Coming up</h2>
@@ -490,7 +500,7 @@ const PlayButton = ({ channelId, kind }) => (
   </button>
 );
 
-export const ChannelRow = ({ ch }) => {
+export const ChannelRow = ({ ch, managed = false }) => {
   /*
    * Every control that goes through this server needs the row id, and a row
    * without one would render "/my/channels/undefined/check" -- a link that looks
@@ -520,17 +530,25 @@ export const ChannelRow = ({ ch }) => {
       <span class="own-channel-state" />
       <span class="own-channel-actions">
         {mine ? <PlayButton channelId={mine} kind={ch.kind} /> : null}
-        <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
-          VLC
-        </a>
-        <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
-          Infuse
-        </a>
-        {mine ? (
-          <a class="ghost small-btn" href={`/my/channels/${mine}/playlist.m3u`}>
-            .m3u
-          </a>
-        ) : null}
+        {/* A managed list is OUR line, bought with a pass. It plays here and
+            nowhere else: every one of these three hands over the stream address,
+            which on a managed list is our reseller credential. Same shape as
+            SharedChannelRow, for the same reason. */}
+        {managed ? null : (
+          <>
+            <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
+              VLC
+            </a>
+            <a class="ghost small-btn" href={playerLinks(ch.url).infuse}>
+              Infuse
+            </a>
+            {mine ? (
+              <a class="ghost small-btn" href={`/my/channels/${mine}/playlist.m3u`}>
+                .m3u
+              </a>
+            ) : null}
+          </>
+        )}
       </span>
     </li>
   );
@@ -549,7 +567,7 @@ export const ChannelRow = ({ ch }) => {
  * Rows are addressed by their row id rather than by a position in a ranked list,
  * so the same markup works wherever the ranking was done.
  */
-export const OwnLine = ({ own, shared, streamDead, title }) => {
+export const OwnLine = ({ own, shared, streamDead, title, liveOffer = null, signedIn = false }) => {
   const hasOwn = own?.hasList;
   /*
    * Anything shared at all, not just anything that matched. Rendering only on a
@@ -558,10 +576,22 @@ export const OwnLine = ({ own, shared, streamDead, title }) => {
    * feature being broken, which is how it was reported.
    */
   const hasShared = shared?.channelCount > 0;
-  if (!hasOwn && !hasShared) return null;
+  /*
+   * The pass is offered to somebody with nothing of their own, which is the only
+   * reader for whom this section used to be nothing at all. Null still means
+   * "draw nothing": a reader with a list, or with somebody else's, is not sold to.
+   */
+  const offer = liveOffer && !hasOwn ? liveOffer : null;
+  if (!hasOwn && !hasShared && !offer) return null;
 
   return (
     <>
+      {offer ? (
+        <section class="own-line">
+          <h2>Watch it</h2>
+          <LiveUpsell plans={offer.plans} eventId={offer.eventId ?? null} signedIn={signedIn} />
+        </section>
+      ) : null}
       {hasOwn ? (
         <section class="own-line" data-player-src={assetUrl('vendor-mpegts.js')}>
           <h2>In your list</h2>
@@ -583,7 +613,7 @@ export const OwnLine = ({ own, shared, streamDead, title }) => {
               <h3>Available on demand</h3>
               <ul class="channels">
                 {own.onDemand.map((ch) => (
-                  <ChannelRow ch={ch} />
+                  <ChannelRow ch={ch} managed={Boolean(own?.managed)} />
                 ))}
               </ul>
             </>
@@ -600,7 +630,7 @@ export const OwnLine = ({ own, shared, streamDead, title }) => {
               </p>
               <ul class="channels">
                 {own.matches.map((ch) => (
-                  <ChannelRow ch={ch} />
+                  <ChannelRow ch={ch} managed={Boolean(own?.managed)} />
                 ))}
               </ul>
             </>
@@ -655,7 +685,7 @@ export const OwnLine = ({ own, shared, streamDead, title }) => {
               </p>
               <ul class="channels">
                 {own.genre.map((ch) => (
-                  <ChannelRow ch={ch} />
+                  <ChannelRow ch={ch} managed={Boolean(own?.managed)} />
                 ))}
               </ul>
             </>
@@ -786,6 +816,7 @@ export const EventPage = ({
   following,
   ownChannels,
   sharedChannels,
+  liveOffer = null,
   streamDead,
 }) => {
   const when = whenLabel(event);
@@ -1010,6 +1041,8 @@ export const EventPage = ({
         shared={sharedChannels}
         streamDead={streamDead}
         title={event.subject_name}
+        liveOffer={liveOffer}
+        signedIn={Boolean(user)}
       />
 
       <Ad />
@@ -1852,6 +1885,9 @@ export const Settings = ({
   prefs,
   passkeys,
   playlist,
+  // The live TV pass behind a managed list, or null. Only read when the list is
+  // ours; a list of their own has no pass to report on.
+  livePass = null,
   playlistMasked = null,
   playlistUnreadable = false,
   playlistNotice,
@@ -1898,6 +1934,23 @@ export const Settings = ({
           </div>
           {playlist.last_error ? <p class="feedback error">{playlist.last_error}</p> : null}
 
+          {/* Our line, bought with a pass. No address to show -- it is ours, not
+              theirs -- and the pass, not the list, is what to manage. */}
+          {playlist.managed ? (
+            <p class="muted small">
+              This is your <a href="/live">Live TV pass</a>
+              {livePass ? (
+                <>
+                  , good until <LocalTime at={livePass.expires_at} />
+                </>
+              ) : (
+                ', which has ended'
+              )}
+              . It plays here, to your own session only. To go back to a list of your own, add its
+              address below; yours is kept and comes back when the pass ends.
+            </p>
+          ) : null}
+
           {/*
             The address, which used to be shown nowhere at all.
 
@@ -1907,7 +1960,7 @@ export const Settings = ({
             that answers `no-store` -- and it is the reader's own password, so
             showing it back to the session that supplied it discloses nothing.
           */}
-          {playlistUnreadable ? (
+          {playlist.managed ? null : playlistUnreadable ? (
             <p class="feedback error">
               This address can no longer be decrypted, so it cannot be refreshed or shown. Paste it
               again below to fix it.
@@ -1975,7 +2028,7 @@ export const Settings = ({
         offerable at all. Shared entries play through the proxy only; VLC, Infuse
         and .m3u stay owner-only, because each of those is the credential itself.
       */}
-      {playlist ? (
+      {playlist?.managed ? null : playlist ? (
         <div class="card" id="sharing">
           <div class="card-head">
             <h3 class="card-title">Who can see your list</h3>
@@ -2111,7 +2164,13 @@ export const Settings = ({
         instead, which asks for it deliberately.
       */}
       <form method="post" action="/api/playlist" data-playlist-form>
-        <h3 class="card-title">{playlist ? 'Edit your list' : 'Add a list'}</h3>
+        <h3 class="card-title">
+          {playlist?.managed
+            ? 'Use a list of your own instead'
+            : playlist
+              ? 'Edit your list'
+              : 'Add a list'}
+        </h3>
         <label class="field">
           <span>Playlist URL</span>
           <input

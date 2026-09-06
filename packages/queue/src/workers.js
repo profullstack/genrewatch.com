@@ -8,6 +8,7 @@ import {
 } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
+import { reconcileLapsed } from '@genre/live';
 import { sendEmail, sendPush } from '@genre/notify';
 import { refreshDuePlaylists } from '@genre/playlists';
 import { Worker } from 'bullmq';
@@ -258,6 +259,10 @@ export function startWorkers({ concurrency = {} } = {}) {
       connection,
       concurrency: 1,
     }),
+
+    // Down only: lapsed managed lists are removed or handed back. Nothing here
+    // talks to the line provider.
+    new Worker(QUEUES.livePasses, () => reconcileLapsed({ log }), { connection, concurrency: 1 }),
 
     /*
      * Concurrency 1, always.

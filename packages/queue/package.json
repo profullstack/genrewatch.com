@@ -8,9 +8,10 @@
     "./workers": "./src/workers.js"
   },
   "dependencies": {
+    "@genre/catalog": "workspace:*",
     "@genre/config": "workspace:*",
     "@genre/db": "workspace:*",
-    "@genre/catalog": "workspace:*",
+    "@genre/live": "workspace:*",
     "@genre/notify": "workspace:*",
     "@genre/playlists": "workspace:*",
     "bullmq": "^5.63.0",
