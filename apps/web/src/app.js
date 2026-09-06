@@ -30,12 +30,12 @@ import {
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
 import { createGateway, isTrainingAgent } from '@profullstack/x402-gateway';
-import { x402Gateway } from '@profullstack/x402-gateway/hono';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { attempt, callerAddress, forgive, MISS, VIEW } from './lib/auth-throttle.js';
 import { buildCalendar } from './lib/ics.js';
+import { agentName, leaderboard } from './lib/leaderboard.js';
 import { robotsTxt } from './lib/robots.js';
 import { buildFeed } from './lib/rss.js';
 import { Feeds } from './views/feeds.jsx';
@@ -204,6 +204,11 @@ const crawlGateway = createGateway({
   priceCents: config.crawl.priceCents,
   currency: config.crawl.currency,
   passMinutes: config.crawl.passMinutes,
+  // Both spellings: the gateway prefix-matches only entries ending in a slash,
+  // so '/leaderboard' alone would open the index and still charge for every
+  // board on it. An agent that hits a 402 on the page ranking its own spend
+  // cannot read the case for buying a pass.
+  openPaths: ['/leaderboard', '/leaderboard/'],
   /*
    * Lightpanda is a headless browser sold to scrapers, and on 2026-09-02 a
    * fleet of it fetched 8,500 pages from the sibling site in a day, from 104
@@ -227,8 +232,50 @@ const crawlGateway = createGateway({
   chargeSpoofedBrowsers: true,
   exempt: (request) => (request.headers.get('cookie') ?? '').includes(`${config.session.cookie}=`),
   contact: `${config.siteUrl}/contact`,
+  /*
+   * Write the sale down. Until now a pass existed only for as long as the
+   * response took to send, so neither "what did this earn" nor "who is the
+   * customer" could be answered afterwards. Never awaited into the answer: a
+   * bookkeeping failure must not fail a payment the buyer already made.
+   */
+  onSale: (sale) => {
+    q.recordCrawlSale({
+      payer: sale.payer,
+      ref: sale.ref,
+      days: sale.days,
+      priceCents: sale.priceCents,
+      totalCents: sale.totalCents,
+      currency: sale.currency,
+      userAgent: sale.userAgent,
+      expiresAt: sale.expiresAt,
+    }).catch((err) => console.error('[x402] could not record the sale', err));
+  },
 });
-app.use('*', x402Gateway(crawlGateway));
+
+/*
+ * Count what the wall turns away, before it answers.
+ *
+ * A 402 is the pipeline: an agent that wants this data and has not paid yet,
+ * and the only measure of demand this site has. Counted per agent per day, so
+ * the cost is one upsert on a request that was going to be refused anyway,
+ * and never awaited.
+ */
+app.use('*', async (c, next) => {
+  const answer = await crawlGateway.handle(c.req.raw);
+  if (!answer) return next();
+  if (answer.status === 402)
+    q.recordCrawlDemand(agentName(c.req.header('user-agent'))).catch(() => {});
+  return answer;
+});
+
+/**
+ * The public board: who pays for this data, and who keeps asking without
+ * paying. Open to everyone, including the agents on it.
+ */
+app.use('*', async (c, next) => {
+  const answer = await leaderboard.handle(c.req.raw);
+  return answer ?? next();
+});
 
 app.use('*', async (c, next) => {
   const sid = getCookie(c, config.session.cookie);

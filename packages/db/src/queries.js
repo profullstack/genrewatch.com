@@ -3165,3 +3165,49 @@ export async function setPlaylistShareGrant({ userId, audienceUserId, allowed })
   `;
   return true;
 }
+
+/*
+ * The crawler paywall's own books.
+ *
+ * The gateway has been answering 402 and selling day passes without writing any
+ * of it down, so neither the revenue nor the customer was knowable after the
+ * response was sent. These two record it.
+ */
+
+/**
+ * One sale. `ref` is the payment reference and is unique, so a settlement
+ * delivered twice books once rather than doubling the day's takings.
+ */
+export async function recordCrawlSale({
+  payer = null,
+  ref = null,
+  days = 1,
+  priceCents = 0,
+  totalCents = 0,
+  currency = 'USD',
+  userAgent = null,
+  expiresAt = null,
+}) {
+  const [row] = await sql`
+    insert into crawl_sales (payer, ref, days, price_cents, total_cents, currency, user_agent, expires_at)
+    values (${payer}, ${ref}, ${days}, ${priceCents}, ${totalCents}, ${currency}, ${userAgent},
+            ${expiresAt ? new Date(expiresAt) : null})
+    on conflict (ref) do nothing
+    returning id`;
+  return row ?? null;
+}
+
+/**
+ * One refused request, counted per agent per day.
+ *
+ * There are thousands of these a day and none of them is interesting on its
+ * own, so the row is a counter rather than an event. Cheap enough to call on
+ * every 402 and small enough to keep forever.
+ */
+export async function recordCrawlDemand(agent, at = new Date()) {
+  if (!agent) return;
+  await sql`
+    insert into crawl_demand (agent, day, hits)
+    values (${agent}, ${new Date(at).toISOString().slice(0, 10)}, 1)
+    on conflict (agent, day) do update set hits = crawl_demand.hits + 1`;
+}

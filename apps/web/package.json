@@ -21,6 +21,7 @@
     "@profullstack/x402-gateway": "0.3.0",
     "@simplewebauthn/browser": "^13.2.0",
     "hono": "^4.10.3",
-    "mpegts.js": "1.8.2"
+    "mpegts.js": "1.8.2",
+    "@profullstack/leaderboard": "^0.3.0"
   }
 }
