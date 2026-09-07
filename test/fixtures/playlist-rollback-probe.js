@@ -35,7 +35,32 @@ mock.module('@genre/db/queries', () => ({
   // genrewatch re-parses when the stored rows predate a column a fresh parse
   // would fill; nothing here is old, so nothing is stale.
   playlistNeedsReparse: async () => false,
-  replacePlaylistChannels: async () => {},
+  EmptyPlaylistError: class EmptyPlaylistError extends Error {
+    constructor() {
+      super('no channels found in that file');
+      this.name = 'EmptyPlaylistError';
+    }
+  },
+  /*
+   * Faithful to the real contract, not a no-op.
+   *
+   * It takes a producer rather than an array now, and "the file parsed to
+   * nothing" is signalled by throwing from in here so the transaction rolls
+   * back. A stub that swallowed both would report a login page as a successful
+   * import -- which is exactly the case two of these assertions are about.
+   */
+  replacePlaylistChannels: async ({ fill }) => {
+    let stored = 0;
+    await fill(async (rows) => {
+      stored += rows.length;
+    });
+    if (stored === 0) {
+      const err = new Error('no channels found in that file');
+      err.name = 'EmptyPlaylistError';
+      throw err;
+    }
+    return stored;
+  },
 }));
 
 const { importPlaylist } = await import(`${ROOT}packages/playlists/src/index.js`);
