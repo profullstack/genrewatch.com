@@ -123,7 +123,14 @@ describe('training crawlers that come in anyway are sold a pass', () => {
   test('the gateway is registered after the block and before the session', async () => {
     const src = await readFile(APP, 'utf8');
     const block = src.indexOf("BLOCKED_AGENTS = ['awariobot']");
-    const gate = src.indexOf('x402Gateway(crawlGateway)');
+    // Matched on the call the middleware actually makes. This read
+    // `x402Gateway(crawlGateway)` until the paywall was rewritten to count refused
+    // requests (#20) and the helper went away -- indexOf returned -1, which is not
+    // greater than `block`, so the check that survived the rename was a failing
+    // test rather than a passing one. Assert the name is present before ordering
+    // it, so the next rename says "the gateway moved" instead of "-1".
+    const gate = src.indexOf('crawlGateway.handle(c.req.raw)');
+    expect(gate).toBeGreaterThan(0);
     const session = src.indexOf('auth.userFromRequest(sid)');
     expect(block).toBeGreaterThan(0);
     expect(gate).toBeGreaterThan(block);
