@@ -2592,29 +2592,87 @@ export async function nextPlaylistRefreshAt() {
  * outside a transaction would leave the account with no channels at all if the
  * insert failed halfway.
  */
-export async function replacePlaylistChannels({ userId, channels }) {
+/**
+ * A list that parsed to nothing at all.
+ *
+ * Its own type because it is the one failure the caller handles differently: it
+ * is a message for the reader ("is that really an M3U?"), not a fault. Thrown from
+ * inside the transaction so the delete that opened it goes back too, which is what
+ * leaves the channels they already had standing.
+ */
+export class EmptyPlaylistError extends Error {
+  constructor() {
+    super('no channels found in that file');
+    this.name = 'EmptyPlaylistError';
+  }
+}
+
+/**
+ * Replace a reader's channels with whatever `fill` feeds in.
+ *
+ * Takes a producer rather than an array because an array is a size limit. The
+ * caller used to build every row first and hand them over, which is fine for a
+ * channel lineup and impossible for a 583MB VOD catalogue -- roughly 2.6 million
+ * rows, more than the container's heap, and the reason imports were refused above
+ * a byte ceiling at all.
+ *
+ * So control is inverted: `fill(append)` runs inside the transaction, `append`
+ * takes a batch and returns a promise, and the producer -- an m3u parse reading
+ * off disk -- is paced by how fast Postgres accepts rows. Peak memory is one
+ * batch, whatever the size of the list.
+ *
+ * Returns how many rows were stored.
+ *
+ * @param {{ userId: string, fill: (append: (rows: object[]) => Promise<void>) => Promise<void> }} args
+ * @returns {Promise<number>}
+ */
+export async function replacePlaylistChannels({ userId, fill }) {
   const [pl] = await sql`select id from user_playlists where user_id = ${userId}`;
   if (!pl) throw new Error('no playlist for user');
 
-  await sql.begin(async (tx) => {
+  return sql.begin(async (tx) => {
     await tx`delete from user_playlist_channels where playlist_id = ${pl.id}`;
-    for (let i = 0; i < channels.length; i += 500) {
-      const rows = channels.slice(i, i + 500).map((c, j) => ({
-        playlist_id: pl.id,
-        position: i + j,
-        title: c.title,
-        group_title: c.group ?? null,
-        kind: c.kind ?? null,
-        stream_url: c.streamUrl,
-        norm_title: c.normTitle,
-      }));
-      await tx`insert into user_playlist_channels ${tx(rows)}`;
-    }
+
+    let position = 0;
+    let batch = [];
+
+    const flush = async () => {
+      if (batch.length === 0) return;
+      await tx`insert into user_playlist_channels ${tx(batch)}`;
+      batch = [];
+    };
+
+    const append = async (channels) => {
+      for (const c of channels) {
+        batch.push({
+          playlist_id: pl.id,
+          position: position++,
+          title: c.title,
+          group_title: c.group ?? null,
+          kind: c.kind ?? null,
+          stream_url: c.streamUrl,
+          norm_title: c.normTitle,
+        });
+        // Mid-batch rather than after the loop: a producer that hands over a
+        // hundred thousand entries in one call must still insert in fives.
+        if (batch.length >= 500) await flush();
+      }
+    };
+
+    await fill(append);
+    await flush();
+
+    // Rolls the delete back with it. A list that parses to nothing is a URL that
+    // answered with a login page, and wiping a working playlist for one is worse
+    // than doing nothing.
+    if (position === 0) throw new EmptyPlaylistError();
+
     await tx`
       update user_playlists
-      set channel_count = ${channels.length}, last_synced_at = now(), last_error = null
+      set channel_count = ${position}, last_synced_at = now(), last_error = null
       where id = ${pl.id}
     `;
+    return position;
   });
 }
 

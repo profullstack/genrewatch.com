@@ -3,6 +3,7 @@ import { open, seal } from '@genre/auth';
 import { matchTerms, normaliseTitle, parseM3uStream, rankChannelsForTitle } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
+import { readSpill, spillToDisk } from './spill.js';
 
 export { maskPlaylistUrl } from './mask.js';
 export { firstLiveChannel, isDeadStatus, probeStream, verdictToStore } from './probe.js';
@@ -77,24 +78,31 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
   };
 
   /*
-   * Read, hashed and parsed in one pass, holding none of it.
+   * Downloaded to a file, hashed on the way past, and not parsed yet.
    *
-   * This used to be `text = await res.text()` followed by a hash of that string
-   * and a parse that split it into an array of every line. On the catalogue this
-   * actually serves -- 300,000 entries -- those three copies were most of a
-   * gigabyte, and doing it beside the HTTP server starved it: the accept queue
+   * This has been through three shapes and the reason is always memory. It was
+   * `await res.text()` plus a hash of that string plus a split into an array of
+   * every line: three copies of the file, most of a gigabyte on a 300,000-entry
+   * catalogue, and doing it beside the HTTP server starved it -- the accept queue
    * filled, the edge reported "connection dial timeout", and the site 502'd every
-   * five minutes for as long as it was left alone. The worker has its own service
-   * now, but a worker that wedges just fails more quietly.
+   * five minutes for as long as it was left alone.
    *
-   * The digest still covers the whole body -- `onChunk` sees every chunk, in
-   * order, and the stream is read to the end even once the entry ceiling is hit --
-   * because the unchanged-poll short circuit below is only as good as its hash.
+   * Then it streamed, holding no file but every entry, which is what the size
+   * ceiling was really protecting: 583MB of provider catalogue is roughly 2.6
+   * million entries and that array alone does not fit. Raising the ceiling would
+   * have turned a refusal into an out-of-memory kill.
+   *
+   * So the body goes to disk. Nothing whole is resident at any point, the ceiling
+   * is gone, and the unchanged poll below -- the common case, because most polls
+   * see a byte-identical file -- now costs a hash rather than a full parse of
+   * several million entries that are then thrown away.
+   *
+   * `spilled` must be discarded on every path out of here, including the throws.
    */
   const hash = createHash('sha256');
   let bytes = 0;
-  /** The stream result. Not `parsed` -- that name is the URL, twenty lines up. */
-  let list;
+  /** The file the body landed in. Not `parsed` -- that name is the URL, above. */
+  let spilled = null;
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(60_000),
@@ -102,22 +110,22 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
     });
     if (!res.ok) throw new Error(`the provider answered ${res.status}`);
 
-    // Bounded before reading, not after: a wrong URL pointing at something huge
-    // should cost one header round trip rather than filling memory.
+    // Only when an operator has actually set a ceiling. Checked before reading so
+    // that a wrong URL pointing at something huge costs one header round trip.
+    const cap = config.playlists.maxBytes;
     const len = Number(res.headers.get('content-length') ?? 0);
-    if (len > config.playlists.maxBytes) {
+    if (cap > 0 && len > cap) {
       throw new Error(`that list is ${Math.round(len / 1e6)}MB, which is larger than we store`);
     }
     if (!res.body) throw new Error('the provider sent no body');
 
-    list = await parseM3uStream(res.body, {
-      max: config.playlists.maxChannels,
+    spilled = await spillToDisk(res.body, {
       onChunk: (chunk) => {
         bytes += chunk.byteLength ?? chunk.length;
-        // Throwing here aborts the parse and cancels the download. A provider
+        // Throwing here abandons the download and removes the file. A provider
         // that lies in its content-length, or sends none at all, is stopped
         // mid-flight rather than after we have already taken the whole thing.
-        if (bytes > config.playlists.maxBytes) {
+        if (cap > 0 && bytes > cap) {
           throw new Error('that list is larger than we store');
         }
         hash.update(chunk);
@@ -141,23 +149,91 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
   // handful of slots that changed and leaves the other several thousand sitting
   // still.
   const contentHash = hash.digest('hex');
-  /*
-   * ...unless the rows we already hold predate a column a fresh parse would fill.
-   *
-   * Skipping on an unchanged hash freezes the SCHEMA those rows were imported
-   * under, not just their content. `kind` arrived in 0013 and, for anybody whose
-   * provider had not touched their playlist since, never got written -- so their
-   * films kept falling back to the sealed-url guess and landing in the generic
-   * tier rather than "Available on demand", which is the exact bug 0013 fixed,
-   * surviving in the data. One cheap exists() per poll buys the self-heal.
-   */
-  const stale = await q.playlistNeedsReparse(userId);
-  if (knownHash && knownHash === contentHash && !stale) {
-    await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(bytes) });
-    return { channels: null, unchanged: true };
-  }
 
-  const channels = list.entries.map((c) => ({
+  try {
+    /*
+     * ...unless the rows we already hold predate a column a fresh parse would fill.
+     *
+     * Skipping on an unchanged hash freezes the SCHEMA those rows were imported
+     * under, not just their content. `kind` arrived in 0013 and, for anybody whose
+     * provider had not touched their playlist since, never got written -- so their
+     * films kept falling back to the sealed-url guess and landing in the generic
+     * tier rather than "Available on demand", which is the exact bug 0013 fixed,
+     * surviving in the data. One cheap exists() per poll buys the self-heal.
+     */
+    const stale = await q.playlistNeedsReparse(userId);
+    if (knownHash && knownHash === contentHash && !stale) {
+      await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(bytes) });
+      return { channels: null, unchanged: true };
+    }
+
+    /*
+     * Parsed out of the file and into Postgres in one pass, a batch at a time.
+     *
+     * `onEntries` hands over what each chunk produced and the parser forgets it;
+     * `append` is awaited, so the parse runs at the speed of the inserts and the
+     * memory this costs is one batch rather than one catalogue. That is the whole
+     * reason a 583MB list is now storable: nothing here scales with its size.
+     *
+     * It all happens inside one transaction that begins by deleting the old rows,
+     * so a failure halfway through -- a torn file, a provider that answered with a
+     * login page -- leaves the reader with the channels they already had rather
+     * than a partial import.
+     */
+    let truncated = false;
+    let stored = 0;
+    try {
+      stored = await q.replacePlaylistChannels({
+        userId,
+        fill: async (append) => {
+          const list = await parseM3uStream(readSpill(spilled.path), {
+            max: config.playlists.maxChannels,
+            onEntries: (entries) => append(entries.map(toChannelRow)),
+          });
+          // Only reachable when an operator has set PLAYLIST_MAX_CHANNELS: the
+          // parser says so directly, where a length comparison could only infer it.
+          truncated = list.truncated;
+        },
+      });
+    } catch (err) {
+      /*
+       * By name rather than `instanceof`.
+       *
+       * The class travels through a transaction callback and, in tests, through
+       * a mocked module -- two module instances mean two distinct classes and an
+       * `instanceof` that is false for the very error it was written to catch.
+       * A wrong answer there reports "no channels found" as an unhandled fault.
+       */
+      if (err?.name !== 'EmptyPlaylistError') throw err;
+      // Reached something, but not a playlist. Same rollback as a failed fetch: a
+      // URL that answers with a login page is a typo like any other. The delete
+      // that opened the transaction went back with it, so the old rows stand.
+      const restored = await restorePrevious();
+      await q.markPlaylistError({ userId, error: 'no channels found in that file' });
+      throw new Error(
+        restored
+          ? 'No channels found in that file — is it an M3U playlist? Your previous address is still saved.'
+          : 'No channels found in that file — is it an M3U playlist?',
+      );
+    }
+
+    await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(bytes) });
+    return { channels: stored, truncated, unchanged: false };
+  } finally {
+    // Every path out of here, including the throws above: a temp file nobody
+    // deletes is a disk that fills up one import at a time.
+    await spilled.discard();
+  }
+}
+
+/**
+ * One parsed entry, as it is stored.
+ *
+ * At module scope because it runs a few million times on a full catalogue and
+ * there is no reason to rebuild the closure for every batch.
+ */
+function toChannelRow(c) {
+  return {
     title: c.title,
     // The provider's own group-title, verbatim. This is what makes a reader's own
     // list browsable by genre without any of it leaving their account.
@@ -176,28 +252,6 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
      * appeared for anyone.
      */
     kind: c.kind ?? null,
-  }));
-
-  if (channels.length === 0) {
-    // Reached something, but not a playlist. Same rollback as a failed fetch: a
-    // URL that answers with a login page is a typo like any other.
-    const restored = await restorePrevious();
-    await q.markPlaylistError({ userId, error: 'no channels found in that file' });
-    throw new Error(
-      restored
-        ? 'No channels found in that file — is it an M3U playlist? Your previous address is still saved.'
-        : 'No channels found in that file — is it an M3U playlist?',
-    );
-  }
-
-  await q.replacePlaylistChannels({ userId, channels });
-  await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(bytes) });
-  return {
-    channels: channels.length,
-    // The parser says so directly now: it knows it stopped feeding entries,
-    // where a length comparison could only infer it.
-    truncated: list.truncated,
-    unchanged: false,
   };
 }
 

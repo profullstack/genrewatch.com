@@ -207,29 +207,46 @@ export const config = {
       return Boolean(this.secret);
     },
     /**
-     * Refuse a list bigger than this, in bytes.
+     * Refuse a list bigger than this, in bytes. 0 -- the default -- accepts any.
      *
-     * 100MB, raised from 8MB after a real 38MB list was rejected with "that list
-     * is larger than we store". Eight megabytes was sized for a channel lineup --
-     * a few thousand rows of title and URL. A provider that also exposes its VOD
-     * library ships its whole catalogue in the same file, and those run to
-     * hundreds of thousands of entries.
+     * There is no ceiling any more, and the history of this number is the
+     * argument for not having one. It was 8MB, sized for a channel lineup; a real
+     * 38MB list was rejected, so it became 100MB; then a real 583MB list was
+     * rejected with the same sentence. Every raise was a guess at how big a
+     * provider's catalogue can get, and every guess was wrong within months --
+     * because the number was never about what we can handle, only about what we
+     * had happened to see.
      *
-     * The ceiling is still a ceiling: this is read into memory as one string
-     * before it is parsed, so it bounds what a wrong URL pointing at something
-     * enormous can cost.
+     * What made it necessary is gone. The import used to hold the whole parse in
+     * memory, so a byte ceiling was really a heap ceiling wearing a disguise, and
+     * it had to be conservative because exceeding it took the site down rather
+     * than the import. Entries now spill to disk as they are parsed and reach
+     * Postgres in batches, so the memory an import costs is a batch, whether the
+     * list is 8MB or 583MB. Bandwidth is bounded separately and better by
+     * refreshBytesPerMinute, which puts a 583MB list on a ~5-hour poll rather
+     * than refusing it.
+     *
+     * Kept as a knob because an operator paying for the bandwidth may want one,
+     * and because a wrong URL pointing at something enormous is still a real
+     * thing to be able to stop. It is just not a default.
      */
-    maxBytes: num('PLAYLIST_MAX_BYTES', 100 * 1024 * 1024),
+    maxBytes: num('PLAYLIST_MAX_BYTES', 0),
 
     /**
-     * Hard ceiling on entries stored from one list.
+     * Hard ceiling on entries stored from one list. 0 -- the default -- stores all.
      *
      * Was a constant of 20,000 in the parser, which silently truncated: a reader
      * importing a 300,000-entry catalogue got 20,000 rows, no error, and no way to
-     * tell which 280,000 were missing. It is a knob now, the import reports when it
-     * hits it, and the default is high enough for a full VOD catalogue.
+     * tell which 280,000 were missing. Then it was 300,000, which was the same bug
+     * one order of magnitude along -- a 583MB catalogue is roughly 2.6 million
+     * entries, and truncating it to 300,000 is a worse answer than refusing it,
+     * because the reader gets a list that looks complete and quietly is not.
+     *
+     * It exists at all for the same reason maxBytes did: entries used to be held
+     * in memory. They are not, so there is nothing left for this to protect and
+     * the honest default is to store what the reader gave us.
      */
-    maxChannels: num('PLAYLIST_MAX_CHANNELS', 300_000),
+    maxChannels: num('PLAYLIST_MAX_CHANNELS', 0),
     /**
      * How often each list is re-fetched, in minutes.
      *
