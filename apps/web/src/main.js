@@ -5,6 +5,7 @@ import { configurePayments } from '@genre/payments';
 import { closeQueues, connection, installSchedules } from '@genre/queue';
 import { startWorkers } from '@genre/queue/workers';
 import { app } from './app.js';
+import { startDbWatchdog } from './lib/db-watchdog.js';
 
 /*
  * Hand the payments package its database handle and settings.
@@ -71,6 +72,7 @@ if (config.roles.includes('worker')) {
 }
 
 let server;
+let watchdog;
 /**
  * Drop the rendered page cache on boot.
  *
@@ -113,6 +115,24 @@ if (config.roles.includes('web')) {
   // still reports healthy.
   server = Bun.serve({ port: config.port, fetch: app.fetch, idleTimeout: 30 });
   console.log(`[web] listening on :${server.port} as ${config.roles.join('+')}`);
+
+  /*
+   * Watch the pool the requests actually use.
+   *
+   * `healthcheck()` runs `select 1` on the shared `sql` handle, which is the
+   * point: the 2026-09-07 outage was this pool refusing to hand out connections
+   * while Postgres, the container and a freshly opened connection inside it were
+   * all healthy. Nothing else here would have caught it -- see db-watchdog.js.
+   * Read from the environment directly, the way DB_POOL_MAX already is.
+   */
+  watchdog = startDbWatchdog({
+    probe: async () => {
+      if (!(await healthcheck())) throw new Error('select 1 did not come back');
+    },
+    intervalMs: Number(process.env.DB_WATCHDOG_INTERVAL_MS ?? 30_000),
+    timeoutMs: Number(process.env.DB_WATCHDOG_TIMEOUT_MS ?? 10_000),
+    failures: Number(process.env.DB_WATCHDOG_FAILURES ?? 3),
+  });
 } else {
   /*
    * A worker-only service still has to answer the healthcheck.
@@ -142,6 +162,7 @@ async function shutdown(signal) {
   console.log(`[main] ${signal}, draining`);
   // Stop taking new work before closing the pool, so an in-flight fan-out finishes
   // its claim rather than half-sending a batch.
+  watchdog?.stop();
   await Promise.allSettled([server?.stop(true), ...workers.map((w) => w.close())]);
   await Promise.allSettled([closeQueues(), closeDb()]);
   process.exit(0);
