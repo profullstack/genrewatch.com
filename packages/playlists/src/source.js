@@ -30,6 +30,9 @@ export { maskPlaylistUrl } from './mask.js';
  * that is to paste the URL again, not to see a stack trace.
  */
 export async function playlistSource(userId) {
+  // Takes a user id and nothing else, still. There is deliberately no playlistId
+  // parameter: settings reveals one address, the first line's, and a parameter
+  // nobody passes is an invitation to point this somewhere else later.
   const row = await q.getPlaylist(userId);
   if (!row) return null;
   const url = open(row.source_url);
@@ -37,5 +40,15 @@ export async function playlistSource(userId) {
     label: row.label ?? null,
     url: url ?? null,
     masked: url ? maskPlaylistUrl(url) : null,
+    /*
+     * Whether THIS row is our managed line.
+     *
+     * Carried so the caller refusing to disclose an address can ask about the row
+     * it is holding. The account-level "does this reader have a managed line
+     * anywhere" is the wrong question once our line sits beside their own: a
+     * reader whose own list happens to sort above the pass line would be refused
+     * the address they typed in themselves.
+     */
+    managed: row.managed === true,
   };
 }

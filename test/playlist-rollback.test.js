@@ -62,4 +62,21 @@ describe('a failed import leaves the previous address in place', () => {
     expect(out.sameUrlMessage).not.toContain('still saved');
     expect(out.storedAfterSameUrl).toBe('http://line.example.test/playlist/me/secret/m3u');
   });
+
+  /*
+   * The other direction, which arrived with more than one list per reader.
+   *
+   * Every case above corrects a list that exists, and the address that worked goes
+   * back. Adding a second provider has nothing to go back TO, so the undo is to
+   * remove the row this attempt created -- otherwise a typo leaves a broken line
+   * sitting in settings forever, which is the same mess the rollback was written to
+   * prevent, reached from the opposite side.
+   */
+  test('a failed ADD removes the row it created, rather than leaving a broken line', () => {
+    expect(out.failedAddMessage).toStartWith('Could not read that list');
+    // Not "your previous address is still saved": there was no previous address,
+    // and saying so would be a lie about a list that no longer exists.
+    expect(out.failedAddMessage).not.toContain('still saved');
+    expect(out.rowAfterFailedAdd).toBe(null);
+  });
 });

@@ -22,16 +22,36 @@ const { open, seal } = await import(`${ROOT}packages/auth/src/secretbox.js`);
 /** The one row this feature stores, held in memory. */
 let row = null;
 
+/*
+ * The row has an id now, because a reader can hold several lists and every write
+ * names the one it is about. `getPlaylistFor` is what importPlaylist asks when it
+ * is EDITING a list, which is the case this probe is about: correcting the address
+ * on a subscription that already exists.
+ */
+const ROW_ID = 1;
+
 mock.module('@genre/db/queries', () => ({
   getPlaylist: async () => row,
+  getPlaylistFor: async ({ playlistId }) => (playlistId === ROW_ID ? row : null),
   savePlaylist: async ({ userId, label, sourceUrl }) => {
-    row = { ...(row ?? {}), user_id: userId, label, source_url: sourceUrl, last_error: null };
+    row = {
+      ...(row ?? {}),
+      id: ROW_ID,
+      user_id: userId,
+      label,
+      source_url: sourceUrl,
+      last_error: null,
+    };
     return row;
   },
   markPlaylistError: async ({ error }) => {
     if (row) row.last_error = error;
   },
   markPlaylistFresh: async () => {},
+  // A failed ADD removes the row it created. An edit never reaches this.
+  deletePlaylist: async () => {
+    row = null;
+  },
   // genrewatch re-parses when the stored rows predate a column a fresh parse
   // would fill; nothing here is old, so nothing is stale.
   playlistNeedsReparse: async () => false,
@@ -79,7 +99,7 @@ const serveOnly = (url) => {
 
 const attempt = async (url, label = 'My line') => {
   try {
-    await importPlaylist({ userId: 'u1', url, label });
+    await importPlaylist({ userId: 'u1', playlistId: ROW_ID, url, label });
     return null;
   } catch (err) {
     return err.message;
@@ -101,7 +121,7 @@ out.labelAfterTypo = row.label;
 out.errorRecorded = row.last_error;
 
 // A line that has expired often serves an HTML login page with a 200.
-row = { user_id: 'u1', label: 'My line', source_url: seal(GOOD), last_error: null };
+row = { id: ROW_ID, user_id: 'u1', label: 'My line', source_url: seal(GOOD), last_error: null };
 globalThis.fetch = async () => new Response('<html>login</html>', { status: 200 });
 out.notAPlaylistMessage = await attempt(BAD);
 out.storedAfterNotAPlaylist = open(row.source_url);
@@ -109,9 +129,30 @@ out.storedAfterNotAPlaylist = open(row.source_url);
 // A failing refresh re-submits the address already stored. Nothing changed, so
 // there is nothing to restore -- and saying otherwise would tell somebody their
 // address was put back when it never moved.
-row = { user_id: 'u1', label: 'My line', source_url: seal(GOOD), last_error: null };
+row = { id: ROW_ID, user_id: 'u1', label: 'My line', source_url: seal(GOOD), last_error: null };
 globalThis.fetch = async () => new Response('down', { status: 500 });
 out.sameUrlMessage = await attempt(GOOD);
 out.storedAfterSameUrl = open(row.source_url);
+
+/*
+ * A failed ADD, as opposed to a failed edit.
+ *
+ * Everything above corrects the address on a list that already exists, and the
+ * rollback puts the working one back. Adding a SECOND provider has no previous
+ * address to restore -- the row did not exist a moment ago -- so undoing it means
+ * removing the row. Without that, one typo leaves a permanently broken line on the
+ * settings page that the reader has to notice and clear out by hand.
+ */
+row = null;
+globalThis.fetch = async () => new Response('no', { status: 404 });
+out.failedAddMessage = await (async () => {
+  try {
+    await importPlaylist({ userId: 'u1', url: BAD, label: 'A second line' });
+    return null;
+  } catch (err) {
+    return err.message;
+  }
+})();
+out.rowAfterFailedAdd = row;
 
 console.log(JSON.stringify(out));

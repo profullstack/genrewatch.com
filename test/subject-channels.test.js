@@ -226,7 +226,13 @@ describe('a stable playlist still gets new columns', () => {
    * "Available on demand" -- the exact bug 0013 fixed, surviving in the data.
    */
   test('an unchanged hash no longer skips a rewrite when rows are stale', () => {
-    expect(playlists).toContain('const stale = await q.playlistNeedsReparse(userId)');
+    // Asked about the list being imported, not about the account. A reader whose
+    // second provider predates `kind` would otherwise condemn their first one to a
+    // full reparse on every poll, which is the cost this short-circuit exists to
+    // avoid in the first place.
+    expect(playlists).toContain(
+      'const stale = await q.playlistNeedsReparse(userId, { playlistId: targetId })',
+    );
     expect(playlists).toContain('if (knownHash && knownHash === contentHash && !stale)');
   });
 

@@ -159,71 +159,58 @@ export async function ensureLine(userId, { log = console.log } = {}) {
     log(`[live] line ${line.line_id} extended for ${userId}`);
   }
 
-  const current = await q.getPlaylist(userId);
-  if (!current?.managed) {
+  /*
+   * Our line goes in BESIDE whatever they already have.
+   *
+   * This used to take their row: park their address in a stash column, overwrite
+   * the row with our line, and hand it back when the pass lapsed. That was forced
+   * by one-list-per-account and nothing else, and it meant paying us cost a reader
+   * access to their own subscription for the length of the pass.
+   *
+   * Now it is an add. Their lists are not read, not moved and not touched, and the
+   * only row this owns is the one it creates.
+   */
+  const existing = await q.managedPlaylistFor(userId);
+  if (!existing) {
     const m3u = open(line.source_url);
     if (!m3u) throw new Error('the stored line could not be read');
 
-    // Their own list, if they had one, is parked and given back at lapse.
-    const stash = current
-      ? { sourceUrl: current.source_url, label: current.label ?? null }
-      : { sourceUrl: null, label: null };
-
-    await importPlaylist({ userId, url: m3u, label: 'GenreWatch Live TV' });
-    await q.setPlaylistManaged({
-      userId,
-      managed: true,
-      stashedSourceUrl: stash.sourceUrl,
-      stashedLabel: stash.label,
-    });
-    done.push(current ? 'replaced own list' : 'imported list');
+    const result = await importPlaylist({ userId, url: m3u, label: 'GenreWatch Live TV' });
+    // Marked by id, against the row the import just wrote. Without the id this
+    // falls back to the reader's FIRST list, which is very likely one of theirs --
+    // and marking that managed would hide their own address behind our pass rules.
+    await q.setPlaylistManaged({ userId, playlistId: result?.playlistId ?? null, managed: true });
+    done.push('imported list');
   }
 
   return { ok: true, done, lineId: line.line_id, expiresAt: pass.expires_at };
 }
 
 /**
- * Take down every managed list whose pass lapsed past the grace window, giving
- * back whatever list the reader had before. Runs on the worker's tick.
+ * Take down every managed list whose pass lapsed past the grace window. Runs on
+ * the worker's tick.
+ *
+ * One delete, and nothing to give back. The restore half of this is gone with the
+ * stash: a lapse removes the row our pass added and leaves every other list the
+ * reader has untouched, because those were never taken in the first place. That
+ * also removes the failure mode where restoring somebody's own address depended on
+ * a network fetch succeeding inside a cleanup tick.
  *
  * Down only, never up -- see the module note. The provider is not told; the line
  * keeps to its own expiry and is reused if they buy again.
  */
 export async function reconcileLapsed({ log = console.log } = {}) {
   const lapsed = await q.managedPlaylistsLapsed({ graceHours: config.live.graceHours });
-  let restored = 0;
   let removed = 0;
   for (const row of lapsed) {
-    const stashed = row.stashed_source_url ? open(row.stashed_source_url) : null;
-    if (stashed) {
-      try {
-        // Their address back, as their list. importPlaylist writes the row and
-        // fetches it; `managed` is cleared alongside so a failure to fetch
-        // still leaves the row theirs, with the error the page already shows.
-        await q.setPlaylistManaged({
-          userId: row.user_id,
-          managed: false,
-          stashedSourceUrl: null,
-          stashedLabel: null,
-        });
-        await importPlaylist({
-          userId: row.user_id,
-          url: stashed,
-          label: row.stashed_label ?? null,
-        });
-        restored += 1;
-        continue;
-      } catch (err) {
-        log(`[live] could not restore ${row.user_id}'s own list: ${err.message}`);
-        restored += 1;
-        continue;
-      }
-    }
-    await q.deletePlaylist(row.user_id);
+    // By id. `deletePlaylist(userId)` with no id still means "every list they
+    // have", which here would delete the reader's own subscriptions along with
+    // our lapsed line.
+    await q.deletePlaylist(row.user_id, row.playlist_id);
     removed += 1;
   }
-  if (lapsed.length) log(`[live] ${removed} managed lists removed, ${restored} own lists restored`);
-  return { removed, restored };
+  if (lapsed.length) log(`[live] ${removed} lapsed managed list(s) removed`);
+  return { removed };
 }
 
 /**

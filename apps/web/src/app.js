@@ -704,8 +704,13 @@ app.get('/events/:id', async (c) => {
  */
 app.get('/my/channels', async (c) => {
   const user = requireUser(c);
-  const [playlist, groups, kinds] = await Promise.all([
+  const [playlist, playlists, groups, kinds] = await Promise.all([
     q.getPlaylist(user.id),
+    // The groups and kinds below already span every line this reader has -- they
+    // join through user_playlists on the user id and always did. The count in the
+    // heading did not, so it reported the first list's entries against all of
+    // their groups, which reads as a lost list rather than a miscount.
+    q.getPlaylists(user.id),
     q.playlistGroups(user.id),
     // "Does my provider actually carry films" had no answer anywhere on the site,
     // so a reader whose list is all live channels concluded the matching was
@@ -713,7 +718,15 @@ app.get('/my/channels', async (c) => {
     q.playlistKindCounts(user.id),
   ]);
   return c.html(
-    await render(<Channels user={user} playlist={playlist} groups={groups} kinds={kinds} />),
+    await render(
+      <Channels
+        user={user}
+        playlist={playlist}
+        playlists={playlists}
+        groups={groups}
+        kinds={kinds}
+      />,
+    ),
   );
 });
 
@@ -752,34 +765,66 @@ function playlistNoticeFor(result) {
  * hash goes with it, so an unchanged provider file leaves every channel row (and
  * their probe verdicts) alone instead of deleting and reinserting them.
  */
+/**
+ * How many provider lines one account may hold.
+ *
+ * 0002 allowed exactly one and said why: every list is a stored credential, and an
+ * account quietly accumulating them is a liability rather than a feature. Dropping
+ * that constraint does not make the concern wrong, it makes it a product decision
+ * -- so the limit moved here, where changing it does not need a migration. Five is
+ * more subscriptions than anybody actually holds, and low enough that a compromised
+ * session cannot turn the row into a credential dump.
+ */
+const MAX_PLAYLISTS = 5;
+
 app.post('/api/playlist', async (c) => {
   const user = requireUser(c);
   const body = await c.req.parseBody();
   const url = String(body.url ?? '').trim();
   const label = String(body.label ?? '').trim();
+  // Which of the reader's lines this is about. Absent means "a new one", which is
+  // what the add form posts.
+  const playlistId = Number(body.playlist_id) || null;
 
   try {
-    const existing = await q.getPlaylist(user.id);
+    const target = playlistId ? await q.getPlaylistFor({ userId: user.id, playlistId }) : null;
+    if (playlistId && !target) throw new Error('That list is not one of yours.');
 
     if (!url) {
+      const existing = target ?? (await q.getPlaylist(user.id));
       if (!existing) throw new Error('Add the address of your playlist.');
-      const row = await q.renamePlaylist({ userId: user.id, label: label || existing.label });
+      const row = await q.renamePlaylist({
+        userId: user.id,
+        playlistId: existing.id,
+        label: label || existing.label,
+      });
       return respond(c, {
         json: { renamed: true, label: row?.label ?? null },
         redirectTo: playlistNoticeFor({ renamed: true }),
       });
     }
 
-    const same = existing ? auth.open(existing.source_url) === url : false;
+    // The cap applies to ADDING, never to editing one that already exists --
+    // otherwise a reader at the limit could not fix a typo in an address.
+    if (!playlistId && (await q.playlistCount(user.id)) >= MAX_PLAYLISTS) {
+      throw new Error(
+        `That is ${MAX_PLAYLISTS} lists, which is as many as we hold. Remove one first.`,
+      );
+    }
+
+    const same = target ? auth.open(target.source_url) === url : false;
     const result = await importPlaylist({
       userId: user.id,
+      playlistId,
       url,
       label,
-      knownHash: same ? (existing.content_hash ?? null) : null,
+      knownHash: same ? (target.content_hash ?? null) : null,
     });
-    // An address of their own makes the list theirs again. Their pass keeps
+    // An address of their own makes that list theirs again. Their pass keeps
     // running and /live offers to switch back; nothing here provisions.
-    if (existing?.managed) await q.setPlaylistManaged({ userId: user.id, managed: false });
+    if (target?.managed) {
+      await q.setPlaylistManaged({ userId: user.id, playlistId: target.id, managed: false });
+    }
     return respond(c, { json: result, redirectTo: playlistNoticeFor(result) });
   } catch (err) {
     return respond(c, {
@@ -800,14 +845,30 @@ app.post('/api/playlist', async (c) => {
  */
 app.get('/api/playlist/source', async (c) => {
   const user = requireUser(c);
-  // Our line's address is not the reader's to see. The settings card for a
-  // managed list has no Show button; this is the route it would have called.
-  if (await q.playlistIsManaged(user.id)) {
-    return c.json({ error: 'That list came with your pass and has no address to show.' }, 403);
-  }
+  c.header('cache-control', 'no-store');
+  /*
+   * Still no id from the request, deliberately.
+   *
+   * Settings reveals one address -- the first line's -- and the other-lines card
+   * shows none, because an address field per list would put several credentials on
+   * one page. So this route answers with the session's own first row and there is
+   * nothing in the request pointing anywhere else, which is the property that makes
+   * it safe to expose a credential from at all.
+   */
   const source = await playlistSource(user.id);
   if (!source) return c.json({ error: 'You have not added a list.' }, 404);
-  c.header('cache-control', 'no-store');
+  /*
+   * Our line's address is not the reader's to see, and the question is about THIS
+   * row.
+   *
+   * It used to ask whether the ACCOUNT had a managed list at all, which was the
+   * same question while a reader could hold exactly one. Now our line sits beside
+   * their own subscriptions, so the account-level answer refuses a reader their own
+   * address whenever a pass line happens to be among their lists.
+   */
+  if (source.managed) {
+    return c.json({ error: 'That list came with your pass and has no address to show.' }, 403);
+  }
   if (!source.url) {
     return c.json({ error: 'That stored address could not be read. Please add it again.' }, 409);
   }
@@ -816,8 +877,13 @@ app.get('/api/playlist/source', async (c) => {
 
 app.post('/api/playlist/refresh', async (c) => {
   const user = requireUser(c);
+  const body = await c.req.parseBody();
+  // Optional, and refreshPlaylist falls back to the reader's first list without
+  // it. Named where the form knows which card it sits on, so that a second Refresh
+  // button added later cannot silently re-poll the wrong provider.
+  const playlistId = Number(body.playlist_id) || null;
   try {
-    const result = await refreshPlaylist(user.id);
+    const result = await refreshPlaylist(user.id, { playlistId });
     return respond(c, { json: result, redirectTo: playlistNoticeFor(result) });
   } catch (err) {
     return respond(c, {
@@ -842,11 +908,24 @@ app.post('/api/playlist/share', async (c) => {
   const user = requireUser(c);
   const body = await c.req.parseBody();
   const label = String(body.label ?? '').trim();
+  // Which line the card was about. Absent means the first, which is the one the
+  // sharing card renders.
+  const playlistId = Number(body.playlist_id) || null;
 
-  // A pass is one person's. Opening a managed list to others is reselling our
-  // line to people who did not pay for it, so the card is not drawn and the
-  // route refuses whatever an old page sends.
-  if (await q.playlistIsManaged(user.id)) {
+  /*
+   * A pass is one person's. Opening a managed list to others is reselling our line
+   * to people who did not pay for it, so the card is not drawn and the route
+   * refuses whatever an old page sends.
+   *
+   * Asked of the row being shared rather than of the account. "Does this reader
+   * have a managed line anywhere" would refuse them the sharing of their OWN
+   * subscription for as long as a pass is running -- and the account-level answer
+   * is no longer the same question, now that our line sits beside theirs.
+   */
+  const target = playlistId
+    ? await q.getPlaylistFor({ userId: user.id, playlistId })
+    : await q.getPlaylist(user.id);
+  if (target?.managed) {
     return respond(c, {
       json: { error: 'a list that came with a pass cannot be shared' },
       status: 403,
@@ -884,7 +963,12 @@ app.post('/api/playlist/share', async (c) => {
     });
   }
 
-  const row = await q.setPlaylistSharing({ userId: user.id, audience, label: label || null });
+  const row = await q.setPlaylistSharing({
+    userId: user.id,
+    playlistId: target?.id ?? null,
+    audience,
+    label: label || null,
+  });
   if (!row) {
     return respond(c, {
       json: { error: 'no list to share' },
@@ -908,10 +992,16 @@ app.post('/api/playlist/share/grant', async (c) => {
   const body = await c.req.parseBody();
   const audienceUserId = String(body.user_id ?? '');
   const allowed = String(body.allowed ?? '') === '1';
+  const playlistId = Number(body.playlist_id) || null;
 
-  // Same refusal as /api/playlist/share, and for the same reason. Revoking is
-  // never gated anywhere, so only a grant is refused.
-  if (allowed && (await q.playlistIsManaged(user.id))) {
+  // Same refusal as /api/playlist/share, asked of the same row and for the same
+  // reason. Revoking is never gated anywhere, so only a grant is refused.
+  const target = allowed
+    ? playlistId
+      ? await q.getPlaylistFor({ userId: user.id, playlistId })
+      : await q.getPlaylist(user.id)
+    : null;
+  if (allowed && target?.managed) {
     return respond(c, {
       json: { error: 'a list that came with a pass cannot be shared' },
       status: 403,
@@ -928,7 +1018,12 @@ app.post('/api/playlist/share/grant', async (c) => {
     });
   }
 
-  const ok = await q.setPlaylistShareGrant({ userId: user.id, audienceUserId, allowed });
+  const ok = await q.setPlaylistShareGrant({
+    userId: user.id,
+    playlistId: target?.id ?? playlistId,
+    audienceUserId,
+    allowed,
+  });
   return respond(c, { json: { ok }, redirectTo: '/settings#sharing' });
 });
 
@@ -1145,30 +1240,38 @@ app.get('/shared/:channelId/check', async (c) => {
 
 app.post('/api/playlist/delete', async (c) => {
   const user = requireUser(c);
+  const body = await c.req.parseBody();
+  const playlistId = Number(body.playlist_id) || null;
+
   /*
-   * Removing a managed list gives back the list it replaced, if there was one.
-   * Deleting the row outright would take the parked address with it, and that
-   * address is the one thing the reader cannot re-type from memory.
+   * One list, named by the reader.
+   *
+   * The restore dance that used to live here is gone with the stash. Removing a
+   * managed list no longer has to give anything back, because taking the pass
+   * never took anything away: our line was added beside their own lists and
+   * removing it leaves them exactly as they were.
+   *
+   * The id is required rather than optional. `deletePlaylist(userId)` with no id
+   * still means "every list this reader has", which is right for closing an
+   * account and catastrophic as the fallback for a button labelled Remove.
    */
-  const existing = await q.getPlaylist(user.id);
-  const stashed =
-    existing?.managed && existing.stashed_source_url
-      ? auth.open(existing.stashed_source_url)
-      : null;
-  if (stashed) {
-    await q.setPlaylistManaged({ userId: user.id, managed: false });
-    try {
-      await importPlaylist({ userId: user.id, url: stashed, label: existing.stashed_label ?? '' });
-    } catch (err) {
-      return respond(c, {
-        json: { error: err.message },
-        status: 400,
-        redirectTo: `/settings?playlist_error=${encodeURIComponent(err.message)}`,
-      });
-    }
-    return respond(c, { json: { restored: true }, redirectTo: '/settings?playlist=restored' });
+  if (!playlistId) {
+    return respond(c, {
+      json: { error: 'Say which list to remove.' },
+      status: 400,
+      redirectTo: '/settings?playlist_error=Say%20which%20list%20to%20remove.',
+    });
   }
-  await q.deletePlaylist(user.id);
+  const target = await q.getPlaylistFor({ userId: user.id, playlistId });
+  if (!target) {
+    return respond(c, {
+      json: { error: 'That list is not one of yours.' },
+      status: 400,
+      redirectTo: '/settings?playlist_error=That%20list%20is%20not%20one%20of%20yours.',
+    });
+  }
+
+  await q.deletePlaylist(user.id, playlistId);
   return respond(c, { json: { deleted: true }, redirectTo: '/settings' });
 });
 
@@ -1393,12 +1496,23 @@ app.get('/events/:id/playlist.m3u', async (c) => {
   const event = await q.getEvent(Number(c.req.param('id')));
   if (!event) return c.notFound();
 
-  // Same rule as the single-entry .m3u: a managed list plays in the page only.
-  if (await q.playlistIsManaged(user.id)) return c.redirect(`/events/${event.id}`, 303);
-
   const own = await ownChannelsForEvent({ userId: user.id, event });
 
-  const { list, asked } = pickOwnChannel(c, own);
+  const { list: matched, asked } = pickOwnChannel(c, own);
+  /*
+   * Same rule as the single-entry .m3u: a managed list plays in the page only.
+   *
+   * Applied per entry rather than per account. This used to refuse the download
+   * outright when the reader's list was ours, which was the same thing while they
+   * could hold only one. Now our line sits beside their own subscriptions, so the
+   * account-level answer would refuse somebody a file of their OWN channels for as
+   * long as a pass is running -- while a row-level one still never writes our
+   * reseller credential into a file, which is the whole point of the rule.
+   */
+  // Held by identity rather than by index: `asked` indexes the unfiltered list, and
+  // reusing it after a filter picks whatever slid into that position instead.
+  const wanted = matched[asked];
+  const list = matched.filter((ch) => ch.providerManaged !== true);
   if (list.length === 0) return c.redirect(`/events/${event.id}`, 303);
 
   /*
@@ -1414,7 +1528,9 @@ app.get('/events/:id/playlist.m3u', async (c) => {
    * sequential inside firstLiveChannel because these are one subscriber's own
    * connections and the line caps how many can be open at once.
    */
-  const ordered = [list[asked], ...list.filter((_, i) => i !== asked)].filter(Boolean);
+  const ordered = [wanted, ...list.filter((ch) => ch !== wanted)].filter(
+    (ch) => ch && ch.providerManaged !== true,
+  );
   const { pick, tried } = await firstLiveChannel(ordered, {
     onResult: async (ch, result) => {
       if (!ch.id) return;
@@ -2621,10 +2737,14 @@ app.post('/api/timezone', async (c) => {
 
 app.get('/settings', async (c) => {
   const user = requireUser(c);
-  const [prefs, passkeys, playlist, member, shareCandidates] = await Promise.all([
+  const [prefs, passkeys, playlist, playlists, member, shareCandidates] = await Promise.all([
     q.getPrefs(user.id),
     q.listPasskeys(user.id),
     q.getPlaylist(user.id),
+    // All of them, for the "other lines" card. getPlaylist still answers for the
+    // main card, which is the first row and carries the address and the sharing
+    // controls; this is the same ordering, read whole.
+    q.getPlaylists(user.id),
     isMember(user),
     // Fetched unconditionally rather than only for a member: the picker has to be
     // populated the instant somebody joins, and a second round trip after the
@@ -2640,19 +2760,27 @@ app.get('/settings', async (c) => {
    * "Imported NaN channels", which reads as a failure of the thing that just
    * worked.
    */
-  // The pass behind a managed list, for its card. Its own read, only when the
-  // list is ours; a list of their own has no pass to report on.
-  const livePass = playlist?.managed ? await q.activeLivePass(user.id) : null;
+  /*
+   * The pass behind a managed list, for its card.
+   *
+   * Asked of every line rather than of the first one. Our managed line used to be
+   * the reader's only list, so `playlist.managed` answered it; now it sits beside
+   * their own and is very often NOT first, and reading only the first row would
+   * hide the pass card from exactly the readers who are paying for it.
+   */
+  const hasManaged = playlists.some((p) => p.managed);
+  const livePass = hasManaged ? await q.activeLivePass(user.id) : null;
+  // No 'restored' case any more: nothing restores. Removing a managed list used to
+  // hand back the address it had parked, and with the stash gone there is nothing
+  // parked and nothing to announce.
   const playlistNotice =
     added === 'renamed'
       ? 'Saved.'
-      : added === 'restored'
-        ? 'Your own list is back.'
-        : added === 'unchanged'
-          ? 'Saved. Your provider is serving the same list as last time, so your channels are unchanged.'
-          : added
-            ? `Imported ${Number(added).toLocaleString('en-US')} channels.`
-            : null;
+      : added === 'unchanged'
+        ? 'Saved. Your provider is serving the same list as last time, so your channels are unchanged.'
+        : added
+          ? `Imported ${Number(added).toLocaleString('en-US')} channels.`
+          : null;
 
   // Masked here rather than in the view, so the unsealed URL exists for one
   // expression and never becomes a prop that something else could render whole.
@@ -2670,6 +2798,7 @@ app.get('/settings', async (c) => {
         }
         passkeys={passkeys}
         playlist={playlist}
+        playlists={playlists}
         livePass={livePass}
         // Never for a managed list: the address is ours, not theirs to see.
         playlistMasked={playlistUrl && !playlist?.managed ? maskPlaylistUrl(playlistUrl) : null}

@@ -29,7 +29,7 @@ export { playlistSource } from './source.js';
  * trace, because every one of them is something they can act on: a typo in the URL,
  * an expired line, a provider that is down.
  */
-export async function importPlaylist({ userId, url, label, knownHash = null }) {
+export async function importPlaylist({ userId, playlistId = null, url, label, knownHash = null }) {
   if (!config.playlists.enabled) throw new Error('playlists are not configured');
 
   let parsed;
@@ -52,9 +52,29 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
    * meant "keep a copy of it somewhere else", which is exactly what sealing it was
    * supposed to make unnecessary.
    */
-  const previous = await q.getPlaylist(userId);
+  /*
+   * Which row this import is about, and what it held before.
+   *
+   * `previous` used to be "the reader's list", because there could only be one.
+   * Now it is the list being imported INTO, and only when the caller named one --
+   * an add with no id is a brand new provider, which has no previous address to
+   * roll back to and must not be compared against somebody's other subscription.
+   */
+  const previous = playlistId ? await q.getPlaylistFor({ userId, playlistId }) : null;
 
-  await q.savePlaylist({ userId, label: label || parsed.hostname, sourceUrl: seal(url) });
+  const saved = await q.savePlaylist({
+    userId,
+    playlistId,
+    label: label || parsed.hostname,
+    sourceUrl: seal(url),
+  });
+  // Every write below is against THIS row. Without it an import into a reader's
+  // second provider would wipe the channels of their first: the channel and status
+  // writers fall back to "their first list" when given no id.
+  const targetId = saved?.id ?? playlistId ?? null;
+  // Whether this call CREATED the row, as opposed to editing one that existed.
+  // Only a row we made may be removed when the import fails.
+  const addedRow = !playlistId;
 
   /**
    * Put back the address that was working, and say which one failed.
@@ -64,13 +84,29 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
    * write for nothing -- and would clear an error the reader is meant to see.
    */
   const restorePrevious = async () => {
-    if (!previous) return false;
+    /*
+     * An ADD that failed leaves nothing behind.
+     *
+     * There is no previous address to put back -- this row did not exist a moment
+     * ago -- so undoing it means removing the row entirely. Without this a typo
+     * while adding a second provider leaves a permanent broken list on the
+     * settings page that the reader has to notice and remove by hand, which is the
+     * same class of mess the rollback below was written to prevent, arrived at
+     * from the other direction.
+     *
+     * Deleted by id, and only the row this call created.
+     */
+    if (!previous) {
+      if (addedRow && targetId) await q.deletePlaylist(userId, targetId);
+      return false;
+    }
     // Compared unsealed: seal() carries a random nonce, so two ciphertexts of the
     // same URL never match and a ciphertext comparison would always roll back.
     const before = open(previous.source_url);
     if (!before || before === url) return false;
     await q.savePlaylist({
       userId,
+      playlistId: targetId,
       label: previous.label,
       sourceUrl: previous.source_url,
     });
@@ -134,7 +170,7 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
   } catch (err) {
     const message = err.name === 'TimeoutError' ? 'the provider did not respond' : err.message;
     const restored = await restorePrevious();
-    await q.markPlaylistError({ userId, error: message });
+    await q.markPlaylistError({ userId, playlistId: targetId, error: message });
     throw new Error(
       restored
         ? `Could not read that list: ${message}. Your previous address is still saved.`
@@ -161,10 +197,19 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
      * tier rather than "Available on demand", which is the exact bug 0013 fixed,
      * surviving in the data. One cheap exists() per poll buys the self-heal.
      */
-    const stale = await q.playlistNeedsReparse(userId);
+    // Asked about THIS list. Scoped by id because the question is about the rows
+    // this import is going to rewrite: a reader whose second provider predates
+    // `kind` would otherwise force a full reparse of their first one too, and on a
+    // 300,000-entry catalogue that is a minutes-long rewrite bought for nothing.
+    const stale = await q.playlistNeedsReparse(userId, { playlistId: targetId });
     if (knownHash && knownHash === contentHash && !stale) {
-      await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(bytes) });
-      return { channels: null, unchanged: true };
+      await q.markPlaylistFresh({
+        userId,
+        playlistId: targetId,
+        contentHash,
+        nextAt: nextRefreshAt(bytes),
+      });
+      return { channels: null, unchanged: true, playlistId: targetId };
     }
 
     /*
@@ -185,6 +230,7 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
     try {
       stored = await q.replacePlaylistChannels({
         userId,
+        playlistId: targetId,
         fill: async (append) => {
           const list = await parseM3uStream(readSpill(spilled.path), {
             max: config.playlists.maxChannels,
@@ -209,7 +255,11 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
       // URL that answers with a login page is a typo like any other. The delete
       // that opened the transaction went back with it, so the old rows stand.
       const restored = await restorePrevious();
-      await q.markPlaylistError({ userId, error: 'no channels found in that file' });
+      await q.markPlaylistError({
+        userId,
+        playlistId: targetId,
+        error: 'no channels found in that file',
+      });
       throw new Error(
         restored
           ? 'No channels found in that file — is it an M3U playlist? Your previous address is still saved.'
@@ -217,8 +267,21 @@ export async function importPlaylist({ userId, url, label, knownHash = null }) {
       );
     }
 
-    await q.markPlaylistFresh({ userId, contentHash, nextAt: nextRefreshAt(bytes) });
-    return { channels: stored, truncated, unchanged: false };
+    await q.markPlaylistFresh({
+      userId,
+      playlistId: targetId,
+      contentHash,
+      nextAt: nextRefreshAt(bytes),
+    });
+    return {
+      channels: stored,
+      truncated,
+      unchanged: false,
+      // Which row this landed in. A caller adding one list among several has to be
+      // able to act on the row it just created -- marking it managed, say -- rather
+      // than looking it up again and guessing which of them was the new one.
+      playlistId: targetId,
+    };
   } finally {
     // Every path out of here, including the throws above: a temp file nobody
     // deletes is a disk that fills up one import at a time.
@@ -283,12 +346,22 @@ function nextRefreshAt(bytes = 0) {
 }
 
 /** Re-read the stored URL. Same import path, so the same limits apply. */
-export async function refreshPlaylist(userId, { knownHash = null } = {}) {
-  const row = await q.getPlaylist(userId);
+export async function refreshPlaylist(userId, { playlistId = null, knownHash = null } = {}) {
+  const row = playlistId
+    ? await q.getPlaylistFor({ userId, playlistId })
+    : await q.getPlaylist(userId);
   if (!row) throw new Error('You have not added a list.');
   const url = open(row.source_url);
   if (!url) throw new Error('That stored list could not be read. Please add it again.');
-  return importPlaylist({ userId, url, label: row.label, knownHash });
+  /*
+   * The id goes through, and it is load-bearing rather than tidy.
+   *
+   * importPlaylist adds a list when it is given no id. A refresh that omitted it
+   * would therefore INSERT a fresh row every time it ran -- so the five-minute
+   * poller would have quietly manufactured a duplicate list per cycle, each one
+   * re-fetching the same provider, until the account hit the cap.
+   */
+  return importPlaylist({ userId, playlistId: row.id, url, label: row.label, knownHash });
 }
 
 /**
@@ -322,7 +395,12 @@ export async function refreshDuePlaylists({ log = console.log, limit = 25 } = {}
   let failed = 0;
   for (const row of due) {
     try {
-      const r = await refreshPlaylist(row.user_id, { knownHash: row.content_hash });
+      // By id: a reader can have several lists due at once, and refreshing "their
+      // list" would poll the first one repeatedly and never touch the others.
+      const r = await refreshPlaylist(row.user_id, {
+        playlistId: row.id ?? null,
+        knownHash: row.content_hash,
+      });
       if (!r.unchanged) changed++;
     } catch {
       // markPlaylistError has already recorded it and set the back-off; a provider
@@ -434,6 +512,14 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
     // The provider's own shelf for this entry, so a row can say what it is.
     group: byId.get(m.id)?.group_title ?? null,
     kind: byId.get(m.id)?.kind ?? null,
+    // WHICH of the reader's lines this is on. The matches from every provider are
+    // ranked together into one list, so without this a reader with two
+    // subscriptions cannot tell which one a row will play from -- and cannot tell
+    // why one row works while the one under it says the line is busy, since each
+    // provider has its own connection allowance.
+    playlistId: byId.get(m.id)?.playlist_id ?? null,
+    providerLabel: byId.get(m.id)?.playlist_label ?? null,
+    providerManaged: byId.get(m.id)?.playlist_managed === true,
     url: open(m.url),
     verified: byId.get(m.id)?.is_live === true && freshEnough(byId.get(m.id)?.checked_at),
   });

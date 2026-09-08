@@ -2389,3 +2389,17 @@ li.result img {
   padding: 0.3rem 0;
   border-bottom: 1px solid var(--line, #2a2f3a);
 }
+
+/* Which of the reader's lines an entry is on. Quieter than the group tag beside
+   it: the provider is context for the name, not part of it. */
+.channel-tag.provider {
+  border-style: dashed;
+}
+/* The reader's lines beyond the first, listed rather than given a card each --
+   an address field per list would put several credentials on one page. */
+.other-lines li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}

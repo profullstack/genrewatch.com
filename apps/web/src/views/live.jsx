@@ -157,14 +157,19 @@ export const LivePage = ({
             </p>
           ) : hasOwnList ? (
             <>
+              {/* Not a switch any more. Our line used to have to TAKE the reader's
+                  row -- one list per account -- so turning the pass on cost them
+                  their own subscription until it lapsed, and the copy had to
+                  promise it back. It is added beside theirs now, so there is
+                  nothing to give back and nothing to weigh up. */}
               <p class="muted">
-                You have a list of your own in <a href="/settings">settings</a>, so your pass is not
-                in use. Switch to ours whenever you like; your own address is kept and given back
-                when the pass ends.
+                You have a list of your own in <a href="/settings">settings</a>, and your pass is
+                not set up yet. Adding ours leaves yours exactly as it is: titles are matched
+                against both at once, and each line counts its own connections.
               </p>
               <form method="post" action="/api/live/use">
                 <button class="ghost" type="submit">
-                  Use the pass instead of my list
+                  Add the pass to my lines
                 </button>
               </form>
             </>
