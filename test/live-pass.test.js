@@ -180,8 +180,32 @@ describe('the module', () => {
     expect(body).toContain('lineSecret: seal(created.password)');
     expect(body).toContain('sourceUrl: seal(created.m3u)');
     expect(body).toContain("if (!pass) return { ok: false, reason: 'no active pass' }");
-    // A reader's own list is parked, never dropped.
-    expect(body).toContain('stashedSourceUrl: stash.sourceUrl');
+    /*
+     * Our line is ADDED, never swapped in.
+     *
+     * The stash is what this used to assert: a reader's own address was parked in
+     * a column while our line took their row. That mechanism existed only because
+     * an account could hold one list, and buying a pass therefore cost somebody
+     * access to the subscription they pay for elsewhere. Nothing is parked now, so
+     * the thing to hold this to is that nothing of theirs is read or written.
+     */
+    expect(body).not.toContain('stashed');
+    expect(body).toContain('const existing = await q.managedPlaylistFor(userId)');
+    // Marked by the id the import returned. Without it the flag lands on the
+    // reader's FIRST list, which is very likely one of their own.
+    expect(body).toContain('playlistId: result?.playlistId ?? null');
+  });
+
+  test('a lapse removes our row and leaves the reader their own lists', () => {
+    const lapsed = src.slice(src.indexOf('export async function reconcileLapsed'));
+    const body = lapsed.slice(0, lapsed.indexOf('\n}\n'));
+    // By id, always. The unscoped call means "every list this reader has", so
+    // without the id a lapse takes their own subscriptions down with our line.
+    expect(body).toContain('await q.deletePlaylist(row.user_id, row.playlist_id)');
+    // Nothing is parked, so nothing is handed back -- and a cleanup tick no longer
+    // depends on a network fetch succeeding to avoid losing somebody's address.
+    expect(body).not.toContain('stashed');
+    expect(body).not.toContain('importPlaylist');
   });
 
   test('the managed list is named for the brand, never the provider', () => {
@@ -242,7 +266,11 @@ describe('the pages', () => {
         paymentsEnabled: true,
       }),
     );
-    expect(ownList).toContain('Use the pass instead of my list');
+    // Added to their lines, not swapped for them. Under one-list-per-account this
+    // read "Use the pass instead of my list", which was accurate then and is a
+    // false warning now: nothing of theirs is taken, so nothing is given back.
+    expect(ownList).toContain('Add the pass to my lines');
+    expect(ownList).not.toContain('given back');
   });
 
   test('the upsell card names the cheapest way in and points back at the game', async () => {
@@ -309,28 +337,43 @@ describe('the routes', () => {
     expect(body).toContain('if (row.managed && !(await q.activeLivePass(user.id))) return null;');
   });
 
-  test('a managed list gives up its address to nobody', () => {
+  /*
+   * The rule is unchanged; what it is asked ABOUT changed.
+   *
+   * Every one of these routes hands over a stream address, which on our line is
+   * the reseller credential. Each used to ask "is this account's list managed",
+   * which was the same question while an account held exactly one. Now our line
+   * sits beside the reader's own, and the account-level answer is wrong in a way
+   * that is invisible: it withholds a reader's OWN address from them for as long
+   * as a pass is running, and it does so on every one of these routes at once.
+   */
+  test('a managed list gives up its address to nobody, asked row by row', () => {
     expect(routeBody("app.get('/my/channels/:channelId/playlist.m3u'")).toContain(
       'if (!ch || ch.managed) return c.notFound();',
     );
-    expect(routeBody("app.get('/events/:id/playlist.m3u'")).toContain(
-      'if (await q.playlistIsManaged(user.id)) return c.redirect(',
-    );
-    expect(routeBody("app.get('/api/playlist/source'")).toContain(
-      'if (await q.playlistIsManaged(user.id)) {',
-    );
-    expect(routeBody("app.post('/api/playlist/share'")).toContain(
-      'if (await q.playlistIsManaged(user.id)) {',
-    );
+    // The event .m3u drops managed entries from the file rather than refusing the
+    // whole download: the matches are merged across lists, so refusing outright
+    // would deny a reader a file of channels that are entirely their own.
+    const eventM3u = routeBody("app.get('/events/:id/playlist.m3u'");
+    expect(eventM3u).toContain('const list = matched.filter((ch) => ch.providerManaged !== true)');
+    expect(eventM3u).not.toContain('q.playlistIsManaged');
+    // These three read the flag off the row they are actually acting on.
+    expect(routeBody("app.get('/api/playlist/source'")).toContain('if (source.managed) {');
+    expect(routeBody("app.post('/api/playlist/share'")).toContain('if (target?.managed) {');
     expect(routeBody("app.post('/api/playlist/share/grant'")).toContain(
-      'if (allowed && (await q.playlistIsManaged(user.id))) {',
+      'if (allowed && target?.managed) {',
     );
   });
 
-  test('removing a managed list gives back the one it replaced', () => {
+  test('removing a list names it, and gives nothing back', () => {
     const body = routeBody("app.post('/api/playlist/delete'");
-    expect(body).toContain('existing.stashed_source_url');
-    expect(body).toContain('await importPlaylist({ userId: user.id, url: stashed');
+    // Nothing is parked any more, so there is nothing to restore.
+    expect(body).not.toContain('stashed');
+    expect(body).not.toContain('importPlaylist');
+    // The id is required. deletePlaylist(userId) with no id still means "every
+    // list this reader has", which is the wrong default for a Remove button.
+    expect(body).toContain('if (!playlistId) {');
+    expect(body).toContain('await q.deletePlaylist(user.id, playlistId)');
   });
 
   test('the title pages offer a pass only to a reader with no list', () => {

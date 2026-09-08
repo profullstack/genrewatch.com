@@ -509,6 +509,25 @@ export const ChannelRow = ({ ch, managed = false }) => {
    * apps that take a URL, and nothing false is shown.
    */
   const mine = Number.isFinite(Number(ch.id)) ? Number(ch.id) : null;
+
+  /*
+   * Managed is a fact about the ROW, not about the list it is rendered in.
+   *
+   * It used to be only a prop, which was correct while a reader had exactly one
+   * list: the whole list was either our managed line or theirs. Now that matches
+   * from every provider are ranked into one list, a managed entry can sit directly
+   * above one from their own subscription -- and this flag is what withholds VLC,
+   * Infuse and the .m3u download, every one of which hands over the stream address.
+   * On our line that address IS our reseller credential.
+   *
+   * The row's own answer wins wherever the row knows which list it is on, and the
+   * section prop is the fallback for the pages that render a single known list.
+   * Taking the OR of the two instead would be safe but wrong in the other
+   * direction: a reader holding a pass would lose the external players on every
+   * row of the subscriptions they pay for themselves.
+   */
+  const managedRow = ch.playlistId != null ? ch.providerManaged === true : managed;
+
   return (
     <li
       data-check={mine ? `/my/channels/${mine}/check` : null}
@@ -516,6 +535,15 @@ export const ChannelRow = ({ ch, managed = false }) => {
     >
       <span class="own-channel-name">
         {ch.title || 'Untitled entry'}
+        {/* Which of the reader's lines this is on. Only drawn when the row knows,
+            so a reader with a single provider never sees a tag repeating the one
+            answer -- and a reader with three can tell at a glance which
+            subscription an entry will play from, and which allowance it spends. */}
+        {ch.providerLabel ? (
+          <span class="genre-tag channel-tag provider" title="Which of your lines this is on">
+            {ch.providerLabel}
+          </span>
+        ) : null}
         {/* What the provider files this entry under, and whether it is a channel
             or a file. Both come straight from the playlist rather than from us: a
             reader looking at ten near-identical rows needs the same words their
@@ -534,7 +562,7 @@ export const ChannelRow = ({ ch, managed = false }) => {
             nowhere else: every one of these three hands over the stream address,
             which on a managed list is our reseller credential. Same shape as
             SharedChannelRow, for the same reason. */}
-        {managed ? null : (
+        {managedRow ? null : (
           <>
             <a class="cta small-btn" href={playerLinks(ch.url).vlc}>
               VLC
@@ -1472,30 +1500,59 @@ const KIND_WORD = {
   unknown: 'not yet classified',
 };
 
-export const Channels = ({ user, playlist, groups, kinds = [] }) => (
-  <Layout title="Your channels" user={user}>
-    <h1>Your channels</h1>
+export const Channels = ({ user, playlist, playlists = [], groups, kinds = [] }) => {
+  /*
+   * Counted across every line, because everything else on this page already is.
+   *
+   * `groups` and `kinds` join through user_playlists on the user id and have always
+   * spanned the lot; the heading took its number from one row. With a single list
+   * those agreed. With two they do not, and the page said "2,000 channels in 40
+   * groups" to a reader holding twelve thousand -- which reads as a list we lost
+   * rather than a number we added up wrong.
+   */
+  const lines = playlists.length > 0 ? playlists : playlist ? [playlist] : [];
+  const totalChannels = lines.reduce((n, p) => n + (p.channel_count ?? 0), 0);
+  // The most recent poll of any of them. A reader wants to know how stale the page
+  // is, and the oldest line would answer a different question.
+  const syncedAt = lines
+    .map((p) => p.last_synced_at)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  // Errors belong to a line, so they are named. Unnamed, a reader with three
+  // providers cannot tell which one stopped answering.
+  const failing = lines.filter((p) => p.last_error);
 
-    {!playlist ? (
-      <p class="empty">
-        You have not added a channel list. <a href="/settings">Add one in settings</a> and its
-        genres appear here.
-      </p>
-    ) : (
-      <>
-        <p class="muted">
-          {playlist.channel_count.toLocaleString('en-US')} channels in{' '}
-          {groups.length.toLocaleString('en-US')} groups
-          {playlist.last_synced_at ? (
-            <>
-              {' · updated '}
-              <LocalTime at={playlist.last_synced_at} />
-            </>
-          ) : null}
+  return (
+    <Layout title="Your channels" user={user}>
+      <h1>Your channels</h1>
+
+      {!playlist ? (
+        <p class="empty">
+          You have not added a channel list. <a href="/settings">Add one in settings</a> and its
+          genres appear here.
         </p>
-        {playlist.last_error ? <p class="feedback error">{playlist.last_error}</p> : null}
+      ) : (
+        <>
+          <p class="muted">
+            {totalChannels.toLocaleString('en-US')} channels in{' '}
+            {groups.length.toLocaleString('en-US')} groups
+            {lines.length > 1 ? ` across ${lines.length} lines` : ''}
+            {syncedAt ? (
+              <>
+                {' · updated '}
+                <LocalTime at={syncedAt} />
+              </>
+            ) : null}
+          </p>
+          {failing.map((p) => (
+            <p class="feedback error">
+              {lines.length > 1 ? `${p.label || 'Untitled list'}: ` : ''}
+              {p.last_error}
+            </p>
+          ))}
 
-        {/*
+          {/*
           What KIND of thing is on this line.
 
           The question behind this is "does my provider actually carry films", and
@@ -1509,39 +1566,40 @@ export const Channels = ({ user, playlist, groups, kinds = [] }) => (
           refresh. Silently folding them into "live" is the exact mistake that
           produced this section.
         */}
-        {kinds.length > 0 ? (
-          <ul class="kind-counts">
-            {kinds.map((k) => (
-              <li class={`kind-count kind-${k.kind}`}>
-                <strong>{k.count.toLocaleString('en-US')}</strong> {KIND_WORD[k.kind] ?? k.kind}
+          {kinds.length > 0 ? (
+            <ul class="kind-counts">
+              {kinds.map((k) => (
+                <li class={`kind-count kind-${k.kind}`}>
+                  <strong>{k.count.toLocaleString('en-US')}</strong> {KIND_WORD[k.kind] ?? k.kind}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {kinds.length > 0 && !kinds.some((k) => k.kind === 'vod' || k.kind === 'series') ? (
+            <p class="notice">
+              Nothing on this line looks like a film or an episode file — it is all live channels.
+              We can still tell you which channel is carrying something, but “Available on demand”
+              will stay empty, because there is nothing on demand in it to find.
+            </p>
+          ) : null}
+
+          <p class="muted small">
+            These are your provider's own groupings, shown exactly as they appear in your list.
+            Nothing here is shared with anyone else or streamed through GenreWatch.
+          </p>
+          <ul class="genre-grid">
+            {groups.map((g) => (
+              <li class="genre">
+                <span>{g.name}</span>
+                <span class="meta">{g.count.toLocaleString('en-US')} channels</span>
               </li>
             ))}
           </ul>
-        ) : null}
-        {kinds.length > 0 && !kinds.some((k) => k.kind === 'vod' || k.kind === 'series') ? (
-          <p class="notice">
-            Nothing on this line looks like a film or an episode file — it is all live channels. We
-            can still tell you which channel is carrying something, but “Available on demand” will
-            stay empty, because there is nothing on demand in it to find.
-          </p>
-        ) : null}
-
-        <p class="muted small">
-          These are your provider's own groupings, shown exactly as they appear in your list.
-          Nothing here is shared with anyone else or streamed through GenreWatch.
-        </p>
-        <ul class="genre-grid">
-          {groups.map((g) => (
-            <li class="genre">
-              <span>{g.name}</span>
-              <span class="meta">{g.count.toLocaleString('en-US')} channels</span>
-            </li>
-          ))}
-        </ul>
-      </>
-    )}
-  </Layout>
-);
+        </>
+      )}
+    </Layout>
+  );
+};
 
 /**
  * Somebody's profile.
@@ -1880,11 +1938,26 @@ const COMMON_ZONES = [
   'UTC',
 ];
 
+/**
+ * The reader's lines other than the one the main card is about.
+ *
+ * `playlist` is the first row in their order and getPlaylist returns exactly that,
+ * so this is everything after it. Filtered by id rather than sliced, because the
+ * two props are fetched by separate queries and an ordering that ever disagreed
+ * would otherwise render the same list twice.
+ */
+const otherLinesOf = (playlists, playlist) =>
+  (playlists ?? []).filter((p) => p.id !== playlist?.id);
+
 export const Settings = ({
   user,
   prefs,
   passkeys,
   playlist,
+  // Every line this reader has, in their order. `playlist` is the first of them
+  // and keeps the address, sharing and refresh controls; the rest are listed
+  // below. Defaulted so a caller that has not been updated still renders.
+  playlists = [],
   // The live TV pass behind a managed list, or null. Only read when the list is
   // ours; a list of their own has no pass to report on.
   livePass = null,
@@ -1946,8 +2019,8 @@ export const Settings = ({
               ) : (
                 ', which has ended'
               )}
-              . It plays here, to your own session only. To go back to a list of your own, add its
-              address below; yours is kept and comes back when the pass ends.
+              . It plays here, to your own session only. It sits alongside any lines of your own
+              rather than replacing them, and disappears on its own when the pass ends.
             </p>
           ) : null}
 
@@ -1998,17 +2071,124 @@ export const Settings = ({
 
           <div class="card-actions">
             <form method="post" action="/api/playlist/refresh" class="inline">
+              {/* Names the list it re-polls. The route falls back to the first one
+                  without it, which is this card -- but a second Refresh button
+                  added later would then silently poll the wrong provider. */}
+              <input type="hidden" name="playlist_id" value={playlist.id} />
               <button class="ghost small-btn" type="submit">
                 Refresh
               </button>
             </form>
             <form method="post" action="/api/playlist/delete" class="inline">
+              {/* Names the list it removes. The route refuses a delete with no id
+                  rather than falling back to "every list this reader has", which
+                  is the right default for closing an account and a catastrophic
+                  one for a button labelled Remove. */}
+              <input type="hidden" name="playlist_id" value={playlist.id} />
               <button class="ghost small-btn danger" type="submit">
                 Remove
               </button>
             </form>
           </div>
         </div>
+      ) : null}
+
+      {/*
+        Every other line this reader has.
+
+        The card above is the first of them, and carries the address, the sharing
+        controls and the refresh. These are the rest: named, counted, and
+        removable, with the add form below adding to this list rather than
+        replacing anything.
+
+        Deliberately not a second copy of the full card. An address field per list
+        would put several credentials on one page, and the reason the first one is
+        masked and revealed on demand applies more, not less, as they multiply.
+      */}
+      {otherLinesOf(playlists, playlist).length > 0 ? (
+        <div class="card" id="other-lines">
+          <div class="card-head">
+            <h3 class="card-title">Your other lines</h3>
+            <p class="card-desc">
+              Titles are matched against every line you have at once, and an entry says which one it
+              is on. Each provider counts its own connections, so a second line is a second stream
+              you can open at the same time.
+            </p>
+          </div>
+          <ul class="own-channels other-lines">
+            {otherLinesOf(playlists, playlist).map((p) => (
+              <li>
+                <span class="own-channel-name">
+                  {p.label || 'Untitled list'}
+                  {p.managed ? (
+                    <span class="genre-tag channel-tag" title="Included with your pass">
+                      Live TV pass
+                    </span>
+                  ) : null}
+                  <span class="meta">
+                    {(p.channel_count ?? 0).toLocaleString('en-US')} entries
+                    {p.last_error ? ` · ${p.last_error}` : ''}
+                  </span>
+                </span>
+                <span class="own-channel-actions">
+                  {/* A managed line is removed by letting the pass lapse, not from
+                      here: deleting the row we provisioned would leave the pass
+                      paid for and nothing to play it on. */}
+                  {p.managed ? null : (
+                    <form method="post" action="/api/playlist/delete" class="inline">
+                      <input type="hidden" name="playlist_id" value={p.id} />
+                      <button class="ghost small-btn danger" type="submit">
+                        Remove
+                      </button>
+                    </form>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/*
+        Adding a provider, as opposed to editing the one above.
+
+        A separate form because the two are now different operations and the
+        difference is destructive in one direction: the form further down carries a
+        playlist_id and edits, this one carries none and creates. Folding them
+        together is what made "paste a new address" silently replace a working
+        subscription under the old one-list rule.
+
+        Only offered once a list exists -- with none, the form below already says
+        "Add a list" and a second add form beside it would be two ways to do the
+        same thing.
+      */}
+      {playlist ? (
+        <form method="post" action="/api/playlist" class="card" id="add-line">
+          <h3 class="card-title">Add another line</h3>
+          <p class="card-desc">
+            A second subscription is matched against titles alongside your first, and each one
+            counts its own connections. We hold up to five.
+          </p>
+          <label class="field">
+            <span>Playlist URL</span>
+            <input
+              type="url"
+              name="url"
+              required
+              placeholder="http://provider.example/get.php?username=...&amp;type=m3u_plus"
+              autocomplete="off"
+              spellcheck="false"
+              class="input mono"
+            />
+          </label>
+          <label class="field">
+            <span>Name it</span>
+            <input type="text" name="label" placeholder="My other provider" class="input" />
+          </label>
+          <button class="cta" type="submit">
+            Add line
+          </button>
+        </form>
       ) : null}
 
       {/*
@@ -2041,6 +2221,10 @@ export const Settings = ({
             </p>
           </div>
           <form method="post" action="/api/playlist/share">
+            {/* Which line is being opened. The card renders the first one, and the
+                route and the query both scope to it -- unscoped, one submit opened
+                every list the reader has, our managed line among them. */}
+            <input type="hidden" name="playlist_id" value={playlist.id} />
             <label class="field">
               <span>Audience</span>
               {/*
@@ -2112,6 +2296,10 @@ export const Settings = ({
                       <span>{p.display_name ?? (p.handle ? `@${p.handle}` : 'Someone')}</span>
                       <form method="post" action="/api/playlist/share/grant" class="inline">
                         <input type="hidden" name="user_id" value={p.id} />
+                        {/* Same list the audience control above names. A grant with
+                            no list named puts this person on every line the reader
+                            holds rather than on the one this card is about. */}
+                        <input type="hidden" name="playlist_id" value={playlist.id} />
                         <input type="hidden" name="allowed" value={p.granted ? '0' : '1'} />
                         <button class={p.granted ? 'ghost small-btn' : 'small-btn'} type="submit">
                           {p.granted ? 'Remove' : 'Add'}
@@ -2164,6 +2352,23 @@ export const Settings = ({
         instead, which asks for it deliberately.
       */}
       <form method="post" action="/api/playlist" data-playlist-form>
+        {/*
+          Which list this edits.
+
+          Load-bearing, and its absence would be a regression: without an id the
+          route treats the post as a NEW list, so a reader correcting a typo in
+          their address would get a second broken line rather than the correction
+          -- and would lose the rollback that puts the working address back when
+          the new one cannot be read, because there is no previous address to
+          restore on a row that did not exist a moment ago.
+
+          Omitted where the reader's only list is our managed one: there the
+          heading offers to use a line of THEIRS, which is an add and should leave
+          the managed row alone.
+        */}
+        {playlist && !playlist.managed ? (
+          <input type="hidden" name="playlist_id" value={playlist.id} />
+        ) : null}
         <h3 class="card-title">
           {playlist?.managed
             ? 'Use a list of your own instead'

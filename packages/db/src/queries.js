@@ -2064,13 +2064,86 @@ export async function deleteComment({ commentId, userId }) {
 
 /* -------------------------------------------------------------- playlists -- */
 
-export async function savePlaylist({ userId, label, sourceUrl }) {
-  await sql`
-    insert into user_playlists ${sql({ user_id: userId, label, source_url: sourceUrl })}
-    on conflict (user_id) do update set
-      label = excluded.label,
-      source_url = excluded.source_url,
-      last_error = null
+/**
+ * Every query here takes a user_id and uses it, without exception.
+ *
+ * That is the whole security model for this feature: a channel list is one
+ * person's own subscription, and there must be no query that can return another
+ * account's rows even by mistake. A `getPlaylistById` taking only an id is exactly
+ * the shape that leaks it later, so it does not exist -- ownership is part of the
+ * lookup rather than something a caller is trusted to remember.
+ */
+
+/** Add a list, or edit one the caller names. */
+export async function savePlaylist({ userId, playlistId = null, label, sourceUrl }) {
+  /*
+   * An INSERT, where this used to be an upsert on a UNIQUE that no longer exists.
+   *
+   * The old shape silently replaced whatever was there, which was the documented
+   * intent in 0002 and became a bug the moment a reader could hold two
+   * subscriptions: adding the second destroyed the first, with no warning and no
+   * way to get the credential back.
+   *
+   * Appended at the end of the reader's ordering rather than the front. A new list
+   * is unproven -- nothing has been matched or probed against it yet -- so it
+   * should not outrank the provider they have been using.
+   */
+  // Updating a list the caller named, rather than adding one. Both ids in the
+  // WHERE: a playlist id on its own is the shape that writes into somebody else's
+  // row, which is the rule stated at the top of this block.
+  if (playlistId) {
+    const [row] = await sql`
+      update user_playlists
+         set label = ${label ?? null}, source_url = ${sourceUrl}, last_error = null
+       where user_id = ${userId} and id = ${playlistId}
+      returning id, user_id, label, position, managed,
+                channel_count, last_synced_at, last_error, created_at
+    `;
+    return row ?? null;
+  }
+
+  const [row] = await sql`
+    insert into user_playlists (user_id, label, source_url, position)
+    values (
+      ${userId}, ${label ?? null}, ${sourceUrl},
+      coalesce((select max(position) + 1 from user_playlists where user_id = ${userId}), 0)
+    )
+    returning id, user_id, label, position, managed,
+              channel_count, last_synced_at, last_error, created_at
+  `;
+  return row;
+}
+
+/**
+ * How many lists this reader already has.
+ *
+ * The cap that replaces 0002's UNIQUE lives in the handler rather than the schema,
+ * because "too many" is a product question and should not need a migration to
+ * answer. This is what the handler asks. The concern 0002 raised is still real:
+ * every list is a stored credential, and an account quietly accumulating dozens of
+ * them is a liability rather than a feature.
+ */
+export async function playlistCount(userId) {
+  const [row] = await sql`
+    select count(*)::int as n from user_playlists where user_id = ${userId}
+  `;
+  return row?.n ?? 0;
+}
+
+/**
+ * Every list this reader has, in their own order.
+ *
+ * Returns rows, not a row. getPlaylist below still answers "a list" for the paths
+ * that genuinely only need one -- but anything rendering the reader's providers,
+ * or deciding which line to charge a stream to, wants all of them.
+ */
+export async function getPlaylists(userId) {
+  return sql`
+    select id, user_id, label, position, managed, channel_count,
+           last_synced_at, last_error, created_at
+    from user_playlists
+    where user_id = ${userId}
+    order by position, id
   `;
 }
 
@@ -2084,22 +2157,100 @@ export async function savePlaylist({ userId, label, sourceUrl }) {
  * This touches the one column it is about, and leaves the row's refresh state,
  * error streak and channels exactly where they were.
  */
-export async function renamePlaylist({ userId, label }) {
+export async function renamePlaylist({ userId, playlistId = null, label }) {
+  /*
+   * Both ids in the WHERE, never the playlist id alone.
+   *
+   * This is the rule stated at the top of this block: ownership is part of the
+   * lookup rather than something the caller is trusted to have checked. With one
+   * list per account `where user_id` was sufficient on its own; with several, a
+   * handler has to name WHICH list, and the obvious way to write that -- `where id
+   * = $1` -- is precisely the shape that lets one account rename another's row.
+   *
+   * A null playlistId keeps the old meaning for callers that have not been given a
+   * list to act on, and is only unambiguous while the reader has one list; it
+   * renames whichever comes first in their order rather than erroring, which is
+   * what the single-list callers already expected.
+   */
   const [row] = await sql`
     update user_playlists set label = ${label ?? null}
     where user_id = ${userId}
-    returning id, user_id, label, channel_count, last_synced_at, last_error, created_at
+      and id = coalesce(
+        ${playlistId}::bigint,
+        (select id from user_playlists where user_id = ${userId} order by position, id limit 1)
+      )
+    returning id, user_id, label, position, managed,
+              channel_count, last_synced_at, last_error, created_at
   `;
   return row ?? null;
 }
 
-export async function getPlaylist(userId) {
-  const [row] = await sql`select * from user_playlists where user_id = ${userId}`;
+/**
+ * One named list, belonging to one reader.
+ *
+ * The only lookup that takes a playlist id, and it takes the user id too. That
+ * pairing is the whole point: the block comment above forbids a getPlaylistById
+ * precisely because an id-only lookup is the shape that returns somebody else's
+ * subscription once a second caller forgets the ownership check. Here the check
+ * cannot be forgotten, because it is the query.
+ */
+export async function getPlaylistFor({ userId, playlistId }) {
+  const [row] = await sql`
+    select * from user_playlists where user_id = ${userId} and id = ${playlistId}
+  `;
   return row ?? null;
 }
 
-export async function deletePlaylist(userId) {
-  await sql`delete from user_playlists where user_id = ${userId}`;
+/**
+ * One list.
+ *
+ * Kept for the paths that genuinely only want one -- the refresh worker acting on
+ * a row it already selected, the stream cap. Now explicitly "the first in the
+ * reader's order" rather than "the one", which is the same row for every account
+ * that has a single list and a defined one for accounts that do not.
+ */
+export async function getPlaylist(userId) {
+  const [row] = await sql`
+    select * from user_playlists where user_id = ${userId} order by position, id limit 1
+  `;
+  return row ?? null;
+}
+
+/**
+ * Remove one list, or all of them.
+ *
+ * Scoped by user in both cases. Passing no playlistId removes every list the
+ * reader has, which is what account deletion and "forget my provider" want; a
+ * playlistId removes exactly that one and only if it belongs to them.
+ */
+export async function deletePlaylist(userId, playlistId = null) {
+  await sql`
+    delete from user_playlists
+    where user_id = ${userId}
+      and (${playlistId}::bigint is null or id = ${playlistId})
+  `;
+}
+
+/**
+ * Move a list up or down the reader's ordering.
+ *
+ * Position decides which provider is offered first when two carry the same title,
+ * so it is the one piece of this a reader may want to control. Written as a single
+ * statement over their own rows: read-then-write would let two tabs interleave and
+ * leave two lists sharing a position.
+ */
+export async function reorderPlaylists({ userId, orderedIds }) {
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) return;
+  await sql`
+    update user_playlists p set position = v.pos
+    from (
+      select * from unnest(
+        ${pgArray(orderedIds.map((id) => Number(id)))}::bigint[],
+        ${pgArray(orderedIds.map((_, i) => i))}::int[]
+      ) as t(id, pos)
+    ) v
+    where p.id = v.id and p.user_id = ${userId}
+  `;
 }
 
 /* ------------------------------------------------------- the IMDb backfill -- */
@@ -2324,7 +2475,7 @@ export async function markSharedChannelChecked({ channelId, live, note }) {
  */
 export const SHARE_AUDIENCES = ['none', 'friends', 'everyone'];
 
-export async function setPlaylistSharing({ userId, audience, label = null }) {
+export async function setPlaylistSharing({ userId, playlistId = null, audience, label = null }) {
   /*
    * An unrecognised audience closes the list rather than opening it.
    *
@@ -2349,8 +2500,26 @@ export async function setPlaylistSharing({ userId, audience, label = null }) {
       -- Null clears it, which is the difference between "no label" and "do not
       -- change the label". The caller decides by passing one or not.
       shared_label = ${label === null ? null : String(label).slice(0, 80)}
+    /*
+     * ONE list, and never a managed one.
+     *
+     * A where clause on user_id alone was the whole rule while an account held a
+     * single row. With several it opens every list the reader has in one statement
+     * -- including our managed line, which is the one thing that must never be
+     * shared, because doing so hands our reseller credential to people who did not
+     * pay for it. The route refuses that case too; this is the clause that makes
+     * the refusal impossible to route around.
+     *
+     * No backticks in this comment, and that is not style: it sits INSIDE a tagged
+     * template literal, so one would end the query mid-sentence.
+     */
     where user_id = ${userId}
-    returning shared, share_audience, shared_at, shared_label
+      and not managed
+      and id = coalesce(
+        ${playlistId}::bigint,
+        (select id from user_playlists where user_id = ${userId} order by position, id limit 1)
+      )
+    returning id, shared, share_audience, shared_at, shared_label
   `;
   return row ?? null;
 }
@@ -2534,19 +2703,25 @@ export async function sharedChannelById(channelId, { viewerId = null } = {}) {
  * the subscription behind it gets noticed. The streak is capped so it cannot
  * overflow the exponent on a provider that has been down for a week.
  */
-export async function markPlaylistError({ userId, error }) {
+export async function markPlaylistError({ userId, playlistId = null, error }) {
   await sql`
     update user_playlists set
       last_error = ${String(error).slice(0, 300)},
       last_synced_at = now(),
       error_streak = least(error_streak + 1, 8),
       refresh_after = now() + (least(power(2, least(error_streak + 1, 6))::int, 60) || ' minutes')::interval
+    -- Scoped to one list where the caller named one. A null id keeps the old
+    -- meaning, which is only unambiguous for an account holding a single list.
     where user_id = ${userId}
+      and id = coalesce(
+        ${playlistId}::bigint,
+        (select id from user_playlists where user_id = ${userId} order by position, id limit 1)
+      )
   `;
 }
 
 /** A successful poll: clear the error state and book the next one. */
-export async function markPlaylistFresh({ userId, contentHash, nextAt }) {
+export async function markPlaylistFresh({ userId, playlistId = null, contentHash, nextAt }) {
   await sql`
     update user_playlists set
       last_synced_at = now(),
@@ -2555,6 +2730,10 @@ export async function markPlaylistFresh({ userId, contentHash, nextAt }) {
       content_hash = ${contentHash},
       refresh_after = ${nextAt}
     where user_id = ${userId}
+      and id = coalesce(
+        ${playlistId}::bigint,
+        (select id from user_playlists where user_id = ${userId} order by position, id limit 1)
+      )
   `;
 }
 
@@ -2567,7 +2746,10 @@ export async function markPlaylistFresh({ userId, contentHash, nextAt }) {
  */
 export async function playlistsDueForRefresh({ limit = 25 } = {}) {
   return sql`
-    select user_id, source_url, label, content_hash
+    -- The id, because the refresh acts on THIS row. Without it the worker falls
+    -- back to "the reader's first list", so an account with several would have one
+    -- polled repeatedly and the rest never refreshed at all.
+    select id, user_id, source_url, label, content_hash
     from user_playlists
     where refresh_after is null or refresh_after <= now()
     order by refresh_after nulls first, last_synced_at nulls first
@@ -2626,8 +2808,19 @@ export class EmptyPlaylistError extends Error {
  * @param {{ userId: string, fill: (append: (rows: object[]) => Promise<void>) => Promise<void> }} args
  * @returns {Promise<number>}
  */
-export async function replacePlaylistChannels({ userId, fill }) {
-  const [pl] = await sql`select id from user_playlists where user_id = ${userId}`;
+export async function replacePlaylistChannels({ userId, playlistId = null, fill }) {
+  /*
+   * The list this import is about, resolved through the owner.
+   *
+   * This used to be "the reader's list", which was unambiguous while there could
+   * only be one. With several it is a wipe of whichever row came back first -- so
+   * an import into a reader's SECOND provider would delete the channels of their
+   * first and write its own in their place. Naming the list is not a refinement
+   * here, it is the difference between an import and a corruption.
+   */
+  const [pl] = playlistId
+    ? await sql`select id from user_playlists where user_id = ${userId} and id = ${playlistId}`
+    : await sql`select id from user_playlists where user_id = ${userId} order by position, id limit 1`;
   if (!pl) throw new Error('no playlist for user');
 
   return sql.begin(async (tx) => {
@@ -2679,7 +2872,12 @@ export async function replacePlaylistChannels({ userId, fill }) {
 export async function playlistChannels(userId, { limit = 20000 } = {}) {
   return sql`
     select c.id, c.title, c.group_title, c.kind, c.stream_url, c.norm_title,
-           c.is_live, c.checked_at
+           c.is_live, c.checked_at,
+           -- Which line this entry is on. The join was always here, so spanning
+           -- several providers costs nothing extra -- but a merged catalogue has
+           -- to be able to say which subscription each row came from, and what a
+           -- row may hand over depends on whether THAT list is managed.
+           p.id as playlist_id, p.label as playlist_label, p.managed as playlist_managed
     from user_playlist_channels c
     join user_playlists p on p.id = c.playlist_id
     where p.user_id = ${userId}
@@ -2689,7 +2887,12 @@ export async function playlistChannels(userId, { limit = 20000 } = {}) {
       -- out: unchecked is not the same as dead, and thousands of channels cannot
       -- all be probed on import.
       and (c.is_live is not false or c.checked_at < now() - interval '30 minutes')
-    order by c.position
+    -- The reader's ordering of their providers first, then the provider's own
+    -- ordering within a list. Positions restart at zero per list, so ordering by
+    -- the channel's position alone interleaves two catalogues arbitrarily -- and
+    -- because this read is capped, an interleave decides WHICH rows survive the
+    -- limit rather than merely what order they appear in.
+    order by p.position, p.id, c.position
     limit ${limit}
   `;
 }
@@ -2710,13 +2913,19 @@ export async function playlistChannels(userId, { limit = 20000 } = {}) {
  * future column added to this table gets its own clause here, and the same
  * self-healing on the next poll.
  */
-export async function playlistNeedsReparse(userId) {
+export async function playlistNeedsReparse(userId, { playlistId = null } = {}) {
   const [row] = await sql`
     select exists (
       select 1
       from user_playlist_channels c
       join user_playlists p on p.id = c.playlist_id
       where p.user_id = ${userId} and c.kind is null
+        -- Narrowed to the list being imported when the caller names one. Asked
+        -- across every list a reader has, one stale provider would condemn all of
+        -- them to a full reparse on every poll -- and on a 300,000-entry catalogue
+        -- a reparse bought for nothing is what the unchanged-hash path exists to
+        -- avoid in the first place.
+        and (${playlistId}::bigint is null or p.id = ${playlistId})
     ) as stale
   `;
   return Boolean(row?.stale);
@@ -2787,7 +2996,12 @@ export async function playlistCandidates(userId, { terms = [], limit = 3000 } = 
 
   return sql`
     select c.id, c.title, c.group_title, c.kind, c.stream_url, c.norm_title,
-           c.is_live, c.checked_at
+           c.is_live, c.checked_at,
+           -- Which line this entry is on. The join was always here, so spanning
+           -- several providers costs nothing extra -- but a merged list has to be
+           -- able to say which subscription each row came from, and a stream start
+           -- has to charge the connection to the right line.
+           p.id as playlist_id, p.label as playlist_label, p.managed as playlist_managed
     from user_playlist_channels c
     join user_playlists p on p.id = c.playlist_id
     where p.user_id = ${userId}
@@ -2810,7 +3024,12 @@ export async function playlistCandidates(userId, { terms = [], limit = 3000 } = 
        * tagged template literal, so one would end the query mid-sentence.
        */
       and c.norm_title like any(${pgArray(usable.map((t) => `%${t}%`))}::text[])
-    order by c.position
+    -- The reader's ordering of their providers first, then the provider's own
+    -- ordering within a list. Ordering by c.position alone was unambiguous while
+    -- there could only be one list and is not now: positions restart at zero per
+    -- list, so entry 3 of two different providers would interleave arbitrarily and
+    -- the cap below would keep whichever the planner happened to emit.
+    order by p.position, p.id, c.position
     limit ${limit}
   `;
 }
@@ -3205,17 +3424,43 @@ export async function shareCandidates(userId) {
  * not exist cannot be written -- the foreign key says so -- which keeps a mistyped
  * id from silently becoming a row that matches nothing.
  */
-export async function setPlaylistShareGrant({ userId, audienceUserId, allowed }) {
+export async function setPlaylistShareGrant({
+  userId,
+  playlistId = null,
+  audienceUserId,
+  allowed,
+}) {
   if (!userId || !audienceUserId || userId === audienceUserId) return false;
   if (allowed) {
     const [row] = await sql`
       insert into playlist_share_grants (playlist_id, audience_user_id)
-      select p.id, ${audienceUserId}::uuid from user_playlists p where p.user_id = ${userId}
+      /*
+       * One list, and never a managed one -- the same rule setPlaylistSharing
+       * follows and for the same reason. Unscoped, this named a friend on EVERY
+       * list the reader holds, so granting access to a provider list they meant to
+       * share also handed over the pass line beside it.
+       */
+      select p.id, ${audienceUserId}::uuid
+        from user_playlists p
+       where p.user_id = ${userId}
+         and not p.managed
+         and p.id = coalesce(
+           ${playlistId}::bigint,
+           (select id from user_playlists where user_id = ${userId} order by position, id limit 1)
+         )
       on conflict do nothing
       returning audience_user_id
     `;
     return Boolean(row);
   }
+  /*
+   * Revoking stays broad, deliberately.
+   *
+   * Taking somebody off every list at once is the safe direction to be imprecise
+   * in: the failure to avoid here is a reader unable to withdraw a credential they
+   * have already shared. Narrowing this to one list would leave a grant standing on
+   * another and no button anywhere that removes it.
+   */
   await sql`
     delete from playlist_share_grants g
     using user_playlists p
@@ -3349,41 +3594,76 @@ export async function touchProviderLine({ userId, expiresAt = null, maxConnectio
 }
 
 /**
- * Mark the reader's list as ours (or theirs again), parking or clearing the
- * address they had before. The three columns move together on purpose: a managed
- * row with no stash means "they had nothing", and an unmanaged row must never
- * carry a stash for the tick to trip over.
+ * Mark one list as ours, or as theirs again.
+ *
+ * The stash is gone, and its absence is the point. While a reader could hold only
+ * one list, granting a pass had to park their own address in stashed_source_url,
+ * take the row, and hand it back on lapse -- three columns that had to move
+ * together, with an unmanaged row carrying a stash being a state the lapse tick
+ * could trip over. Now our line is simply another row beside theirs: granting adds
+ * one, lapsing deletes one, and nothing of theirs is ever held hostage in the
+ * meantime. See 0020, which hands back anything the stash still held.
  */
-export async function setPlaylistManaged({
-  userId,
-  managed,
-  stashedSourceUrl = null,
-  stashedLabel = null,
-}) {
+export async function setPlaylistManaged({ userId, playlistId = null, managed }) {
   await sql`
-    update user_playlists set
-      managed = ${Boolean(managed)},
-      stashed_source_url = ${managed ? stashedSourceUrl : null},
-      stashed_label = ${managed ? stashedLabel : null}
+    update user_playlists set managed = ${Boolean(managed)}
     where user_id = ${userId}
+      and id = coalesce(
+        ${playlistId}::bigint,
+        (select id from user_playlists where user_id = ${userId} order by position, id limit 1)
+      )
   `;
 }
 
-/** Whether this reader's list is our line. False when they have no list. */
-export async function playlistIsManaged(userId) {
-  if (!userId) return false;
-  const [row] = await sql`select managed from user_playlists where user_id = ${userId}`;
-  return Boolean(row?.managed);
+/**
+ * The reader's managed list, if they have one.
+ *
+ * What ensureLine asks before provisioning. Under the old one-row model the same
+ * question was "is their list managed"; now it is "do they already have ours among
+ * theirs", and the answer has to be the row so a second grant can extend it rather
+ * than add a duplicate line beside the first.
+ */
+export async function managedPlaylistFor(userId) {
+  const [row] = await sql`
+    select * from user_playlists
+    where user_id = ${userId} and managed
+    order by position, id limit 1
+  `;
+  return row ?? null;
 }
 
 /**
- * Managed lists whose holder's pass ran out more than `graceHours` ago, with
- * whatever list they had before. The tick's whole input.
+ * Whether ANY of this reader's lists is our line.
+ *
+ * "Is the reader's list managed" stopped being a question with one answer. The
+ * callers all ask it to decide whether a pass is in play -- whether to hide the
+ * address card, whether a stream start needs an active pass -- and for that,
+ * having one managed line among several is the same as having one.
+ *
+ * Per-row decisions must NOT use this. What a given channel may hand over depends
+ * on the list that channel is on, which travels with the row itself.
+ */
+export async function playlistIsManaged(userId) {
+  if (!userId) return false;
+  const [row] = await sql`
+    select exists (
+      select 1 from user_playlists where user_id = ${userId} and managed
+    ) as any_managed
+  `;
+  return Boolean(row?.any_managed);
+}
+
+/**
+ * Managed lists whose holder's pass ran out more than `graceHours` ago.
+ *
+ * Returns the LIST, not just its owner. The tick used to hand back a parked
+ * address; now it deletes one row and leaves every other list the reader has
+ * exactly where it is, so it needs to know which row.
  */
 export async function managedPlaylistsLapsed({ graceHours = 24, limit = 100 } = {}) {
   const hours = Math.max(0, Number(graceHours) || 0);
   return sql`
-    select p.user_id, p.stashed_source_url, p.stashed_label
+    select p.id as playlist_id, p.user_id, p.label
     from user_playlists p
     where p.managed = true
       and not exists (
