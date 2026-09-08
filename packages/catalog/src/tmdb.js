@@ -539,10 +539,27 @@ export async function fetchDetail(ids, { apiKey = process.env.TMDB_API_KEY, limi
     );
     const trailer = vids.find((v) => v.official) ?? vids[0];
 
-    // Flat-rate streaming only. Rent and buy are a different question from "is it
-    // included where I already subscribe", and mixing them misleads.
+    /*
+     * Everywhere the film can be watched, and how.
+     *
+     * This kept flat-rate services only, on the reasoning that rent and buy are a
+     * different question from "is it included where I already subscribe" and that
+     * mixing them misleads. The first half of that is right and is why `kind`
+     * exists; the second half threw away the answer for every film that is not on
+     * a subscription service yet -- which is most of them in the months after a
+     * cinema run, exactly when the question is being asked. The page said nothing
+     * at all rather than "you can rent it".
+     *
+     * So all three kinds are carried, each labelled with what it costs you. They
+     * are not blended: the reader is told which is which, which is what the old
+     * comment was actually protecting.
+     */
     const us = d['watch/providers']?.results?.US ?? {};
-    const watch = (us.flatrate ?? []).map((p) => p.provider_name).slice(0, 6);
+    const watch = ['flatrate', 'rent', 'buy'].flatMap((kind) =>
+      // Capped per kind, not overall, so a film on fifteen rental storefronts
+      // cannot push the one subscription that carries it off the end of the list.
+      (us[kind] ?? []).slice(0, 6).map((p) => ({ name: p.provider_name, kind })),
+    );
 
     const home = homeReleases(d.release_dates);
 
