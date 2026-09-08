@@ -1,4 +1,6 @@
 import { assetUrl } from '../lib/asset-version.js';
+import { watchListNode } from '../lib/jsonld.js';
+import { WATCH_KIND_LABEL, watchSourcesOf } from '../lib/watch-sources.js';
 import {
   Ad,
   EventList,
@@ -863,8 +865,20 @@ export const EventPage = ({
       return {};
     }
   })();
+
+  // Read once: the list below renders it, and the structured data says what it
+  // is. Building it twice from the same detail blob is how the two drift apart.
+  const watchSources = watchSourcesOf(detail);
+
   return (
-    <Layout title={event.name} user={user}>
+    <Layout
+      title={event.name}
+      user={user}
+      /* Where it can be watched, when there is anywhere. Null on a title nobody
+         carries, and filtered out rather than published empty: an ItemList of
+         nothing is a claim that it cannot be watched at all. */
+      jsonld={[watchListNode(event, detail)].filter(Boolean)}
+    >
       <header class="page-head">
         <div>
           <h1>{event.name}</h1>
@@ -1017,13 +1031,32 @@ export const EventPage = ({
             </p>
           ) : null}
 
-          {/* Where it is included, not where it can be rented -- those are
-              different questions and mixing them misleads. */}
-          {detail.watch?.length ? (
-            <p class="watch">
-              <span class="stat-label">Streaming on</span>
-              {detail.watch.join(' · ')}
-            </p>
+          {/*
+            Everywhere it can be watched, and what each one costs you.
+
+            This was flat-rate services alone, joined into a sentence. Two things
+            were wrong with that and they compounded. A film not yet on any
+            subscription -- most of them, in the months after a cinema run, which
+            is exactly when the question gets asked -- produced no row at all,
+            rather than "you can rent it". And a run of names joined with a
+            separator cannot be enumerated: three services or one, no way to tell
+            which, and the separator came along on a copy and paste.
+
+            Still not blended. Each source says which kind it is, which is what
+            the old "mixing them misleads" was really protecting.
+          */}
+          {watchSources.length ? (
+            <div class="watch">
+              <span class="stat-label">Where to watch</span>
+              <ul class="watch-list">
+                {watchSources.map((s) => (
+                  <li key={`${s.kind}-${s.name}`} class={`watch-source watch-${s.kind}`}>
+                    <span class="watch-name">{s.name}</span>
+                    <span class="watch-kind">{WATCH_KIND_LABEL[s.kind]}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
 
           <p class="more">

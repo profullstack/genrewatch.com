@@ -1813,6 +1813,46 @@ ul.factlist li > span:first-child {
   margin-bottom: 0.25rem;
 }
 
+/* Where a title can be watched: one item per service, each saying what it costs
+   you. A list in the markup, because that is what it is and an engine reading the
+   page should not have to split a sentence to find out. Wrapping chips rather
+   than a stack of rows -- there can be a dozen storefronts, and a dozen full-width
+   rows would bury the rest of the page. */
+.watch-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.watch-source {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.55rem;
+  background: var(--panel);
+}
+.watch-name {
+  line-height: 1.2;
+}
+/* The kind, quietly. It is the difference between "already paid for" and "three
+   ninety-nine", so it is never dropped -- but the service is what is being
+   looked for, so it does not compete with the name. */
+.watch-kind {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+/* Included is the answer most readers want, so it is the one that is not grey. */
+.watch-flatrate {
+  border-color: var(--accent);
+}
+
 @media (max-width: 40rem) {
   .event-detail {
     flex-direction: column;

@@ -1,6 +1,7 @@
 import { config } from '@genre/config';
 import { html } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
+import { serialise } from '../lib/jsonld.js';
 
 /**
  * The single HTML shell. Everything renders through here, including the signed-out
@@ -96,6 +97,23 @@ export const Layout = (props) => (
         cloned, and nothing looked wrong. Every page renders through this layout,
         so there is exactly one place to get it right.
       */}
+      {/*
+        Structured data, carrying whatever the page itself is about.
+
+        These are data blocks, not code: `type="application/ld+json"` is never
+        executed, so a strict script-src does not apply to them and they need no
+        hash. The raw write is safe because serialise() escapes `<` in every
+        value -- a film titled `</script>` would otherwise end the element and
+        drop the rest of the page into the document as text.
+      */}
+      {(props.jsonld ?? []).map((node) => (
+        <script
+          key={node['@id'] ?? node['@type']}
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: serialise(node) }}
+        />
+      ))}
+
       {config.analytics.enabled ? (
         <script
           src="https://crawlproof.com/stats.js"
