@@ -32,6 +32,8 @@ const bool = (name, fallback) => {
   return raw === '1' || raw.toLowerCase() === 'true';
 };
 
+export { dataSource, network } from './network.js';
+
 export const config = {
   env: opt('NODE_ENV', 'development'),
   isProd: opt('NODE_ENV', 'development') === 'production',
