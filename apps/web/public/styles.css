@@ -2435,11 +2435,6 @@ li.result img {
 .channel-tag.provider {
   border-style: dashed;
 }
-/* The reader's lines beyond the first, listed rather than given a card each --
-   an address field per list would put several credentials on one page. */
-.other-lines li {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.6rem;
-}
+/* Every line gets a card of its own now, so the one-line list this styled is
+   gone. What replaced the old objection -- several credentials on one page -- is
+   the masking, which was always what made showing one safe. */

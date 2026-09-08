@@ -29,14 +29,28 @@ export { maskPlaylistUrl } from './mask.js';
  * rotated PLAYLIST_SECRET makes an old row unreadable, and the reader's answer to
  * that is to paste the URL again, not to see a stack trace.
  */
-export async function playlistSource(userId) {
-  // Takes a user id and nothing else, still. There is deliberately no playlistId
-  // parameter: settings reveals one address, the first line's, and a parameter
-  // nobody passes is an invitation to point this somewhere else later.
-  const row = await q.getPlaylist(userId);
+export async function playlistSource(userId, { playlistId = null } = {}) {
+  /*
+   * Takes a playlist id as well as a user id, and this comment used to say it
+   * never would -- settings revealed one address, the first line's, so a
+   * parameter nobody passed looked like an invitation to point it elsewhere.
+   *
+   * What that cost was the second line: it could be added and removed and nothing
+   * else, so a typo in its address meant deleting the row and typing a
+   * credentialed URL out again. The leak this guarded against is an id used
+   * ALONE; the pairing is the fix, which is why `getPlaylistFor` takes both and
+   * why there is still no `getPlaylistById`.
+   *
+   * With no id it answers for the first line in the reader's order, which is what
+   * every existing caller already meant.
+   */
+  const row = playlistId
+    ? await q.getPlaylistFor({ userId, playlistId })
+    : await q.getPlaylist(userId);
   if (!row) return null;
   const url = open(row.source_url);
   return {
+    id: row.id,
     label: row.label ?? null,
     url: url ?? null,
     masked: url ? maskPlaylistUrl(url) : null,

@@ -122,7 +122,7 @@ describe('the routes that make it editable', () => {
 
   test('the address can be read back by the account that stored it', () => {
     expect(src).toContain("app.get('/api/playlist/source'");
-    expect(src).toContain('playlistSource(user.id)');
+    expect(src).toContain('playlistSource(user.id, { playlistId })');
   });
 
   test('a credential is never cached', () => {
@@ -130,13 +130,30 @@ describe('the routes that make it editable', () => {
     expect(route.slice(0, 600)).toContain("c.header('cache-control', 'no-store')");
   });
 
-  test('the reveal is keyed on the session, with no id from the request', () => {
+  /*
+   * This test used to say "with no id from the request", and forbade reading one
+   * at all.
+   *
+   * That was the wrong invariant, and it cost the feature: a reader with two
+   * lines could only ever see the address of the first, so the second could not
+   * be corrected without deleting it and typing a credentialed URL out again.
+   * What leaks somebody else's subscription is an id used ALONE -- a
+   * getPlaylistById. The id paired with the session's own user id in the same
+   * lookup cannot, because ownership is the query rather than something a handler
+   * is trusted to have checked first.
+   */
+  test('an id in the request is always paired with the session it came from', () => {
     const route = src.slice(
       src.indexOf("app.get('/api/playlist/source'"),
       src.indexOf("app.post('/api/playlist/refresh'"),
     );
-    expect(route).not.toContain('c.req.param');
-    expect(route).not.toContain('c.req.query');
+    expect(route).toContain("lineFromRequest(user.id, c.req.query('playlist_id'))");
+    expect(route).toContain("if (playlistId && !row) return c.json({ error: 'That list is not one");
+
+    const resolver = src.slice(src.indexOf('const lineFromRequest'));
+    expect(resolver.slice(0, 400)).toContain('q.getPlaylistFor({ userId, playlistId })');
+    // The shape that would leak one. It does not exist in queries either.
+    expect(src).not.toContain('getPlaylistById');
   });
 
   test('a blank address on an existing list is a rename, not a wipe', () => {
@@ -156,12 +173,17 @@ describe('the routes that make it editable', () => {
 
   test('settings renders the masked address, never the sealed column', () => {
     expect(view).toContain('data-playlist-url');
-    expect(view).toContain('playlistMasked');
-    expect(view).not.toContain('playlist.source_url');
+    // Per line now, and the mask is computed in the route so the unsealed URL is
+    // never a prop at all -- a view that receives a credential can render it by
+    // accident, and one that receives a mask cannot.
+    expect(view).toContain('line.masked');
+    expect(view).not.toContain('source_url');
   });
 
   test('the form edits rather than demanding the whole URL again', () => {
-    expect(view).toContain('required={!playlist}');
+    // The edit form on a card: the address is optional, and blank keeps it. The
+    // add form is a separate one and does demand a URL.
+    expect(view).toContain('id="add-line"');
     expect(view).toContain('Leave blank to keep the current address');
     expect(view).not.toContain('Replace list');
   });
