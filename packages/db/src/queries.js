@@ -2138,9 +2138,19 @@ export async function playlistCount(userId) {
  * or deciding which line to charge a stream to, wants all of them.
  */
 export async function getPlaylists(userId) {
+  /*
+   * Whole rows, because settings now draws a full card per line.
+   *
+   * That includes `source_url`, which is sealed in the column and must be masked
+   * before it reaches a view -- the settings handler does that and builds its own
+   * shape, so no caller passes these rows to JSX. The alternative, a second query
+   * per line to fetch what the first deliberately left out, is how a page ends up
+   * doing six round trips to render five cards.
+   */
   return sql`
     select id, user_id, label, position, managed, channel_count,
-           last_synced_at, last_error, created_at
+           last_synced_at, last_error, created_at, source_url,
+           shared, share_audience, shared_label
     from user_playlists
     where user_id = ${userId}
     order by position, id

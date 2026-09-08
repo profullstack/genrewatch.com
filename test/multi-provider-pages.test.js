@@ -24,8 +24,24 @@ const line = (id, label, over) => ({
   ...over,
 });
 const prefs = { offsets_minutes: [60], date_offsets_minutes: [1440], channels: ['email'] };
-const settings = (playlist, playlists) =>
-  render(Settings({ user, prefs, passkeys: [], passwordMinLength: 10, playlist, playlists }));
+/*
+ * Settings takes the LINES, each already carrying its masked address.
+ *
+ * It used to take "the playlist" plus the list of them, because one row got a
+ * card and the rest got a name and a Remove button. Every line has a card now, so
+ * there is one prop and no first row to privilege.
+ */
+const settings = (lines) =>
+  render(
+    Settings({
+      user,
+      prefs,
+      passkeys: [],
+      passwordMinLength: 10,
+      lines,
+      shareLine: lines.find((l) => !l.managed) ?? null,
+    }),
+  );
 
 describe('the channel page adds up every line', () => {
   test('counts them all, not just the first', async () => {
@@ -83,44 +99,63 @@ describe('the channel page adds up every line', () => {
 });
 
 describe('settings, with several lines on the account', () => {
-  test('lists the others, each removable by name', async () => {
-    const html = await settings(line(1, 'First provider'), [
-      line(1, 'First provider'),
-      line(2, 'Second provider'),
+  test('gives each one a card, not a name and a Remove button', async () => {
+    const html = await settings([
+      line(1, 'First provider', { masked: 'http://one.example/***' }),
+      line(2, 'Second provider', { masked: 'http://two.example/***' }),
     ]);
-    expect(html).toContain('Your other lines');
+    expect(html).toContain('First provider');
     expect(html).toContain('Second provider');
-    // The main card's Remove and the other-lines row's Remove name different rows.
-    // Unnamed, the route falls back to "every list this reader has".
+    expect(html).toContain('id="line-1"');
+    expect(html).toContain('id="line-2"');
+    // Every form on every card names its row. Unnamed, the delete route falls
+    // back to "every list this reader has".
     expect(html).toContain('name="playlist_id" value="1"');
     expect(html).toContain('name="playlist_id" value="2"');
+    // The whole point of the change: the second line is editable, not just
+    // removable. Two addresses, two edit forms, two Refresh buttons.
+    expect(html.match(/data-playlist-url/g) ?? []).toHaveLength(2);
+    expect(html.match(/action="\/api\/playlist\/refresh"/g) ?? []).toHaveLength(2);
+    expect(html.match(/action="\/api\/playlist\/delete"/g) ?? []).toHaveLength(2);
     // Adding is its own form, and carries no id -- that is what makes it an add
-    // rather than an edit of the card above.
+    // rather than an edit of a card.
     expect(html).toContain('Add another line');
   });
 
-  test('a managed line among them offers no Remove', async () => {
-    const html = await settings(line(1, 'First provider'), [
-      line(1, 'First provider'),
+  test('a reader with one line sees the same card, and is offered another', async () => {
+    const html = await settings([line(1, 'Only provider', { masked: 'http://one.example/***' })]);
+    expect(html).toContain('id="line-1"');
+    expect(html).toContain('data-playlist-url');
+    expect(html).toContain('Add another line');
+  });
+
+  test('a reader with none is offered the add form, not an empty card', async () => {
+    const html = await settings([]);
+    expect(html).toContain('id="add-line"');
+    expect(html).toContain('Add a list');
+    expect(html).not.toContain('data-playlist-url');
+  });
+
+  test('a managed line among them offers no Remove, and no address', async () => {
+    const html = await settings([
+      line(1, 'First provider', { masked: 'http://one.example/***' }),
       line(2, 'GenreWatch Live TV', { managed: true }),
     ]);
     expect(html).toContain('Live TV pass');
     // Deleting the row we provisioned would leave the pass paid for and nothing to
     // play it on. It goes when the pass lapses, not from a button here.
     expect(html).not.toContain('name="playlist_id" value="2"');
+    // And its address is ours, not theirs: one card, one Show button, both the
+    // reader's own line's.
+    expect(html.match(/data-playlist-url/g) ?? []).toHaveLength(1);
   });
 
-  test('one line grows no empty other-lines section', async () => {
-    const html = await settings(line(1, 'Only provider'), [line(1, 'Only provider')]);
-    expect(html).not.toContain('Your other lines');
-  });
-
-  test('no line at all still offers the plain add form and nothing else', async () => {
-    const html = await settings(null, []);
-    expect(html).not.toContain('Your other lines');
-    // The form below already says "Add a list"; a second add form beside it would
-    // be two ways to do one thing.
-    expect(html).not.toContain('Add another line');
+  test('a reader whose only line came with a pass is not promised a switch', async () => {
+    const html = await settings([line(1, 'GenreWatch Live TV', { managed: true })]);
+    // Our line is not shareable and never will be, so "once you have added a
+    // list" would be a promise made to somebody who has one.
+    expect(html).not.toContain('Once you have added a list');
+    expect(html).not.toContain('/api/playlist/share');
   });
 });
 

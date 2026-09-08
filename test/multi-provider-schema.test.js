@@ -183,8 +183,9 @@ describe('the live pass sits beside the reader lists rather than taking one', ()
 describe('settings offers adding a line as its own thing', () => {
   test('the edit form names the list it edits', () => {
     // Without the id the route reads the post as a NEW list, so correcting a typo
-    // would leave a second broken line instead of a correction.
-    expect(view).toContain('<input type="hidden" name="playlist_id" value={playlist.id} />');
+    // would leave a second broken line instead of a correction. There is an edit
+    // form per card now, so the id it carries is the card's line.
+    expect(view).toContain('<input type="hidden" name="playlist_id" value={line.id} />');
   });
 
   test('the add form carries no id, which is what makes it an add', () => {
@@ -195,11 +196,19 @@ describe('settings offers adding a line as its own thing', () => {
     expect(form).toContain('Add line');
   });
 
-  test('a managed line is not removable from the other-lines card', () => {
+  test('a managed line is not removable from its card', () => {
     // Deleting the row we provisioned would leave the pass paid for and nothing to
     // play it on. It goes when the pass lapses.
-    const at = view.indexOf('id="other-lines"');
-    expect(at).toBeGreaterThan(-1);
-    expect(view.slice(at, at + 2500)).toContain('{p.managed ? null : (');
+    //
+    // Asserted on the card component rather than on an "other lines" list: that
+    // list is gone, and with it the reason it existed -- every line has a card,
+    // so the managed one is a card that omits Remove rather than a row in a
+    // section that never offered it.
+    const card = view.slice(view.indexOf('const LineCard'), view.indexOf('export const Settings'));
+    const remove = card.indexOf('/api/playlist/delete');
+    expect(remove).toBeGreaterThan(-1);
+    expect(card.slice(0, remove)).toContain('{line.managed ? null : (');
+    // The address is ours too, and so is the form that would change it.
+    expect(card).toContain('{line.managed ? null : line.unreadable ?');
   });
 });

@@ -575,7 +575,18 @@ document.addEventListener('click', async (event) => {
   const btn = event.target?.closest?.('[data-playlist-reveal]');
   if (!btn) return;
 
-  const field = document.querySelector('[data-playlist-url]');
+  /*
+   * The card this button is in, not the first one on the page.
+   *
+   * With one address on the page a bare document query was the same thing. With a
+   * card per line it meant every Show button revealed the first line's address
+   * into the first line's field, whichever card was pressed -- so the second
+   * subscription looked like a copy of the first. The card carries its own id, and
+   * the fetch asks for that line.
+   */
+  const card = btn.closest('[data-line]');
+  const scope = card ?? document;
+  const field = scope.querySelector('[data-playlist-url]');
   if (!field) return;
 
   // Second press hides it again, and puts back the mask the server sent rather
@@ -590,10 +601,14 @@ document.addEventListener('click', async (event) => {
 
   btn.disabled = true;
   try {
-    const res = await fetch('/api/playlist/source', {
-      headers: { accept: 'application/json' },
-      cache: 'no-store',
-    });
+    const id = card?.dataset?.line;
+    const res = await fetch(
+      id ? `/api/playlist/source?playlist_id=${encodeURIComponent(id)}` : '/api/playlist/source',
+      {
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+      },
+    );
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.url) {
       btn.textContent = data.error ? 'Unavailable' : 'Failed';
@@ -607,7 +622,7 @@ document.addEventListener('click', async (event) => {
 
     // Fill the edit form too, so changing one character of the host does not mean
     // typing the credential out again.
-    const input = document.querySelector('[data-playlist-input]');
+    const input = scope.querySelector('[data-playlist-input]');
     if (input && !input.value) input.value = data.url;
   } catch {
     btn.textContent = 'Failed';

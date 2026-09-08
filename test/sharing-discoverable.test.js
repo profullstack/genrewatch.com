@@ -20,13 +20,22 @@ import { Settings } from '../apps/web/src/views/pages.jsx';
  * being built.
  */
 
-const render = async (playlist) => {
+/*
+ * The prop is the LINE the card is about, not "the account's playlist".
+ *
+ * Settings draws a card per line now, and sharing is a property of one of them --
+ * so the page is handed the line to offer, chosen the same way the route scopes
+ * the write. Letting the view pick its own row while the query picked another is
+ * how somebody opens a subscription they were not looking at.
+ */
+const render = async (shareLine) => {
   const node = Settings({
     user: { id: 'u1', email: 'a@b.c', handle: 'chovy', display_name: 'Anthony' },
     prefs: { offsets_minutes: [60], date_offsets_minutes: [1440], channels: ['email'] },
     passkeys: [],
     passwordMinLength: 10,
-    playlist,
+    lines: shareLine ? [shareLine] : [],
+    shareLine,
   });
   return String(await node.toString());
 };
@@ -98,7 +107,8 @@ describe('finding the sharing switch', () => {
       prefs: { offsets_minutes: [60], date_offsets_minutes: [1440], channels: ['email'] },
       passkeys: [],
       passwordMinLength: 10,
-      playlist: { id: 1, label: 'x', channel_count: 1, shared: false, share_audience: 'none' },
+      lines: [{ id: 1, label: 'x', channel_count: 1, shared: false, share_audience: 'none' }],
+      shareLine: { id: 1, label: 'x', channel_count: 1, shared: false, share_audience: 'none' },
       member: true,
     });
     expect(String(await node.toString())).not.toContain('(premium)');

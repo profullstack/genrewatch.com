@@ -777,6 +777,27 @@ function playlistNoticeFor(result) {
  */
 const MAX_PLAYLISTS = 5;
 
+/**
+ * Which of the reader's lines a request is about.
+ *
+ * Routes in this section used to answer for "the account", from a time when an
+ * account had one list. With several, that meaning silently became "whichever row
+ * came back first" -- so Show revealed the first line's address whatever card was
+ * pressed.
+ *
+ * The id is paired with the session's own user id in the lookup rather than
+ * trusted on its own: `getPlaylistFor` is the only lookup that takes a list id
+ * and it takes both, which is what stops an id in a form from naming somebody
+ * else's subscription. No id still means the first line in the reader's order.
+ */
+const lineFromRequest = async (userId, raw) => {
+  const playlistId = Number(raw) || null;
+  const row = playlistId
+    ? await q.getPlaylistFor({ userId, playlistId })
+    : await q.getPlaylist(userId);
+  return { playlistId, row };
+};
+
 app.post('/api/playlist', async (c) => {
   const user = requireUser(c);
   const body = await c.req.parseBody();
@@ -847,15 +868,20 @@ app.get('/api/playlist/source', async (c) => {
   const user = requireUser(c);
   c.header('cache-control', 'no-store');
   /*
-   * Still no id from the request, deliberately.
+   * An id from the request, paired with the session it came from.
    *
-   * Settings reveals one address -- the first line's -- and the other-lines card
-   * shows none, because an address field per list would put several credentials on
-   * one page. So this route answers with the session's own first row and there is
-   * nothing in the request pointing anywhere else, which is the property that makes
-   * it safe to expose a credential from at all.
+   * This used to take none, because settings revealed one address -- the first
+   * line's -- and listed the rest without one. Drawing a card per line means a
+   * Show button per line, and a route that always answers about row one would
+   * hand the first subscription's credential to the second card.
+   *
+   * What makes that safe is the pairing rather than the absence: `getPlaylistFor`
+   * takes the list id and the user id together, so an id belonging to somebody
+   * else resolves to nothing and this answers 404.
    */
-  const source = await playlistSource(user.id);
+  const { playlistId, row } = await lineFromRequest(user.id, c.req.query('playlist_id'));
+  if (playlistId && !row) return c.json({ error: 'That list is not one of yours.' }, 404);
+  const source = await playlistSource(user.id, { playlistId });
   if (!source) return c.json({ error: 'You have not added a list.' }, 404);
   /*
    * Our line's address is not the reader's to see, and the question is about THIS
@@ -881,8 +907,11 @@ app.post('/api/playlist/refresh', async (c) => {
   // Optional, and refreshPlaylist falls back to the reader's first list without
   // it. Named where the form knows which card it sits on, so that a second Refresh
   // button added later cannot silently re-poll the wrong provider.
-  const playlistId = Number(body.playlist_id) || null;
   try {
+    // Resolved rather than passed straight through: an id that is not theirs is a
+    // refusal here, not a query that quietly matches no rows and reports success.
+    const { playlistId, row } = await lineFromRequest(user.id, body.playlist_id);
+    if (playlistId && !row) throw new Error('That list is not one of yours.');
     const result = await refreshPlaylist(user.id, { playlistId });
     return respond(c, { json: result, redirectTo: playlistNoticeFor(result) });
   } catch (err) {
@@ -2737,13 +2766,18 @@ app.post('/api/timezone', async (c) => {
 
 app.get('/settings', async (c) => {
   const user = requireUser(c);
-  const [prefs, passkeys, playlist, playlists, member, shareCandidates] = await Promise.all([
+  const [prefs, passkeys, playlists, member, shareCandidates] = await Promise.all([
     q.getPrefs(user.id),
     q.listPasskeys(user.id),
-    q.getPlaylist(user.id),
-    // All of them, for the "other lines" card. getPlaylist still answers for the
-    // main card, which is the first row and carries the address and the sharing
-    // controls; this is the same ordering, read whole.
+    /*
+     * Every line, and only this read.
+     *
+     * There used to be a getPlaylist beside it for "the main card" -- the first
+     * row, which alone carried the address, the edit form and Refresh. The page
+     * draws a card per line now, so the singular read had nothing left to answer
+     * and its absence is what stops a second one creeping back: with one source
+     * of rows there is no ordering for two queries to disagree about.
+     */
     q.getPlaylists(user.id),
     isMember(user),
     // Fetched unconditionally rather than only for a member: the picker has to be
@@ -2782,9 +2816,31 @@ app.get('/settings', async (c) => {
           ? `Imported ${Number(added).toLocaleString('en-US')} channels.`
           : null;
 
-  // Masked here rather than in the view, so the unsealed URL exists for one
-  // expression and never becomes a prop that something else could render whole.
-  const playlistUrl = playlist ? auth.open(playlist.source_url) : null;
+  /*
+   * One view model per line, masked here rather than in the view.
+   *
+   * The unsealed URL exists for one expression and never becomes a prop that
+   * something else could render whole. It is built for EVERY line now, not just
+   * the first: settings used to hand the address, the edit form and Refresh to
+   * row one and give the rest a name and a Remove button, which is why a second
+   * subscription could not be corrected without deleting it and typing a
+   * credentialed URL again.
+   *
+   * `source_url` is dropped on the way out. A sealed credential is still a
+   * credential, and nothing in the view has any use for it.
+   */
+  const lines = playlists.map((row) => {
+    const url = row.managed ? null : auth.open(row.source_url);
+    const { source_url: _sealed, ...safe } = row;
+    return {
+      ...safe,
+      masked: url ? maskPlaylistUrl(url) : null,
+      // A row whose seal will not open can still be renamed and removed; it just
+      // cannot be refreshed or shown, and the card says so instead of drawing an
+      // empty Address field.
+      unreadable: !row.managed && !url,
+    };
+  });
   return c.html(
     await render(
       <Settings
@@ -2797,12 +2853,12 @@ app.get('/settings', async (c) => {
           }
         }
         passkeys={passkeys}
-        playlist={playlist}
-        playlists={playlists}
+        lines={lines}
+        // The line the sharing card acts on: the first the reader owns. Our
+        // managed line is never shareable, so a reader whose only list came with
+        // a pass gets no card rather than one that would be refused.
+        shareLine={lines.find((l) => !l.managed) ?? null}
         livePass={livePass}
-        // Never for a managed list: the address is ours, not theirs to see.
-        playlistMasked={playlistUrl && !playlist?.managed ? maskPlaylistUrl(playlistUrl) : null}
-        playlistUnreadable={Boolean(playlist) && !playlistUrl}
         playlistNotice={playlistNotice}
         playlistError={c.req.query('playlist_error') ?? null}
         profileNotice={c.req.query('profile') ? 'Saved.' : null}
