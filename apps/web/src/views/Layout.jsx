@@ -1,4 +1,4 @@
-import { config } from '@genre/config';
+import { config, dataSource, network } from '@genre/config';
 import { html } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
 import { serialise } from '../lib/jsonld.js';
@@ -275,6 +275,23 @@ export const Layout = (props) => (
         <p class="muted">
           <a href="/genres">Browse genres</a> · <a href="/about">About</a> ·{' '}
           <a href="/feeds">RSS &amp; calendars</a> · <a href="/api/v1">Public API</a>
+        </p>
+        {/* The rest of the network, on every page of every site in it. This one
+            is named but not linked: a link to where you already are is noise,
+            while leaving it out entirely would make each footer a different
+            list and lose the fact that these three are one shop. */}
+        <p class="muted">
+          {network.map((site, i) => (
+            <>
+              {i ? ' · ' : null}
+              {site.self ? (
+                <span aria-current="true">{site.name}</span>
+              ) : (
+                <a href={site.url}>{site.name}</a>
+              )}
+            </>
+          ))}
+          {' · '}Data furnished by <a href={dataSource.url}>{dataSource.name}</a>
         </p>
       </footer>
 
