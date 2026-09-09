@@ -2033,22 +2033,21 @@ li.result img {
   margin-top: 0.75rem;
 }
 
-/* The password form on the sign-in page. Folded away by default: it is the
-   weakest of the three ways in and should not be the obvious choice on a phone,
-   but it stays on the page rather than behind a link, because one more navigation
-   is one more thing to hit with a D-pad. */
+/* The password form on the sign-in page. Shown outright rather than folded away:
+   it is the weakest of the three ways in and is placed last so it is not the
+   obvious choice on a phone, but on a television a fold is one more thing to hit
+   with a D-pad -- and one more reason to conclude there is no password sign-in.
+   The rule above it does the separating that the disclosure triangle used to. */
 .password-signin {
   margin-top: 1.25rem;
   border-top: 1px solid var(--line);
   padding-top: 0.75rem;
 }
-.password-signin summary {
-  cursor: pointer;
+.password-signin h2 {
   color: var(--muted);
   font-size: 0.9rem;
-}
-.password-signin[open] summary {
-  margin-bottom: 0.5rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
 }
 
 /* Who has accepted an invite. Deliberately plain: it is a list of names and

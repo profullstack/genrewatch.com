@@ -1900,10 +1900,11 @@ export const SignIn = ({ mode, sent, next, passwordError, magicError }) => (
               A plain form with no script: on the device this is for, a remote
               control is the keyboard and the browser may do very little else. It
               is last because it is the weakest of the three and should not be the
-              obvious choice on a phone -- but it is on the page rather than behind
-              a toggle, because a toggle is one more thing to hit with a D-pad. */}
-          <details class="password-signin" open={Boolean(passwordError)}>
-            <summary>Use a password</summary>
+              obvious choice on a phone -- but it is shown outright rather than
+              folded away, because a fold is one more thing to hit with a D-pad and
+              one more reason to conclude the site has no password sign-in at all. */}
+          <section class="password-signin">
+            <h2>Use a password</h2>
             {passwordError ? (
               <p class="feedback error" role="status">
                 {passwordError}
@@ -1933,7 +1934,7 @@ export const SignIn = ({ mode, sent, next, passwordError, magicError }) => (
               Only if you have set one, in Settings, from a device you were already signed in on.
               There is no password reset — use the emailed link, which always works.
             </p>
-          </details>
+          </section>
 
           <p class="muted small">
             {mode === 'signup' ? (
