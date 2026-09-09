@@ -502,6 +502,35 @@ const PlayButton = ({ channelId, kind }) => (
   </button>
 );
 
+/**
+ * The address itself, for a player this page has never heard of.
+ *
+ * VLC and Infuse cover the two apps we can name; everything else -- mpv, ffmpeg,
+ * a set-top box, VLC on a desktop, where the callback scheme means nothing and
+ * app.js removes the button -- wants the URL pasted in, and until this existed
+ * the only way to get it was the .m3u download and a text editor.
+ *
+ * It carries the same address the VLC link beside it already carries, so it adds
+ * no exposure of its own, and it appears under exactly the same rule: never on a
+ * managed row, where the address is our reseller credential rather than the
+ * reader's own. A row with no address gets no button at all.
+ *
+ * `data-copy-url` is the whole contract with app.js. Without scripting there is
+ * nothing to press, which is why this is a button and not a link: a control that
+ * cannot work is better dead than pointing somewhere wrong.
+ */
+export const CopyUrlButton = ({ url, kind }) =>
+  url ? (
+    <button
+      type="button"
+      class="ghost small-btn copy-url-btn"
+      data-copy-url={url}
+      title={`Copy the address of this ${kind === 'live' || !kind ? 'stream' : 'file'} to paste into a player`}
+    >
+      Copy URL
+    </button>
+  ) : null;
+
 export const ChannelRow = ({ ch, managed = false }) => {
   /*
    * Every control that goes through this server needs the row id, and a row
@@ -577,6 +606,10 @@ export const ChannelRow = ({ ch, managed = false }) => {
                 .m3u
               </a>
             ) : null}
+            {/* Last of the four, and the only one that survives on every device:
+                the deep links go on a desktop, the download goes on a phone, and
+                an address in the clipboard is useful on both. */}
+            <CopyUrlButton url={ch.url} kind={ch.kind} />
           </>
         )}
       </span>

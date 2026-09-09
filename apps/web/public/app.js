@@ -507,6 +507,65 @@ function initConfirmForms() {
 /* ------------------------------------------------------------------ copy -- */
 
 /**
+ * Say on the button itself what just happened, then put it back.
+ *
+ * The button IS the feedback here: there is no room beside a row of four small
+ * controls for a message, and a toast for "Copied" is more machinery than the
+ * fact deserves. `idle` remembers the real label so a second press during the
+ * flash cannot leave the button permanently reading "Copied".
+ */
+function flashButton(btn, label) {
+  btn.dataset.idle = btn.dataset.idle ?? btn.textContent;
+  btn.textContent = label;
+  clearTimeout(Number(btn.dataset.flashTimer) || 0);
+  btn.dataset.flashTimer = String(
+    setTimeout(() => {
+      btn.textContent = btn.dataset.idle;
+    }, 1600),
+  );
+}
+
+/**
+ * Put a string on the clipboard, or fail in a way the reader can finish by hand.
+ *
+ * navigator.clipboard is absent outside a secure context and can be refused
+ * outright even inside one. The fallback puts the text into a readonly field the
+ * reader can see and copy, which is the same shape as the settings page's copy
+ * row -- a dead button that swallowed the address would be the worst of the
+ * three outcomes.
+ *
+ * @returns {Promise<boolean>} whether the clipboard itself took it
+ */
+async function writeClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Show an address that could not be copied, ready to be selected.
+ *
+ * Inserted after the button rather than replacing it: the button still works on
+ * the next press, and a reader who reached this because the page is on http://
+ * gets the URL rather than an apology.
+ */
+function revealAddress(btn, url) {
+  let field = btn.parentElement?.querySelector('.copy-url-fallback');
+  if (!field) {
+    field = document.createElement('input');
+    field.className = 'input copy-url-fallback';
+    field.readOnly = true;
+    btn.after(field);
+  }
+  field.value = url;
+  field.focus();
+  field.select?.();
+}
+
+/**
  * Copy buttons: `data-copy="<selector>"` copies that field's value.
  *
  * The field is a real readonly input, so the URL is visible and selectable with no
@@ -527,21 +586,48 @@ function initCopyButtons() {
     const field = document.querySelector(btn.getAttribute('data-copy'));
     if (!field) return;
 
-    const flash = (label) => {
-      btn.dataset.idle = btn.dataset.idle ?? btn.textContent;
-      btn.textContent = label;
-      setTimeout(() => {
-        btn.textContent = btn.dataset.idle;
-      }, 1600);
-    };
-
     field.focus?.();
     field.select?.();
+    flashButton(
+      btn,
+      (await writeClipboard(field.value ?? field.textContent)) ? 'Copied' : 'Press Ctrl-C',
+    );
+  });
+}
+
+/* -------------------------------------------------------------- copy url -- */
+
+/**
+ * Copy a stream address: `data-copy-url="<url>"`.
+ *
+ * The sibling of the buttons above, for the places where there is no field to
+ * copy FROM. A channel row already carries its address in the VLC link beside
+ * this button, so there is nothing worth rendering into a visible input -- the
+ * address is long, ugly, and wanted in a clipboard rather than on the screen.
+ *
+ * A site path is made absolute here rather than in the view. Only the browser
+ * knows which of the sibling brands it is on, and a player handed a bare path
+ * has nowhere to send it.
+ */
+function initCopyUrlButtons() {
+  document.addEventListener('click', async (event) => {
+    const btn = event.target?.closest?.('[data-copy-url]');
+    if (!btn) return;
+    const raw = btn.getAttribute('data-copy-url');
+    if (!raw) return;
+
+    let url = raw;
     try {
-      await navigator.clipboard.writeText(field.value ?? field.textContent);
-      flash('Copied');
+      url = new URL(raw, window.location.href).toString();
     } catch {
-      flash('Press Ctrl-C');
+      // Not a URL this browser can resolve. Hand over what the page said rather
+      // than nothing: a player may well understand a form URL() does not.
+    }
+
+    if (await writeClipboard(url)) flashButton(btn, 'Copied');
+    else {
+      flashButton(btn, 'Copy it here');
+      revealAddress(btn, url);
     }
   });
 }
@@ -781,6 +867,7 @@ initPasskeys();
 initConfirmForms();
 initFollowForms();
 initCopyButtons();
+initCopyUrlButtons();
 initPlaylistReveal();
 initNavigation();
 
@@ -1231,6 +1318,9 @@ function initPlayerSection(section) {
   const src = section.dataset.playerSrc;
   let stop = null;
   let stage = null;
+  // The address of whatever is playing, under the picture. Torn down with the
+  // stage, because it names the channel that stage is carrying and nothing else.
+  let copyBar = null;
 
   /*
    * Which press is the live one.
@@ -1252,6 +1342,8 @@ function initPlayerSection(section) {
     stop = null;
     stage?.remove();
     stage = null;
+    copyBar?.remove();
+    copyBar = null;
   };
   // Chained, not assigned. With two sections the second would otherwise replace
   // the first's handle, and a navigation would tear down one player while the
@@ -1426,7 +1518,37 @@ function initPlayerSection(section) {
        */
       video.muted = !vod;
       stage.append(video);
-      button.closest('li')?.after(stage);
+      const row = button.closest('li');
+      row?.after(stage);
+
+      /*
+       * The address of the thing on the screen, directly under it.
+       *
+       * The row above already has a Copy URL button, but the picture is what the
+       * reader is looking at by the time they want to send it somewhere else --
+       * on a phone the row has scrolled off, and on a desktop the video is
+       * fullscreen. Same address, same attribute, same handler: this is a second
+       * place to press the control rather than a second control.
+       *
+       * Nothing is rendered for a row that has no address to give. A managed
+       * line has no Copy button on the row either, which is where that rule
+       * lives; this only follows it.
+       */
+      const address = row?.querySelector('[data-copy-url]')?.getAttribute('data-copy-url');
+      if (address) {
+        copyBar = document.createElement('p');
+        copyBar.className = 'player-copy';
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'ghost small-btn copy-url-btn';
+        copy.dataset.copyUrl = address;
+        copy.textContent = 'Copy URL';
+        const hint = document.createElement('span');
+        hint.className = 'muted small';
+        hint.textContent = 'The address of this title, for another player.';
+        copyBar.append(copy, hint);
+        stage.after(copyBar);
+      }
 
       // A file is handed to the element itself; only the TS path has a stream to
       // reconnect, so only it takes the notice channel.
