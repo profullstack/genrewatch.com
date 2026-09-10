@@ -568,6 +568,9 @@ export async function upsertSubjects(subjects) {
       imdb_id: s.imdbId ?? null,
       rating: s.rating ?? null,
       rating_count: s.ratingCount ?? null,
+      // Known up front only when the row came through nichedb's mirror; the IMDb
+      // artwork pass establishes it for everything else.
+      tmdb_id: s.tmdbId ?? null,
       url: s.url ?? null,
     }));
     return sql`
@@ -591,6 +594,7 @@ export async function upsertSubjects(subjects) {
         imdb_id = coalesce(subjects.imdb_id, excluded.imdb_id),
         rating = coalesce(excluded.rating, subjects.rating),
         rating_count = coalesce(excluded.rating_count, subjects.rating_count),
+        tmdb_id = coalesce(subjects.tmdb_id, excluded.tmdb_id),
         url = coalesce(excluded.url, subjects.url)
       returning id, provider_key
     `;
@@ -1012,6 +1016,102 @@ export async function setBackCataloguePagesDone(pages) {
       pages_done = greatest(catalogue_progress.pages_done, excluded.pages_done),
       updated_at = now()
   `;
+}
+
+/* ------------------------------------------------------- the nichedb mirror -- */
+
+/**
+ * Where the mirror of one item kind got to. Null when it has never run.
+ *
+ * See 0021 for what the columns mean. Read whole and written whole, one row per
+ * kind, because a pass resumes from exactly this and nothing else.
+ */
+export async function nichedbCursor(kind) {
+  const [row] = await sql`select * from nichedb_cursor where kind = ${kind}`;
+  return row ?? null;
+}
+
+/**
+ * Record the cursor after every page, not only at the end of a walk.
+ *
+ * A walk over the IMDb half of the collection is a few thousand pages, and a
+ * pass is bounded by a page budget and a deadline, so most passes end mid-walk.
+ * Writing after each page is what turns a killed container into a resumed walk
+ * rather than a restarted one. The counters are cumulative: they answer "how much
+ * has this mirror pulled", which is what a human asks of the row.
+ */
+export async function saveNichedbCursor(
+  kind,
+  { since, afterId, walkStartedAt, walkedAt, pages = 0, items = 0, note = null },
+) {
+  await sql`
+    insert into nichedb_cursor
+      (kind, since, after_id, walk_started_at, walked_at, pages, items, note, updated_at)
+    values (${kind}, ${since ?? null}, ${afterId ?? null}, ${walkStartedAt ?? null},
+            ${walkedAt ?? null}, ${pages}, ${items}, ${note}, now())
+    on conflict (kind) do update set
+      since = excluded.since,
+      after_id = excluded.after_id,
+      walk_started_at = excluded.walk_started_at,
+      walked_at = coalesce(excluded.walked_at, nichedb_cursor.walked_at),
+      pages = nichedb_cursor.pages + excluded.pages,
+      items = nichedb_cursor.items + excluded.items,
+      note = excluded.note,
+      updated_at = now()
+  `;
+}
+
+/**
+ * The genre ids of each subject, for events that arrive without their title.
+ *
+ * A release is mirrored on its own page, separately from the title it belongs
+ * to, so the subject's genres cannot be read off the same batch the way the
+ * local adapters do it. An event's genres are its subject's genres, denormalised
+ * so a genre page is one index scan -- and an event written without them is
+ * invisible on every page that matters.
+ *
+ * @returns {Promise<Map<number, number[]>>} subject id -> genre ids, in position order
+ */
+export async function genreIdsForSubjects(subjectIds) {
+  const ids = [...new Set((subjectIds ?? []).filter(Boolean).map(Number))];
+  if (ids.length === 0) return new Map();
+  const rows = await sql`
+    select subject_id, array_agg(genre_id order by position) as genre_ids
+    from subject_genres
+    where subject_id = any(${pgArray(ids)}::bigint[])
+    group by subject_id
+  `;
+  return new Map(rows.map((r) => [Number(r.subject_id), (r.genre_ids ?? []).map(Number)]));
+}
+
+/**
+ * Push what a detailed title knows onto every event that shows it.
+ *
+ * Under the mirror, the cast, trailer, runtime and watch providers arrive on the
+ * TITLE item -- that is where nichedb's TMDB adapter keeps them -- while this
+ * site's pages read them off the EVENT, because that is the row a reader opens.
+ * The release rows carry their own copy when they are re-emitted, but a title
+ * can be re-detailed without its releases changing, so the answer is written
+ * through here as well. Every field is coalesced and the detail stamp is set, so
+ * a rollback to the local TMDB pass does not re-ask about these.
+ */
+export async function applyTitleDetailToEvents(rows) {
+  let n = 0;
+  for (const r of rows ?? []) {
+    if (!r?.subjectId) continue;
+    await sql`
+      update events set
+        runtime_min = coalesce(${r.runtimeMin ?? null}, runtime_min),
+        tagline = coalesce(${r.tagline ?? null}, tagline),
+        trailer_url = coalesce(${r.trailerUrl ?? null}, trailer_url),
+        detail = coalesce(${r.detail ? JSON.stringify(r.detail) : null}::jsonb, detail),
+        detail_synced_at = coalesce(detail_synced_at, now())
+      where subject_id = ${r.subjectId}
+        and provider = ${r.provider ?? 'tmdb'}
+    `;
+    n++;
+  }
+  return n;
 }
 
 /* --------------------------------------------------------- catalogue reads -- */

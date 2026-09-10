@@ -174,6 +174,34 @@ export const config = {
      * only writes what changed.
      */
     imdbDeadlineMs: num('IMDB_DEADLINE_MS', 15 * 60_000),
+
+    /*
+     * Mirroring nichedb.dev instead of polling the screen providers ourselves.
+     *
+     * `nichedb` in CATALOG_PROVIDERS is the switch. With it on, film, tv and
+     * anime come from nichedb's `screen` collection -- which is TMDB, TVmaze,
+     * AniList and the IMDb dumps, fetched once for every site -- and the local
+     * tmdb/tvmaze/anilist adapters, the TMDB enrichment passes and the IMDb
+     * backfill all stand down for those categories. Music and space are not in
+     * nichedb and keep their own adapters. Take `nichedb` back out and the
+     * local providers resume exactly where they were: nothing here is deleted.
+     */
+    nichedb: {
+      url: opt('NICHEDB_URL', 'https://nichedb.dev').replace(/\/$/, ''),
+      /**
+       * Pages of 200 one pass may fetch, across both item kinds.
+       *
+       * nichedb allows 600 anonymous requests an hour per address and the sync
+       * tick is hourly, so this is most of the budget with room for a retry and
+       * for anything else this address asks nichedb. At steady state a pass is
+       * two requests -- one drained page per kind -- and the ceiling only
+       * matters during the first mirror, when the IMDb half of the collection
+       * (about 430,000 titles, some 2,200 pages) arrives over a working day.
+       */
+      pagesPerPass: num('NICHEDB_PAGES_PER_PASS', 250),
+      /** Wall-clock ceiling on one pass, in milliseconds. */
+      deadlineMs: num('NICHEDB_DEADLINE_MS', 10 * 60_000),
+    },
   },
 
   /**
