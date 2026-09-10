@@ -11,12 +11,14 @@ const { adapters, categoriesOf } = await import('../packages/catalog/src/index.j
 const {
   CATEGORIES,
   PAGE_SIZE,
+  artworkOf,
   detailFromTitle,
   eventFrom,
   imdbYearEvent,
   pageUrl,
   subjectFrom,
   sync,
+  watchFrom,
   writeReleases,
   writeTitles,
 } = await import('../packages/catalog/src/nichedb.js');
@@ -60,6 +62,7 @@ function fakeDb() {
   const eventGenres = new Map();
   const cursors = new Map();
   const detailWrites = [];
+  const metaWrites = [];
   let nextId = 1;
   const k = (provider, key) => `${provider}|${key}`;
 
@@ -71,6 +74,7 @@ function fakeDb() {
     eventGenres,
     cursors,
     detailWrites,
+    metaWrites,
     async upsertGenres(rows) {
       const out = new Map();
       for (const g of rows ?? []) {
@@ -94,6 +98,13 @@ function fakeDb() {
           imdbId: prev?.imdbId ?? s.imdbId ?? null,
           year: prev?.year ?? s.year ?? null,
           tmdbId: prev?.tmdbId ?? s.tmdbId ?? null,
+          // And coalesced the other way: an absent value never blanks one held.
+          description: s.description ?? prev?.description ?? null,
+          imageUrl: s.imageUrl ?? prev?.imageUrl ?? null,
+          backdropUrl: s.backdropUrl ?? prev?.backdropUrl ?? null,
+          popularity: s.popularity ?? prev?.popularity ?? null,
+          rating: s.rating ?? prev?.rating ?? null,
+          ratingCount: s.ratingCount ?? prev?.ratingCount ?? null,
         });
         out.set(s.providerKey, id);
       }
@@ -113,6 +124,12 @@ function fakeDb() {
           ...e,
           id,
           detail: e.detail ?? prev?.detail ?? null,
+          summary: e.summary ?? prev?.summary ?? null,
+          imageUrl: e.imageUrl ?? prev?.imageUrl ?? null,
+          backdropUrl: e.backdropUrl ?? prev?.backdropUrl ?? null,
+          tagline: e.tagline ?? prev?.tagline ?? null,
+          trailerUrl: e.trailerUrl ?? prev?.trailerUrl ?? null,
+          runtimeMin: e.runtimeMin ?? prev?.runtimeMin ?? null,
         });
         out.set(e.providerKey, id);
       }
@@ -156,12 +173,79 @@ function fakeDb() {
         detailWrites.push(r);
         for (const e of events.values()) {
           if (e.subjectId === r.subjectId && e.provider === r.provider) {
-            e.detail = e.detail ?? r.detail;
-            e.trailerUrl = e.trailerUrl ?? r.trailerUrl;
+            // coalesce(new, old): a re-detailed title wins, as in the real table.
+            e.detail = r.detail ?? e.detail ?? null;
+            e.trailerUrl = e.trailerUrl ?? r.trailerUrl ?? null;
+            e.tagline = e.tagline ?? r.tagline ?? null;
           }
         }
       }
       return rows.length;
+    },
+    /* The IMDb row wearing this TMDB id becomes the TMDB row: same id, same
+       slug, re-keyed; its year event becomes the cinema row the same way. */
+    async adoptImdbSubjectsAsTmdb(rows) {
+      let n = 0;
+      for (const r of rows ?? []) {
+        if (subjects.has(k('tmdb', r.providerKey))) continue;
+        const entry = [...subjects.entries()].find(
+          ([, s]) => s.provider === 'imdb' && s.tmdbId === String(r.tmdbId),
+        );
+        if (!entry) continue;
+        const [oldKey, s] = entry;
+        subjects.delete(oldKey);
+        subjects.set(k('tmdb', r.providerKey), {
+          ...s,
+          provider: 'tmdb',
+          providerKey: r.providerKey,
+        });
+        const yearKey = k('imdb', `imdb:release:${s.imdbId}`);
+        const releaseKey = `tmdb:release:${r.tmdbId}`;
+        const ev = events.get(yearKey);
+        if (ev && ev.subjectId === s.id && !events.has(k('tmdb', releaseKey))) {
+          events.delete(yearKey);
+          events.set(k('tmdb', releaseKey), { ...ev, provider: 'tmdb', providerKey: releaseKey });
+        }
+        n++;
+      }
+      return n;
+    },
+    async fillEventDetailFromSiblings(ids) {
+      let n = 0;
+      for (const e of events.values()) {
+        if (!ids.includes(e.id) || e.detail) continue;
+        const sib = [...events.values()].find(
+          (o) =>
+            o.id !== e.id && o.subjectId === e.subjectId && o.provider === e.provider && o.detail,
+        );
+        if (!sib) continue;
+        e.detail = sib.detail;
+        e.tagline = e.tagline ?? sib.tagline ?? null;
+        e.trailerUrl = e.trailerUrl ?? sib.trailerUrl ?? null;
+        e.runtimeMin = e.runtimeMin ?? sib.runtimeMin ?? null;
+        n++;
+      }
+      return n;
+    },
+    /* The artwork pass's writer: the picture and the real day onto the events. */
+    async saveImdbMeta(rows) {
+      let n = 0;
+      for (const r of rows ?? []) {
+        metaWrites.push(r);
+        if (!r.matched) continue;
+        for (const e of events.values()) {
+          if (e.subjectId !== r.subjectId) continue;
+          e.imageUrl = r.imageUrl ?? e.imageUrl ?? null;
+          e.backdropUrl = r.backdropUrl ?? e.backdropUrl ?? null;
+          e.summary = r.summary ?? e.summary ?? null;
+          if (r.releaseDate && e.precision === 'year' && e.timeKnown === false) {
+            e.startsAt = new Date(`${r.releaseDate}T12:00:00Z`);
+            e.precision = 'day';
+          }
+        }
+        n++;
+      }
+      return n;
     },
     async nichedbCursor(kind) {
       return cursors.get(kind) ?? null;
@@ -402,8 +486,13 @@ describe('a release lands on the event row the local adapter would have written'
       director: 'Denis Villeneuve',
       studios: ['Legendary Pictures'],
       language: 'English',
-      // The page reads {name, kind}; nichedb's bare service name is flat-rate.
-      watch: [{ name: 'Max', kind: 'flatrate' }],
+      // The page reads {name, kind}: subscription, rent and buy, told apart.
+      watch: [
+        { name: 'Max', kind: 'flatrate' },
+        { name: 'Apple TV', kind: 'rent' },
+        { name: 'Fandango At Home', kind: 'rent' },
+        { name: 'Amazon Video', kind: 'buy' },
+      ],
       digital: '2027-02-16',
       streaming: { date: '2027-03-23', service: 'Disney+' },
       imdbId: 'tt15239678',
@@ -478,6 +567,131 @@ describe('a release lands on the event row the local adapter would have written'
   });
 });
 
+describe('where a title can be watched, with rent and buy told apart', () => {
+  test('the three provider lists become the three kinds the page reads', () => {
+    expect(watchFrom(byId(100).data)).toEqual([
+      { name: 'Max', kind: 'flatrate' },
+      { name: 'Apple TV', kind: 'rent' },
+      { name: 'Fandango At Home', kind: 'rent' },
+      { name: 'Amazon Video', kind: 'buy' },
+    ]);
+  });
+
+  /* An item detailed before the split carries only `watch`, which was always
+     the flat-rate list; read as such, it still says something. */
+  test('an older item with only the flat-rate list is read as flat-rate', () => {
+    const older = { ...byId(100).data, providers: undefined };
+    expect(watchFrom(older)).toEqual([{ name: 'Max', kind: 'flatrate' }]);
+    expect(watchFrom({ ...older, watch: [] })).toEqual([]);
+    expect(watchFrom({ providers: { stream: [], rent: [], buy: [] }, watch: ['Max'] })).toEqual([
+      { name: 'Max', kind: 'flatrate' },
+    ]);
+  });
+
+  test('the cap is per kind, as the local detail pass capped it', () => {
+    const rent = Array.from({ length: 12 }, (_, i) => `Store ${i}`);
+    const w = watchFrom({ providers: { stream: ['Max'], rent, buy: [] } });
+    expect(w.filter((x) => x.kind === 'rent')).toHaveLength(6);
+    expect(w[0]).toEqual({ name: 'Max', kind: 'flatrate' });
+  });
+
+  test('and that is what a detailed title carries onto its events', () => {
+    expect(detailFromTitle(byId(100)).watch.map((x) => x.kind)).toEqual([
+      'flatrate',
+      'rent',
+      'rent',
+      'buy',
+    ]);
+  });
+});
+
+describe('an IMDb-only title with the artwork enricher becomes a TMDB-known title', () => {
+  test('poster, backdrop, synopsis, TMDB id and figures land on the subject', () => {
+    const { subject } = subjectFrom(byId(109));
+    expect(subject).toMatchObject({
+      provider: 'imdb',
+      providerKey: 'tt7777001',
+      category: 'film',
+      kind: 'film',
+      slug: 'rebirth-tt7777001',
+      imdbId: 'tt7777001',
+      tmdbId: '888',
+      imageUrl: 'https://image.tmdb.org/t/p/w342/rebirth.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w780/rebirth-wide.jpg',
+      description: 'A colony ship wakes its crew a century early.',
+      // TMDB's figures, because IMDb had none for it.
+      rating: 7.2,
+      ratingCount: 310,
+      popularity: 42.5,
+    });
+  });
+
+  test("IMDb's own rating and vote count stay in front of TMDB's", () => {
+    const { subject } = subjectFrom(byId(110));
+    expect(subject).toMatchObject({
+      rating: 8.9,
+      ratingCount: 5000,
+      popularity: 5000,
+      tmdbId: '603',
+      imageUrl: 'https://image.tmdb.org/t/p/w342/dune3.jpg',
+    });
+  });
+
+  test('a miss is stored as no TMDB id, and is nothing here', () => {
+    const missed = { ...byId(104), enrichment: { 'tmdb-artwork': { tmdbId: null } } };
+    expect(artworkOf(missed)).toBeNull();
+    const { subject } = subjectFrom(missed);
+    expect(subject.tmdbId).toBeNull();
+    expect(subject.imageUrl).toBeNull();
+    expect(subject.rating).toBe(8.7);
+  });
+
+  test('the year event takes the real day and the picture, as the artwork pass wrote them', () => {
+    const e = imdbYearEvent(subjectFrom(byId(109)).subject, { now: NOW });
+    expect(e).toMatchObject({
+      providerKey: 'imdb:release:tt7777001',
+      precision: 'day',
+      timeKnown: false,
+      state: 'upcoming',
+      summary: 'A colony ship wakes its crew a century early.',
+      imageUrl: 'https://image.tmdb.org/t/p/w342/rebirth.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w780/rebirth-wide.jpg',
+      rating: 7.2,
+    });
+    expect(e.startsAt.toISOString()).toBe('2027-03-12T12:00:00.000Z');
+    // Without a day from TMDB the anchor is the year, as before.
+    const bare = { ...byId(109), enrichment: {} };
+    expect(imdbYearEvent(subjectFrom(bare).subject, { now: NOW })).toMatchObject({
+      precision: 'year',
+      state: 'upcoming',
+    });
+  });
+});
+
+describe('the shops and the service on a home-release row', () => {
+  test('a rent-or-buy row is "Rent or buy" and a stream row is its service', () => {
+    expect(eventFrom(byId(201), { now: NOW }).venue).toBe('Rent or buy');
+    expect(eventFrom(byId(202), { now: NOW }).venue).toBe('Disney+');
+    expect(eventFrom(byId(200), { now: NOW }).venue).toBe('Cinemas');
+  });
+
+  test('a stream row without a venue is named by its one service', () => {
+    const noVenue = { ...byId(202), data: { ...byId(202).data, venue: null } };
+    expect(eventFrom(noVenue, { now: NOW }).venue).toBe('Disney+');
+    const none = { ...byId(202), data: { ...byId(202).data, venue: null, services: [] } };
+    expect(eventFrom(none, { now: NOW }).venue).toBeNull();
+  });
+
+  /* The row's own service list is a merged one; the title's providers say
+     which shop rents and which sells, so that is what the page shows. */
+  test('the shops are shown from the title, where rent and buy are apart', () => {
+    const digital = eventFrom(byId(201), { title: byId(100), now: NOW });
+    expect(digital.detail.watch.filter((x) => x.kind !== 'flatrate').map((x) => x.name)).toEqual(
+      byId(201).data.services,
+    );
+  });
+});
+
 /* -------------------------------------------------------------- the writes -- */
 
 describe('writing a page of titles', () => {
@@ -487,12 +701,15 @@ describe('writing a page of titles', () => {
 
     // Two dropped: the TVmaze anime show and the untagged TMDB film.
     expect(r.dropped).toBe(2);
-    // The IMDb Severance matched the TVmaze Severance on (tv, severance, 2022).
-    expect(r.linked).toBe(1);
-    expect(r.created).toBe(3);
+    // The IMDb Severance matched the TVmaze Severance on (tv, severance, 2022);
+    // the IMDb Dune matched the TMDB Dune on the TMDB id the enricher found.
+    expect(r.linked).toBe(2);
+    expect(r.created).toBe(4);
     const tvmazeSev = db.subjects.get('tvmaze|tvmaze:show:44480');
     expect(tvmazeSev.imdbId).toBe('tt11280740');
     expect(db.subjects.has('imdb|tt11280740')).toBe(false);
+    expect(db.subjects.get('tmdb|tmdb:movie:603').imdbId).toBe('tt15239678');
+    expect(db.subjects.has('imdb|tt15239678')).toBe(false);
 
     // Every kept subject has its genre edges.
     for (const key of [
@@ -505,7 +722,7 @@ describe('writing a page of titles', () => {
     // And the IMDb film got its year event, the undated one did not.
     expect(db.events.has('imdb|imdb:release:tt0133093')).toBe(true);
     expect(db.events.has('imdb|imdb:release:tt9999001')).toBe(false);
-    expect(r.events).toBe(2);
+    expect(r.events).toBe(3);
   });
 
   test('a detailed TMDB title pushes its detail onto the events that show it', async () => {
@@ -517,7 +734,8 @@ describe('writing a page of titles', () => {
       runtimeMin: 166,
       tagline: 'Long live the fighters.',
     });
-    expect(db.detailWrites[0].detail.watch).toEqual([{ name: 'Max', kind: 'flatrate' }]);
+    expect(db.detailWrites[0].detail.watch).toHaveLength(4);
+    expect(db.detailWrites[0].detail.watch[0]).toEqual({ name: 'Max', kind: 'flatrate' });
   });
 
   test('an IMDb row already held is updated, not linked away and not re-evented', async () => {
@@ -555,6 +773,166 @@ describe('writing a page of releases', () => {
     }
     const ep = db.events.get('tvmaze|tvmaze:episode:3707960');
     expect(ep.subjectId).toBe(db.subjects.get('tvmaze|tvmaze:show:44480').id);
+  });
+});
+
+describe('one film, one row, whichever side of it arrives first', () => {
+  const dune = byId(100);
+  const imdbDune = byId(110);
+
+  test('the TMDB row first: the IMDb title links onto it by the TMDB id, not by its name', async () => {
+    const db = fakeDb();
+    await writeTitles([dune], { db, now: NOW });
+    const r = await writeTitles([imdbDune], { db, now: NOW });
+    expect(r.linked).toBe(1);
+    expect(r.created).toBe(0);
+    expect(db.subjects.size).toBe(1);
+    expect(db.subjects.get('tmdb|tmdb:movie:603').imdbId).toBe('tt15239678');
+    // No year anchor is invented for a film whose dates are already known.
+    expect(db.events.size).toBe(0);
+  });
+
+  test('on the same page, in either order', async () => {
+    for (const page of [
+      [dune, imdbDune],
+      [imdbDune, dune],
+    ]) {
+      const db = fakeDb();
+      const r = await writeTitles(page, { db, now: NOW });
+      expect(r.linked).toBe(1);
+      expect(db.subjects.size).toBe(1);
+      expect(db.subjects.get('tmdb|tmdb:movie:603').imdbId).toBe('tt15239678');
+    }
+  });
+
+  test('the IMDb row first: the TMDB title takes that row over rather than opening a second', async () => {
+    const db = fakeDb();
+    await writeTitles([imdbDune], { db, now: NOW });
+    const before = db.subjects.get('imdb|tt15239678');
+    expect(before.tmdbId).toBe('603');
+    const year = db.events.get('imdb|imdb:release:tt15239678');
+    expect(year.precision).toBe('day'); // TMDB knew the day
+
+    const r = await writeTitles([dune], { db, now: NOW });
+    expect(r.adopted).toBe(1);
+    expect(db.subjects.size).toBe(1);
+    const after = db.subjects.get('tmdb|tmdb:movie:603');
+    // The same row: the id every follow points at, the slug every URL carries.
+    expect(after.id).toBe(before.id);
+    expect(after.slug).toBe(before.slug);
+    expect(after.imdbId).toBe('tt15239678');
+    expect(after.name).toBe('Dune: Part Three');
+    expect(after.popularity).toBe(512.3);
+
+    // The year event became the cinema row, so the TMDB release lands ON it.
+    expect(db.events.has('imdb|imdb:release:tt15239678')).toBe(false);
+    expect(db.events.get('tmdb|tmdb:release:603').id).toBe(year.id);
+    await writeReleases([byId(200)], { db, now: NOW });
+    expect(db.events.size).toBe(1);
+    expect(db.events.get('tmdb|tmdb:release:603')).toMatchObject({
+      id: year.id,
+      subjectId: before.id,
+      precision: 'day',
+      venue: 'Cinemas',
+    });
+  });
+
+  test('and the tconst seen again afterwards is that row still', async () => {
+    const db = fakeDb();
+    await writeTitles([imdbDune], { db, now: NOW });
+    await writeTitles([dune], { db, now: NOW });
+    const r = await writeTitles([imdbDune], { db, now: NOW });
+    expect(r.created).toBe(0);
+    expect(r.linked).toBe(1);
+    expect(db.subjects.size).toBe(1);
+  });
+
+  /* This site holds no TMDB television rows, so a series the enricher matched
+     is its own row with the artwork on it, not a link. */
+  test('a series the enricher matched to a TMDB show is its own row, illustrated', async () => {
+    const db = fakeDb();
+    const series = {
+      ...byId(105),
+      enrichment: {
+        'tmdb-artwork': {
+          tmdbId: '95396',
+          category: 'tv',
+          form: 'series',
+          imageUrl: 'https://image.tmdb.org/t/p/w342/sev.jpg',
+        },
+      },
+    };
+    const r = await writeTitles([series], { db, now: NOW });
+    expect(r.created).toBe(1);
+    expect(db.subjects.get('imdb|tt11280740')).toMatchObject({
+      kind: 'show',
+      tmdbId: '95396',
+      imageUrl: 'https://image.tmdb.org/t/p/w342/sev.jpg',
+    });
+  });
+
+  test('a row already held gets the artwork on its events too', async () => {
+    const db = fakeDb();
+    const bare = { ...byId(109), image_url: null, summary: null, enrichment: {} };
+    await writeTitles([bare], { db, now: NOW });
+    const year = db.events.get('imdb|imdb:release:tt7777001');
+    expect(year).toMatchObject({ precision: 'year', imageUrl: null });
+
+    const r = await writeTitles([byId(109)], { db, now: NOW });
+    expect(r.illustrated).toBe(1);
+    expect(r.created).toBe(0);
+    expect(db.metaWrites).toHaveLength(1);
+    expect(db.metaWrites[0]).toMatchObject({
+      matched: true,
+      tmdbId: '888',
+      releaseDate: '2027-03-12',
+      imageUrl: 'https://image.tmdb.org/t/p/w342/rebirth.jpg',
+      summary: 'A colony ship wakes its crew a century early.',
+    });
+    expect(db.subjects.get('imdb|tt7777001')).toMatchObject({
+      tmdbId: '888',
+      imageUrl: 'https://image.tmdb.org/t/p/w342/rebirth.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w780/rebirth-wide.jpg',
+    });
+    const after = db.events.get('imdb|imdb:release:tt7777001');
+    expect(after.id).toBe(year.id);
+    expect(after.precision).toBe('day');
+    expect(after.imageUrl).toBe('https://image.tmdb.org/t/p/w342/rebirth.jpg');
+  });
+});
+
+describe('a release mirrored on its own page still gets the detail its title carries', () => {
+  test('from the cinema row that already has it', async () => {
+    const db = fakeDb();
+    await writeTitles([byId(100)], { db, now: NOW });
+    // The cinema row arrives after the title's detail was pushed, and has none.
+    await writeReleases([byId(200)], { db, now: NOW });
+    expect(db.events.get('tmdb|tmdb:release:603').detail).toBeNull();
+    // The title is walked again, so the cinema row now carries it.
+    await writeTitles([byId(100)], { db, now: NOW });
+    expect(db.events.get('tmdb|tmdb:release:603').detail.watch).toHaveLength(4);
+
+    // Weeks later, the rent-or-buy row, on a page of its own.
+    await writeReleases([byId(201)], { db, now: NOW });
+    const digital = db.events.get('tmdb|tmdb:digital:603');
+    expect(digital.detail.watch.map((x) => x.name)).toContain('Apple TV');
+    expect(digital.tagline).toBe('Long live the fighters.');
+    expect(digital.trailerUrl).toBe('https://www.youtube.com/watch?v=abc123');
+    expect(digital.venue).toBe('Rent or buy');
+  });
+
+  test('or, within one pass, pushed again once the releases are in', async () => {
+    const server = fakeNichedb([...fixture.titles, ...fixture.releases]);
+    const db = fakeDb();
+    await run(server, db);
+    for (const key of ['tmdb:release:603', 'tmdb:digital:603', 'tmdb:stream:603']) {
+      expect(
+        db.events.get(`tmdb|${key}`).detail?.watch?.map((x) => x.kind),
+        key,
+      ).toEqual(['flatrate', 'rent', 'rent', 'buy']);
+    }
+    // And only for the subjects that had releases written: one push, not a re-walk.
+    expect(db.detailWrites.filter((w) => w.provider === 'tmdb')).toHaveLength(2);
   });
 });
 
@@ -628,7 +1006,7 @@ describe('the walk', () => {
     expect(server.requests).toHaveLength(2);
     const cursor = db.cursors.get('title');
     expect(cursor.walk_started_at).toEqual(NOW);
-    expect(cursor.after_id).toBe(1000 + 400 - 9 - 1);
+    expect(cursor.after_id).toBe(1000 + 400 - 11 - 1);
     expect(cursor.walked_at).toBeNull();
     // Releases did not run: no title walk has completed yet.
     expect(db.cursors.has('release')).toBe(false);
@@ -646,13 +1024,13 @@ describe('the walk', () => {
     const r = await run(server, db);
     const resumed = server.requests[before];
     expect(resumed.searchParams.get('kind')).toBe('title');
-    expect(resumed.searchParams.get('after')).toBe('1390');
+    expect(resumed.searchParams.get('after')).toBe('1388');
     expect(r.walks.title.resumed).toBe(true);
     expect(r.walks.title.drained).toBe(true);
 
-    // 459 titles: three pages, the last one short. Then releases: one page.
+    // 461 titles: three pages, the last one short. Then releases: one page.
     expect(server.requests).toHaveLength(before + 1 + 1);
-    expect(db.subjects.size).toBe(3 + 3 + 450);
+    expect(db.subjects.size).toBe(3 + 4 + 450);
     expect(r.walks.release.drained).toBe(true);
     expect(db.events.has('tmdb|tmdb:stream:603')).toBe(true);
     expect(db.events.has('tvmaze|tvmaze:episode:3707960')).toBe(true);
@@ -735,7 +1113,7 @@ describe('the walk', () => {
     const now = () => new Date(NOW.getTime() + (calls++ > 3 ? 120_000 : 0));
     const r = await run(server, db, { now, deadlineMs: 60_000 });
     expect(r.pages).toBe(1);
-    expect(db.cursors.get('title').after_id).toBe(1190);
+    expect(db.cursors.get('title').after_id).toBe(1188);
   });
 });
 
@@ -915,5 +1293,108 @@ describe('the cursor table', () => {
     expect(rows).toHaveLength(1);
     // In position order: War (0) before Drama (1).
     expect(rows[0].genre_ids.map(Number)).toEqual([Number(g2.id), Number(g1.id)]);
+  });
+
+  /** The nth `sql` template inside a query function, its interpolations numbered. */
+  const liftNth = (fn, params, nth = 0) => {
+    let at = queries.indexOf(`export async function ${fn}`);
+    let open = -1;
+    for (let i = 0; i <= nth; i++) {
+      open = queries.indexOf('sql`', at);
+      at = open + 4;
+    }
+    let text = queries.slice(open + 4, queries.indexOf('`;', open));
+    params.forEach((p, i) => {
+      text = text.replaceAll(`$\{${p}}`, `$${i + 1}`);
+    });
+    return text;
+  };
+
+  test('the IMDb row wearing a TMDB id becomes the TMDB row, id and slug intact', async () => {
+    const [s] = (
+      await db.query(
+        `insert into subjects (category, kind, provider, provider_key, slug, name, display_name, imdb_id, tmdb_id)
+         values ('film','film','imdb','tt5000001','rebirth-tt5000001','Rebirth','Rebirth','tt5000001','888')
+         returning id`,
+      )
+    ).rows;
+    const [e] = (
+      await db.query(
+        `insert into events (provider, provider_key, category, subject_id, kind, starts_at, time_known, precision, state, name)
+         values ('imdb','imdb:release:tt5000001','film',$1,'release','2027-01-01T12:00:00Z',false,'year','upcoming','Rebirth')
+         returning id`,
+        [s.id],
+      )
+    ).rows;
+
+    const move = liftNth('adoptImdbSubjectsAsTmdb', ['tmdbIds', 'keys'], 0);
+    const moved = (await db.query(move, ['{"888"}', '{"tmdb:movie:888"}'])).rows;
+    expect(moved).toHaveLength(1);
+    expect(Number(moved[0].id)).toBe(Number(s.id));
+    expect(moved[0]).toMatchObject({ imdb_id: 'tt5000001', tmdb_id: '888' });
+
+    const moveEvent = liftNth('adoptImdbSubjectsAsTmdb', ['releaseKey', 'yearKey', 'm.id'], 1);
+    await db.query(moveEvent, ['tmdb:release:888', 'imdb:release:tt5000001', s.id]);
+
+    const [row] = (await db.query(`select * from subjects where id = $1`, [s.id])).rows;
+    expect(row).toMatchObject({
+      provider: 'tmdb',
+      provider_key: 'tmdb:movie:888',
+      slug: 'rebirth-tt5000001',
+      imdb_id: 'tt5000001',
+    });
+    const [ev] = (await db.query(`select * from events where id = $1`, [e.id])).rows;
+    expect(ev).toMatchObject({ provider: 'tmdb', provider_key: 'tmdb:release:888' });
+
+    // A second IMDb row for the same TMDB id, now that a TMDB row exists: left alone.
+    await db.query(
+      `insert into subjects (category, kind, provider, provider_key, slug, name, display_name, imdb_id, tmdb_id)
+       values ('film','film','imdb','tt5000002','rebirth-tt5000002','Rebirth','Rebirth','tt5000002','888')`,
+    );
+    expect((await db.query(move, ['{"888"}', '{"tmdb:movie:888"}'])).rows).toHaveLength(0);
+  });
+
+  test("a release row with no detail takes its sibling's, and one with its own keeps it", async () => {
+    const [s] = (
+      await db.query(
+        `insert into subjects (category, kind, provider, provider_key, slug, name, display_name)
+         values ('film','film','tmdb','tmdb:movie:9','a-film-9','A','A') returning id`,
+      )
+    ).rows;
+    const ins = (key, detail, tagline, syncedAt = null) =>
+      db.query(
+        `insert into events (provider, provider_key, category, subject_id, kind, starts_at, name, detail, tagline, detail_synced_at)
+         values ('tmdb',$1,'film',$2,'release',now(),'A',$3::jsonb,$4,$5::timestamptz)
+         returning id`,
+        [key, s.id, detail, tagline, syncedAt],
+      );
+    // The cinema row was detailed most recently; the stream row carries an older
+    // detail of its own, which is kept and is never the one copied.
+    const [cinema] = (
+      await ins(
+        'tmdb:release:9',
+        JSON.stringify({ watch: [{ name: 'Max', kind: 'flatrate' }] }),
+        'T',
+        '2026-09-01T00:00:00Z',
+      )
+    ).rows;
+    const [digital] = (await ins('tmdb:digital:9', null, null)).rows;
+    const [stream] = (
+      await ins('tmdb:stream:9', JSON.stringify({ watch: [] }), 'Own', '2020-01-01T00:00:00Z')
+    ).rows;
+
+    const fill = liftNth('fillEventDetailFromSiblings', ['ids'], 0);
+    const filled = (await db.query(fill, [`{${digital.id},${stream.id}}`])).rows;
+    expect(filled.map((r) => Number(r.id))).toEqual([Number(digital.id)]);
+
+    const [d] = (await db.query(`select * from events where id = $1`, [digital.id])).rows;
+    expect(d.detail).toEqual({ watch: [{ name: 'Max', kind: 'flatrate' }] });
+    expect(d.tagline).toBe('T');
+    expect(new Date(d.detail_synced_at).toISOString()).toBe('2026-09-01T00:00:00.000Z');
+    const [st] = (await db.query(`select * from events where id = $1`, [stream.id])).rows;
+    expect(st.detail).toEqual({ watch: [] });
+    expect(st.tagline).toBe('Own');
+    const [c] = (await db.query(`select * from events where id = $1`, [cinema.id])).rows;
+    expect(c.tagline).toBe('T');
   });
 });

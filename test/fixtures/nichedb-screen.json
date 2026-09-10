@@ -42,7 +42,12 @@
         "director": "Denis Villeneuve",
         "studios": ["Legendary Pictures"],
         "language": "English",
-        "detailed": true
+        "detailed": true,
+        "providers": {
+          "stream": ["Max"],
+          "rent": ["Apple TV", "Fandango At Home"],
+          "buy": ["Amazon Video"]
+        }
       },
       "first_seen_at": "2026-09-10T14:03:28.877Z",
       "enrichment": {},
@@ -384,6 +389,120 @@
       "first_seen_at": "2026-09-09T02:00:00.000Z",
       "enrichment": {},
       "page": "https://nichedb.dev/i/108"
+    },
+    {
+      "id": 109,
+      "collection": "screen",
+      "source": "imdb-ratings",
+      "adapter": "imdb-ratings",
+      "kind": "title",
+      "title": "Rebirth",
+      "summary": "A colony ship wakes its crew a century early.",
+      "url": "https://www.imdb.com/title/tt7777001/",
+      "image_url": "https://image.tmdb.org/t/p/w342/rebirth.jpg",
+      "published_at": "2027-07-01T12:00:00.000Z",
+      "time_known": false,
+      "precision": "year",
+      "tags": ["title", "film", "imdb", "genre:sci-fi"],
+      "data": {
+        "provider": "imdb",
+        "category": "film",
+        "form": "movie",
+        "year": 2027,
+        "normTitle": "rebirth",
+        "imdbId": "tt7777001",
+        "tmdbId": null,
+        "tvmazeId": null,
+        "anilistId": null,
+        "genres": ["Sci-Fi"],
+        "rating": null,
+        "ratingCount": null,
+        "popularity": null,
+        "backdropUrl": null,
+        "tagline": null,
+        "trailerUrl": null,
+        "runtimeMin": null,
+        "watch": [],
+        "titleType": "movie",
+        "originalTitle": "Rebirth",
+        "endYear": null
+      },
+      "first_seen_at": "2026-09-09T02:00:00.000Z",
+      "enrichment": {
+        "tmdb-artwork": {
+          "tmdbId": "888",
+          "category": "film",
+          "form": "movie",
+          "url": "https://www.themoviedb.org/movie/888",
+          "imageUrl": "https://image.tmdb.org/t/p/w342/rebirth.jpg",
+          "backdropUrl": "https://image.tmdb.org/t/p/w780/rebirth-wide.jpg",
+          "summary": "A colony ship wakes its crew a century early.",
+          "popularity": 42.5,
+          "rating": 7.2,
+          "ratingCount": 310,
+          "genreIds": [878],
+          "releaseDate": "2027-03-12",
+          "at": "2026-09-10T03:00:00.000Z"
+        }
+      },
+      "page": "https://nichedb.dev/i/109"
+    },
+    {
+      "id": 110,
+      "collection": "screen",
+      "source": "imdb-ratings",
+      "adapter": "imdb-ratings",
+      "kind": "title",
+      "title": "Dune: Part 3",
+      "summary": "Paul Atreides unites with Chani and the Fremen while seeking revenge.",
+      "url": "https://www.imdb.com/title/tt15239678/",
+      "image_url": "https://image.tmdb.org/t/p/w342/dune3.jpg",
+      "published_at": "2026-07-01T12:00:00.000Z",
+      "time_known": false,
+      "precision": "year",
+      "tags": ["title", "film", "imdb", "genre:sci-fi", "genre:adventure"],
+      "data": {
+        "provider": "imdb",
+        "category": "film",
+        "form": "movie",
+        "year": 2026,
+        "normTitle": "dune part 3",
+        "imdbId": "tt15239678",
+        "tmdbId": null,
+        "tvmazeId": null,
+        "anilistId": null,
+        "genres": ["Sci-Fi", "Adventure"],
+        "rating": 8.9,
+        "ratingCount": 5000,
+        "popularity": null,
+        "backdropUrl": null,
+        "tagline": null,
+        "trailerUrl": null,
+        "runtimeMin": 166,
+        "watch": [],
+        "titleType": "movie",
+        "originalTitle": "Dune: Part 3",
+        "endYear": null
+      },
+      "first_seen_at": "2026-09-09T02:00:00.000Z",
+      "enrichment": {
+        "tmdb-artwork": {
+          "tmdbId": "603",
+          "category": "film",
+          "form": "movie",
+          "url": "https://www.themoviedb.org/movie/603",
+          "imageUrl": "https://image.tmdb.org/t/p/w342/dune3.jpg",
+          "backdropUrl": "https://image.tmdb.org/t/p/w780/dune3-wide.jpg",
+          "summary": "Paul Atreides unites with Chani and the Fremen while seeking revenge.",
+          "popularity": 512.3,
+          "rating": 8.1,
+          "ratingCount": 1200,
+          "genreIds": [878, 12],
+          "releaseDate": "2026-12-18",
+          "at": "2026-09-10T03:00:00.000Z"
+        }
+      },
+      "page": "https://nichedb.dev/i/110"
     }
   ],
   "releases": [
@@ -418,7 +537,8 @@
         "posterUrl": "https://image.tmdb.org/t/p/w342/dune3.jpg",
         "backdropUrl": "https://image.tmdb.org/t/p/w780/dune3-wide.jpg",
         "rating": 8.1,
-        "ratingCount": 1200
+        "ratingCount": 1200,
+        "services": []
       },
       "first_seen_at": "2026-09-10T14:03:28.877Z",
       "enrichment": {},
@@ -455,7 +575,8 @@
         "posterUrl": "https://image.tmdb.org/t/p/w342/dune3.jpg",
         "backdropUrl": "https://image.tmdb.org/t/p/w780/dune3-wide.jpg",
         "rating": 8.1,
-        "ratingCount": 1200
+        "ratingCount": 1200,
+        "services": ["Apple TV", "Fandango At Home", "Amazon Video"]
       },
       "first_seen_at": "2026-09-10T14:03:28.877Z",
       "enrichment": {},
@@ -492,7 +613,8 @@
         "posterUrl": "https://image.tmdb.org/t/p/w342/dune3.jpg",
         "backdropUrl": "https://image.tmdb.org/t/p/w780/dune3-wide.jpg",
         "rating": 8.1,
-        "ratingCount": 1200
+        "ratingCount": 1200,
+        "services": ["Disney+"]
       },
       "first_seen_at": "2026-09-10T14:03:28.877Z",
       "enrichment": {},
