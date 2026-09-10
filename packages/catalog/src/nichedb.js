@@ -138,6 +138,35 @@ const numOrNull = (v) =>
 /** The slug the local backfill gave an IMDb title: readable, and unique by the id. */
 const imdbSlug = (title, tconst) => `${slugify(title).slice(0, 60).replace(/-+$/, '')}-${tconst}`;
 
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * What nichedb's `tmdb-artwork` enricher found for a title, or null.
+ *
+ * The enricher asks TMDB `find/{imdbId}` for every title only IMDb listed and
+ * keeps the answer under `enrichment['tmdb-artwork']`: the TMDB id, poster,
+ * backdrop, synopsis, popularity, rating and the real release day. That is the
+ * request the local IMDb→TMDB pass made per row, so its answer is applied here
+ * the way that pass applied it. A miss is stored as `{ tmdbId: null }` so the
+ * title is never asked again, and is nothing to this side.
+ */
+export function artworkOf(item) {
+  const a = item?.enrichment?.['tmdb-artwork'];
+  if (!a || typeof a !== 'object' || !a.tmdbId) return null;
+  return {
+    tmdbId: String(a.tmdbId),
+    category: a.category ?? null,
+    form: a.form ?? null,
+    imageUrl: a.imageUrl ?? null,
+    backdropUrl: a.backdropUrl ?? null,
+    summary: typeof a.summary === 'string' && a.summary.trim() ? a.summary.trim() : null,
+    popularity: numOrNull(a.popularity),
+    rating: numOrNull(a.rating),
+    ratingCount: numOrNull(a.ratingCount),
+    releaseDate: YMD.test(a.releaseDate ?? '') ? a.releaseDate : null,
+  };
+}
+
 /**
  * A `title` item as a subject, with the genre rows and keys it needs, or null
  * when the local adapter would have dropped it.
@@ -158,7 +187,12 @@ export function subjectFrom(item) {
   const d = item.data ?? {};
   const external = parseExternalId(item.externalId ?? externalIdOf(item));
   const genreNames = (Array.isArray(d.genres) ? d.genres : []).filter(Boolean);
-  const category = d.category ?? categoryFromTags(item.tags);
+  /* The enricher's answer fills what the item lacks and never overrides what it
+     has: nichedb has already copied the poster and synopsis onto the item where
+     it had none, and the rest -- backdrop, TMDB id, figures -- is read from the
+     block itself. IMDb's own rating and vote count stay in front of TMDB's. */
+  const art = artworkOf(item);
+  const category = d.category ?? categoryFromTags(item.tags) ?? art?.category ?? null;
   if (!CATEGORIES.includes(category)) return null;
 
   const base = {
@@ -167,18 +201,20 @@ export function subjectFrom(item) {
     category,
     name: item.title,
     displayName: item.title,
-    description: item.summary ?? null,
-    imageUrl: item.image_url ?? null,
-    backdropUrl: d.backdropUrl ?? null,
+    description: item.summary ?? art?.summary ?? null,
+    imageUrl: item.image_url ?? art?.imageUrl ?? null,
+    backdropUrl: d.backdropUrl ?? art?.backdropUrl ?? null,
     url: item.url ?? null,
     // Through THIS site's normaliser, not nichedb's copy of it: the same function
     // has to produce the search key and the playlist match key, and '' for a
     // title with no Latin characters is a value the backfill relies on.
     normTitle: normaliseTitle(item.title),
     year: numOrNull(d.year),
-    rating: numOrNull(d.rating),
-    ratingCount: numOrNull(d.ratingCount),
-    popularity: numOrNull(d.popularity),
+    rating: numOrNull(d.rating) ?? art?.rating ?? null,
+    ratingCount: numOrNull(d.ratingCount) ?? art?.ratingCount ?? null,
+    popularity: numOrNull(d.popularity) ?? art?.popularity ?? null,
+    // Known up front for a TMDB title; for anything else, what the enricher found.
+    tmdbId: art?.tmdbId ?? null,
   };
 
   let subject;
@@ -203,14 +239,16 @@ export function subjectFrom(item) {
     case 'imdb':
       subject = {
         ...base,
-        kind: d.form === 'series' ? 'show' : 'film',
+        kind: (d.form ?? art?.form) === 'series' ? 'show' : 'film',
         slug: imdbSlug(item.title, external.id),
         imdbId: external.id,
         // Fame as a popularity figure, so IMDb rows rank against TMDB rows. The
-        // vote count, which is what "how many people know this" measures there.
-        popularity: numOrNull(d.ratingCount),
-        // Carried for the synthetic year event below; not a subject column.
+        // vote count, which is what "how many people know this" measures there;
+        // TMDB's own figure only for a title nobody has voted on.
+        popularity: numOrNull(d.ratingCount) ?? art?.popularity ?? null,
+        // Carried for the synthetic year event and the link below; not columns.
         _runtimeMin: numOrNull(d.runtimeMin),
+        _artwork: art,
       };
       break;
     default:
@@ -274,13 +312,44 @@ export function externalIdOf(item) {
 
 /* ------------------------------------------------------------------ events -- */
 
+/** The local detail pass kept this many providers of each kind, not overall. */
+const WATCH_PER_KIND = 6;
+
+/**
+ * Everywhere a title can be watched, as the `[{ name, kind }]` the event page
+ * reads: `flatrate`, `rent` and `buy`, each capped as the local detail pass
+ * capped them, so fifteen rental storefronts cannot push the one subscription
+ * that carries a film off the end of the list.
+ *
+ * `providers` is the region's three lists apart, and is read first. An item
+ * detailed before that split carries only `watch`, the flat-rate names, and it
+ * is read as what it was -- flat-rate -- so an older title still says something
+ * rather than nothing.
+ */
+export function watchFrom(d) {
+  const names = (list) =>
+    (Array.isArray(list) ? list : [])
+      .filter((n) => typeof n === 'string' && n.trim())
+      .slice(0, WATCH_PER_KIND);
+  const p = d?.providers;
+  const split = [
+    ...names(p?.stream).map((name) => ({ name, kind: 'flatrate' })),
+    ...names(p?.rent).map((name) => ({ name, kind: 'rent' })),
+    ...names(p?.buy).map((name) => ({ name, kind: 'buy' })),
+  ];
+  if (split.length) return split;
+  return (Array.isArray(d?.watch) ? d.watch : [])
+    .map((w) => (typeof w === 'string' ? { name: w, kind: 'flatrate' } : w))
+    .filter((w) => w?.name)
+    .slice(0, WATCH_PER_KIND);
+}
+
 /**
  * The detail block a TMDB title carries, in the shape the event page reads.
  *
- * nichedb keeps `watch` as a flat list of flat-rate services -- the shape this
- * site's page already reads as flat-rate when it meets a bare string -- and the
- * home dates beside it. Only a detailed title has any of this; an undetailed one
- * yields null so the event's existing detail is never blanked by a coalesce.
+ * The watch providers come from `watchFrom` above, and the home dates sit
+ * beside them. Only a detailed title has any of this; an undetailed one yields
+ * null so the event's existing detail is never blanked by a coalesce.
  */
 export function detailFromTitle(title) {
   const d = title?.data ?? {};
@@ -290,9 +359,7 @@ export function detailFromTitle(title) {
     director: d.director ?? null,
     studios: Array.isArray(d.studios) ? d.studios : [],
     language: d.language ?? null,
-    watch: (Array.isArray(d.watch) ? d.watch : [])
-      .map((w) => (typeof w === 'string' ? { name: w, kind: 'flatrate' } : w))
-      .filter((w) => w?.name),
+    watch: watchFrom(d),
     digital: d.digitalDate ?? null,
     streaming: d.streaming ?? null,
     imdbId: d.imdbId ?? null,
@@ -341,6 +408,16 @@ export function eventFrom(item, { title = null, now = new Date() } = {}) {
       if (category !== 'film') return null;
       const slot = { theatrical: 'release', digital: 'digital', stream: 'stream' }[d.type];
       if (!slot) return null;
+      /* The shops on a rent-or-buy row, the one service on a stream row. The
+         venue is what the streaming-dates pass wrote -- "Rent or buy", or the
+         service's name -- and the service list is where that name comes from
+         when the row arrives without a venue of its own. The shops themselves
+         are shown from the title's providers, with rent and buy told apart,
+         which a merged list cannot do; so they are not written over that. */
+      const services = (Array.isArray(d.services) ? d.services : []).filter(
+        (x) => typeof x === 'string' && x.trim(),
+      );
+      const venueFor = { release: 'Cinemas', digital: 'Rent or buy' };
       return {
         ...base,
         providerKey: keyFor('tmdb', slot, p.id),
@@ -354,7 +431,7 @@ export function eventFrom(item, { title = null, now = new Date() } = {}) {
         tagline: td.tagline ?? null,
         trailerUrl: td.trailerUrl ?? null,
         detail: detailFromTitle(title),
-        venue: d.venue ?? { release: 'Cinemas', digital: 'Rent or buy' }[slot] ?? null,
+        venue: d.venue ?? (slot === 'stream' ? (services[0] ?? null) : venueFor[slot]),
         // The local rows never carried a region here, and "Rent or buy, US" on a
         // page that quotes one country's dates throughout reads as a mistake.
         venueRegion: null,
@@ -424,7 +501,13 @@ export function eventFrom(item, { title = null, now = new Date() } = {}) {
  */
 export function imdbYearEvent(subject, { now = new Date() } = {}) {
   if (subject?.provider !== 'imdb' || !subject.year) return null;
-  const startsAt = new Date(Date.UTC(subject.year, 0, 1, 12, 0, 0));
+  /* The real day where the artwork enricher found one, as the local artwork
+     pass wrote it over the year anchor: a 2027 film with a date is a date
+     somebody can be reminded about, not New Year's Day with everything else. */
+  const day = subject._artwork?.releaseDate ?? null;
+  const startsAt = day
+    ? new Date(`${day}T12:00:00Z`)
+    : new Date(Date.UTC(subject.year, 0, 1, 12, 0, 0));
   return {
     provider: 'imdb',
     providerKey: `imdb:release:${subject.providerKey}`,
@@ -433,10 +516,17 @@ export function imdbYearEvent(subject, { now = new Date() } = {}) {
     kind: 'release',
     startsAt,
     timeKnown: false,
-    precision: 'year',
-    state: subject.year > now.getUTCFullYear() ? 'upcoming' : 'out',
+    precision: day ? 'day' : 'year',
+    state: (day ? startsAt.getTime() > now.getTime() : subject.year > now.getUTCFullYear())
+      ? 'upcoming'
+      : 'out',
     name: subject.name,
     shortName: subject.name,
+    // The calendar row renders its own picture, not the subject's; the local
+    // artwork pass filled both surfaces for that reason and so does this.
+    summary: subject.description ?? null,
+    imageUrl: subject.imageUrl ?? null,
+    backdropUrl: subject.backdropUrl ?? null,
     rating: subject.rating ?? null,
     ratingCount: subject.ratingCount ?? null,
     runtimeMin: subject._runtimeMin ?? null,
@@ -495,6 +585,16 @@ export async function writeTitles(items, { db = q, now = new Date() } = {}) {
   const imdb = subjects.filter((s) => s.provider === 'imdb');
   const others = subjects.filter((s) => s.provider !== 'imdb');
 
+  /* A TMDB film whose IMDb row arrived first, already wearing this TMDB id from
+     the artwork enricher, IS that row. It is moved onto the TMDB key before the
+     upsert so the upsert updates it in place, rather than opening a second page
+     for the same film beside the one every follow and reminder points at. */
+  const adopted = await db.adoptImdbSubjectsAsTmdb(
+    others
+      .filter((s) => s.provider === 'tmdb' && s.tmdbId)
+      .map((s) => ({ tmdbId: s.tmdbId, providerKey: s.providerKey })),
+  );
+
   /* The forward providers' rows go in first, so an IMDb title on the same page
      can link to a TMDB or TVmaze row that arrived beside it. */
   const subjectIds = await db.upsertSubjects(others);
@@ -504,6 +604,15 @@ export async function writeTitles(items, { db = q, now = new Date() } = {}) {
     ? await db.subjectsByProviderKeys(imdb.map((s) => s.providerKey))
     : new Map();
   const fresh = imdb.filter((s) => !known.has(s.providerKey));
+
+  /* The exact join first. An IMDb film the artwork enricher matched to a TMDB
+     id links to that film's row when this catalogue holds it -- from an earlier
+     page or the one just written -- because the tconst is what TMDB itself was
+     asked. The title-and-year heuristic is for the rest, as it always was. */
+  const tmdbKeyOf = (s) =>
+    s.category === 'film' && s._artwork?.tmdbId ? keyFor('tmdb', 'movie', s._artwork.tmdbId) : null;
+  const tmdbKeys = [...new Set(fresh.map(tmdbKeyOf).filter(Boolean))];
+  const byTmdb = tmdbKeys.length ? await db.subjectsByProviderKeys(tmdbKeys) : new Map();
   const existing = fresh.length
     ? await db.subjectsByNormTitle(
         fresh.map((s) => ({ normTitle: s.normTitle, year: s.year, category: s.category })),
@@ -512,7 +621,9 @@ export async function writeTitles(items, { db = q, now = new Date() } = {}) {
   const toLink = [];
   const toCreate = [];
   for (const s of fresh) {
-    const hit = s.normTitle ? existing.get(`${s.category} ${s.normTitle} ${s.year ?? ''}`) : null;
+    const exact = byTmdb.get(tmdbKeyOf(s))?.id ?? null;
+    const hit =
+      exact ?? (s.normTitle ? existing.get(`${s.category} ${s.normTitle} ${s.year ?? ''}`) : null);
     if (hit) toLink.push({ subjectId: hit, tconst: s.providerKey, ...s });
     else toCreate.push(s);
   }
@@ -520,6 +631,26 @@ export async function writeTitles(items, { db = q, now = new Date() } = {}) {
 
   const imdbToWrite = [...imdb.filter((s) => known.has(s.providerKey)), ...toCreate];
   for (const [k, v] of await db.upsertSubjects(imdbToWrite)) subjectIds.set(k, v);
+
+  /* An IMDb row already held that now carries artwork: the poster, synopsis and
+     real day go onto its events too, exactly as the local artwork pass wrote
+     them, because a calendar row renders its own picture and not the subject's.
+     A row created just now gets all of that on its year event below instead. */
+  const illustrated = imdb
+    .filter((s) => known.has(s.providerKey) && s._artwork)
+    .map((s) => ({
+      subjectId: subjectIds.get(s.providerKey),
+      matched: true,
+      tmdbId: s._artwork.tmdbId,
+      imageUrl: s.imageUrl,
+      backdropUrl: s.backdropUrl,
+      summary: s.description,
+      rating: s.rating,
+      ratingCount: s.ratingCount,
+      releaseDate: s._artwork.releaseDate,
+    }))
+    .filter((r) => r.subjectId);
+  if (illustrated.length) await db.saveImdbMeta(illustrated);
   const toWrite = [...others, ...imdbToWrite];
   await db.replaceSubjectGenres(
     toWrite
@@ -577,8 +708,12 @@ export async function writeTitles(items, { db = q, now = new Date() } = {}) {
     subjects: toWrite.length,
     linked: toLink.length,
     created: toCreate.length,
+    adopted,
+    illustrated: illustrated.length,
     events: rows.length,
     dropped: items.length - mapped.length,
+    // Handed back so the pass can push it again once the releases are in.
+    detailed,
   };
 }
 
@@ -605,9 +740,21 @@ export async function writeReleases(items, { db = q, now = new Date() } = {}) {
     }
     rows.push({ ...e, subjectId });
   }
-  if (rows.length === 0) return { events: 0, orphaned, dropped: items.length - mapped.length };
+  if (rows.length === 0)
+    return { events: 0, orphaned, dropped: items.length - mapped.length, subjectIds: [] };
 
   const eventIds = await db.upsertEvents(rows);
+
+  /* A rent-or-buy or streaming row arrives weeks after the cinema row, on a page
+     of its own. The title's cast, trailer and watch providers were pushed onto
+     the events that existed when the title was walked, and this one was not: so
+     it takes them from the sibling that was, where it has none of its own. */
+  const tmdbEventIds = rows
+    .filter((r) => r.provider === 'tmdb')
+    .map((r) => eventIds.get(r.providerKey))
+    .filter(Boolean);
+  if (tmdbEventIds.length) await db.fillEventDetailFromSiblings(tmdbEventIds);
+
   const genresOf = await db.genreIdsForSubjects(rows.map((r) => r.subjectId));
   await db.replaceEventGenres(
     rows
@@ -617,7 +764,12 @@ export async function writeReleases(items, { db = q, now = new Date() } = {}) {
       }))
       .filter((r) => r.eventId && r.genreIds.length),
   );
-  return { events: rows.length, orphaned, dropped: items.length - mapped.length };
+  return {
+    events: rows.length,
+    orphaned,
+    dropped: items.length - mapped.length,
+    subjectIds: [...new Set(rows.map((r) => r.subjectId))],
+  };
 }
 
 /* -------------------------------------------------------------------- sync -- */
@@ -645,6 +797,13 @@ export async function sync({
   const deadline = started + deadlineMs;
   let budget = Math.max(1, pagesPerPass);
   const out = { pages: 0, titles: 0, releases: 0, events: 0, linked: 0, orphaned: 0, walks: {} };
+
+  /* The detail of every title walked this pass, and the subjects whose releases
+     were written after it. Titles go first so a release never precedes its
+     subject -- which also means a title's detail is pushed before the events
+     that show it exist. Pushed once more at the end, for those subjects only. */
+  const detailedThisPass = new Map();
+  const releasedThisPass = new Set();
 
   const titleCursor = await db.nichedbCursor('title');
 
@@ -681,10 +840,12 @@ export async function sync({
           out.titles += wrote.subjects;
           out.events += wrote.events;
           out.linked += wrote.linked;
+          for (const r of wrote.detailed ?? []) detailedThisPass.set(r.subjectId, r);
         } else {
           out.releases += wrote.events;
           out.events += wrote.events;
           out.orphaned += wrote.orphaned;
+          for (const id of wrote.subjectIds ?? []) releasedThisPass.add(id);
         }
         afterId = Math.max(afterId ?? 0, ...page.map((i) => Number(i.id) || 0));
       }
@@ -723,6 +884,9 @@ export async function sync({
         `${walk.resumed ? ', resumed' : ''}${walk.drained ? ', drained' : ', more to do'}`,
     );
   }
+
+  const again = [...detailedThisPass.values()].filter((r) => releasedThisPass.has(r.subjectId));
+  if (again.length) await db.applyTitleDetailToEvents(again);
 
   const secs = Math.round((now().getTime() - started) / 1000);
   log(

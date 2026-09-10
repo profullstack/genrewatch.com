@@ -1114,6 +1114,108 @@ export async function applyTitleDetailToEvents(rows) {
   return n;
 }
 
+/**
+ * Re-key an IMDb row that already carries a TMDB id onto the TMDB key the mirror
+ * is about to upsert, so the film is one row rather than two.
+ *
+ * nichedb's title walk arrives in ITS item order, not this catalogue's: an IMDb
+ * title can be created weeks before the TMDB title it is, wearing the TMDB id the
+ * artwork enricher found for it. When that TMDB title arrives, this moves the row
+ * under the key the upsert conflicts on, so the upsert updates it in place. The
+ * id, the slug and the imdb_id stay -- every URL, follow and reminder keeps
+ * pointing where it did -- and only a row with no TMDB row already beside it
+ * moves, since two established rows cannot be made one from here.
+ *
+ * The IMDb year event moves with it, onto the theatrical key, for the same
+ * reason: so the TMDB cinema row lands ON it, with its real date, rather than
+ * beside it as a second release of the same film.
+ *
+ * @returns {Promise<number>} rows moved
+ */
+export async function adoptImdbSubjectsAsTmdb(rows) {
+  const usable = (rows ?? []).filter((r) => r?.tmdbId && r.providerKey);
+  if (usable.length === 0) return 0;
+  const tmdbIds = pgArray(usable.map((r) => String(r.tmdbId)));
+  const keys = pgArray(usable.map((r) => String(r.providerKey)));
+  const moved = await sql`
+    update subjects s set
+      provider = 'tmdb',
+      provider_key = v.provider_key
+    from (
+      select unnest(${tmdbIds}::text[]) as tmdb_id,
+             unnest(${keys}::text[]) as provider_key
+    ) v
+    where s.provider = 'imdb'
+      and s.tmdb_id = v.tmdb_id
+      -- Two tconsts TMDB answers with one film: the older row is the film.
+      and s.id = (
+        select min(x.id) from subjects x where x.provider = 'imdb' and x.tmdb_id = v.tmdb_id
+      )
+      and not exists (
+        select 1 from subjects o where o.provider = 'tmdb' and o.provider_key = v.provider_key
+      )
+    returning s.id, s.imdb_id, v.tmdb_id
+  `;
+  for (const m of moved) {
+    const yearKey = `imdb:release:${m.imdb_id}`;
+    const releaseKey = `tmdb:release:${m.tmdb_id}`;
+    await sql`
+      update events set
+        provider = 'tmdb',
+        provider_key = ${releaseKey},
+        updated_at = now()
+      where provider = 'imdb'
+        and provider_key = ${yearKey}
+        and subject_id = ${m.id}
+        and not exists (
+          select 1 from events o where o.provider = 'tmdb' and o.provider_key = ${releaseKey}
+        )
+    `;
+  }
+  return moved.length;
+}
+
+/**
+ * Give a release row the detail its sibling already carries.
+ *
+ * A film's rent-or-buy and streaming rows are mirrored weeks after its cinema
+ * row, on a page of their own. The title's cast, trailer and watch providers
+ * were pushed onto the events that existed when the title was walked, and a
+ * row that did not exist yet got none. So it copies from the most recently
+ * detailed sibling of the same subject and provider -- and only where it has
+ * nothing, so the next title walk still wins over the copy.
+ *
+ * @returns {Promise<number>} rows filled
+ */
+export async function fillEventDetailFromSiblings(eventIds) {
+  const ids = pgArray((eventIds ?? []).map(Number).filter(Number.isFinite));
+  if (ids === '{}') return 0;
+  const rows = await sql`
+    update events e set
+      detail = s.detail,
+      tagline = coalesce(e.tagline, s.tagline),
+      trailer_url = coalesce(e.trailer_url, s.trailer_url),
+      runtime_min = coalesce(e.runtime_min, s.runtime_min),
+      detail_synced_at = coalesce(e.detail_synced_at, s.detail_synced_at)
+    from (
+      select distinct on (subject_id, provider)
+             subject_id, provider, detail, tagline, trailer_url, runtime_min, detail_synced_at
+      from events
+      where detail is not null
+        and (subject_id, provider) in (
+          select subject_id, provider from events where id = any(${ids}::bigint[])
+        )
+      order by subject_id, provider, detail_synced_at desc nulls last, id desc
+    ) s
+    where e.id = any(${ids}::bigint[])
+      and e.detail is null
+      and e.subject_id = s.subject_id
+      and e.provider = s.provider
+    returning e.id
+  `;
+  return rows.length;
+}
+
 /* --------------------------------------------------------- catalogue reads -- */
 
 /** Categories that actually have something in them, with counts. */
