@@ -18,6 +18,7 @@ import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import * as anilist from './anilist.js';
 import * as musicbrainz from './musicbrainz.js';
+import * as nichedb from './nichedb.js';
 import { normaliseTitle } from './slug.js';
 import * as spacedevs from './spacedevs.js';
 import * as tmdb from './tmdb.js';
@@ -73,6 +74,29 @@ const REGISTRY = [
     minIntervalMinutes: 60,
   },
   {
+    /*
+     * The three screen categories, mirrored from nichedb.dev instead of fetched.
+     *
+     * One entry for three categories, because nichedb's `screen` collection is
+     * walked once whatever it holds. Switched on by naming it in
+     * CATALOG_PROVIDERS, at which point the tmdb, tvmaze and anilist entries
+     * above stand down (see `adapters`) and the IMDb backfill with them; take it
+     * back out and they resume from their own cursors. Not fetchAll: the walk is
+     * paged against a database cursor and has to write as it goes, so the module
+     * runs its own pass.
+     *
+     * After spaceflight -- whose budget is fifteen requests an HOUR and whose
+     * pass is two of them -- so the first mirror, which is a few thousand pages
+     * over a working day, never holds that one up. Forty-five minutes, so an
+     * hourly tick always finds it due: nichedb's own sources move every three
+     * hours at the fastest, and a pass that finds nothing new is two requests.
+     */
+    name: 'nichedb',
+    categories: nichedb.CATEGORIES,
+    module: nichedb,
+    minIntervalMinutes: 45,
+  },
+  {
     name: 'musicbrainz',
     category: 'music',
     module: musicbrainz,
@@ -82,10 +106,37 @@ const REGISTRY = [
   },
 ];
 
-/** The adapters this deployment has enabled, in registry order. */
-export function adapters() {
-  const enabled = new Set(config.catalog.providers);
-  return REGISTRY.filter((a) => enabled.has(a.name));
+/**
+ * The adapters this deployment has enabled, in registry order.
+ *
+ * `nichedb` is a switch as well as a provider. When it is named, the local
+ * adapters for the categories it covers are left out even if they are named too,
+ * so `CATALOG_PROVIDERS=nichedb,musicbrainz,spacedevs` and the old list with
+ * `nichedb` appended mean the same thing: film, tv and anime come from the
+ * mirror and nothing else polls those upstreams. Music and space are not in
+ * nichedb and are untouched either way.
+ *
+ * @param {string[]} [names] defaults to CATALOG_PROVIDERS; a parameter so the
+ *   rule can be tested without re-importing config
+ */
+export function adapters(names = config.catalog.providers) {
+  const enabled = new Set(names);
+  const mirrored = enabled.has('nichedb') ? new Set(nichedb.CATEGORIES) : new Set();
+  return REGISTRY.filter((a) => enabled.has(a.name) && !(a.category && mirrored.has(a.category)));
+}
+
+/** Every category an entry covers: one for a local adapter, three for the mirror. */
+export const categoriesOf = (entry) => entry.categories ?? [entry.category];
+
+/**
+ * Is this provider actually running, after the switch above has had its say?
+ *
+ * The TMDB-only passes (detail, home dates, IMDb artwork, the back catalogue)
+ * ask this rather than reading CATALOG_PROVIDERS directly, so that turning the
+ * mirror on stops every request to TMDB and not only the sweep.
+ */
+export function providerEnabled(name) {
+  return adapters().some((a) => a.name === name);
 }
 
 /** Categories this site serves, for menus and validation. */
@@ -113,10 +164,16 @@ export const EXTERNAL_CATEGORIES = {
  * worst case a category is a pass out of date, which is the normal state anyway.
  */
 export async function syncOne(entry, { log = console.log, force = false } = {}) {
-  const { name, category, module, minIntervalMinutes } = entry;
+  const { name, module, minIntervalMinutes } = entry;
+  const categories = categoriesOf(entry);
+  const category = entry.category ?? categories.join('+');
 
   if (!force) {
-    const last = await q.lastSyncedAt(category);
+    // The oldest of the categories an entry covers is the one that decides.
+    const stamps = await Promise.all(categories.map((c) => q.lastSyncedAt(c)));
+    const last = stamps.every(Boolean)
+      ? new Date(Math.min(...stamps.map((d) => d.getTime())))
+      : null;
     if (last) {
       const ageMin = (Date.now() - last.getTime()) / 60_000;
       if (ageMin < minIntervalMinutes) {
@@ -127,6 +184,22 @@ export async function syncOne(entry, { log = console.log, force = false } = {}) 
   }
 
   const started = Date.now();
+
+  /*
+   * A module that runs its own pass, rather than answering fetchAll.
+   *
+   * The nichedb mirror pages against a cursor it keeps in the database and has
+   * to write each page before asking for the next, so the fetch-then-write shape
+   * below does not fit it. It writes through the same upserts; only the loop is
+   * its own.
+   */
+  if (typeof module.sync === 'function') {
+    const result = await module.sync({ log });
+    for (const c of categories) await q.markCategorySynced(c);
+    const secs = Math.round((Date.now() - started) / 1000);
+    log(`[sync] ${name}: ${result.subjects} subjects, ${result.events} events in ${secs}s`);
+    return { name, category, ...result, seconds: secs };
+  }
 
   /*
    * Music alone gets a warm cache handed to it.
@@ -241,7 +314,7 @@ export async function syncOne(entry, { log = console.log, force = false } = {}) 
  * category hard to attribute in the log.
  */
 export async function syncAll({ log = console.log, only = null, force = false } = {}) {
-  const list = adapters().filter((a) => !only || a.name === only || a.category === only);
+  const list = adapters().filter((a) => !only || a.name === only || categoriesOf(a).includes(only));
   if (list.length === 0) {
     log(`[sync] nothing to run${only ? ` for "${only}"` : ''}`);
     return [];
@@ -263,9 +336,11 @@ export async function syncAll({ log = console.log, only = null, force = false } 
 /** True when any enabled category has not completed a pass inside its interval. */
 export async function anythingStale() {
   for (const entry of adapters()) {
-    const last = await q.lastSyncedAt(entry.category);
-    if (!last) return true;
-    if ((Date.now() - last.getTime()) / 60_000 >= entry.minIntervalMinutes) return true;
+    for (const category of categoriesOf(entry)) {
+      const last = await q.lastSyncedAt(category);
+      if (!last) return true;
+      if ((Date.now() - last.getTime()) / 60_000 >= entry.minIntervalMinutes) return true;
+    }
   }
   return false;
 }
@@ -283,6 +358,7 @@ export {
   parseM3uStream,
   rankChannelsForTitle,
 } from './m3u.js';
+export { sync as syncNichedb } from './nichedb.js';
 export { keyFor, normaliseTitle, slugify } from './slug.js';
 
 /**
@@ -349,7 +425,7 @@ export async function searchEverything(term, { userId = null, category = null, l
  * response we already make.
  */
 export async function syncDetail({ log = console.log, limit = 120 } = {}) {
-  if (!brandProviders().includes('tmdb')) return { skipped: 'tmdb not enabled' };
+  if (!providerEnabled('tmdb')) return { skipped: 'tmdb not enabled' };
 
   const pending = await q.eventsNeedingDetail({ provider: 'tmdb', limit });
   if (pending.length === 0) return { enriched: 0 };
@@ -416,7 +492,7 @@ export async function syncDetail({ log = console.log, limit = 120 } = {}) {
  * unmatched titles every cycle and never reach the rest.
  */
 export async function syncImdbMeta({ log = console.log, limit = 120 } = {}) {
-  if (!brandProviders().includes('tmdb')) return { skipped: 'tmdb not enabled' };
+  if (!providerEnabled('tmdb')) return { skipped: 'tmdb not enabled' };
 
   const pending = await q.imdbSubjectsNeedingMeta({ limit });
   if (pending.length === 0) return { enriched: 0 };
@@ -457,7 +533,7 @@ export async function syncImdbMeta({ log = console.log, limit = 120 } = {}) {
  * about.
  */
 export async function syncDigital({ log = console.log, limit = 80 } = {}) {
-  if (!brandProviders().includes('tmdb')) return { skipped: 'tmdb not enabled' };
+  if (!providerEnabled('tmdb')) return { skipped: 'tmdb not enabled' };
 
   const pending = await q.eventsNeedingDigitalCheck({ limit });
   if (pending.length === 0) return { added: 0 };
@@ -525,11 +601,6 @@ export async function syncDigital({ log = console.log, limit = 80 } = {}) {
 
   log(`[sync] digital: ${written} home releases from ${pending.length} films`);
   return { added: written, checked: pending.length };
-}
-
-/** The provider names this deployment has switched on. */
-function brandProviders() {
-  return config.catalog.providers;
 }
 
 /**
@@ -639,7 +710,7 @@ async function ingestSearchResults(results) {
  * old films off the calendar pages: those filter on it.
  */
 export async function syncBackCatalogue({ log = console.log, pages = 25 } = {}) {
-  if (!config.catalog.providers.includes('tmdb') || !config.catalog.tmdbKey) {
+  if (!providerEnabled('tmdb') || !config.catalog.tmdbKey) {
     return { skipped: 'tmdb not enabled' };
   }
 

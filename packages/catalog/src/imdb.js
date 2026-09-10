@@ -202,6 +202,9 @@ export async function syncImdb({
   signal = null,
 } = {}) {
   if (!config.catalog.imdbEnabled) return { skipped: 'imdb is off' };
+  // The mirror carries IMDb's titles already; walking the dump as well would
+  // write the same rows twice from two clocks.
+  if (config.catalog.providers.includes('nichedb')) return { skipped: 'imdb comes from nichedb' };
 
   const startedAt = Date.now();
   const deadline = startedAt + deadlineMs;

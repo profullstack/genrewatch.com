@@ -103,6 +103,53 @@ which TVmaze already gives us with a real air time.
 `bun run imdb` runs it by hand; `--deadline=60` gives it a minute instead of fifteen,
 and `--restart` clears the cursor.
 
+### Mirroring nichedb instead
+
+The four screen sources above -- TMDB, TVmaze, AniList and the IMDb dumps -- are
+also fetched once, for every site we run, by [nichedb.dev](https://nichedb.dev)
+into its `screen` collection. Set
+
+```
+CATALOG_PROVIDERS=nichedb,musicbrainz,spacedevs
+```
+
+and film, tv and anime are **mirrored** from there instead of polled here. Naming
+`nichedb` is the whole switch: the local `tmdb`, `tvmaze` and `anilist` adapters
+stand down even if still listed, the TMDB detail, home-release, artwork and
+back-catalogue passes skip, and the IMDb worker answers "comes from nichedb"
+before it reads its progress row. Music and space are not in nichedb and keep
+their own adapters. Take `nichedb` back out and everything local resumes from its
+own cursors; nothing is deleted.
+
+Every mirrored row lands on the **same** `(provider, provider_key)` the local
+adapter would have written -- `tmdb:movie:603`, `tvmaze:episode:3707960`,
+`tt0133093`, `tmdb:stream:603` -- so every slug and URL ever handed out still
+resolves, and a page cannot tell which way its rows arrived. The three TMDB
+release rows per film, TVmaze's episode kinds, AniList's airing timestamps and
+the IMDb year-anchored events are all reproduced, and an IMDb title is linked to
+a TMDB or TVmaze row on `(category, normalised title, year)` exactly as the
+local backfill linked it.
+
+`packages/catalog/src/nichedb.js` walks two item kinds, `title` then `release`,
+each with a cursor in `nichedb_cursor`. nichedb's read API pages by id and filters
+by `since` on `updated_at`, and the wire shape carries no `updated_at`, so the
+cursor is the floor a walk began at plus the last id written inside it: a pass
+that runs out of its page budget resumes with `after=<id>`, and a drained walk
+moves the floor to ten minutes before it started. Releases are not walked until
+the title walk has drained once, so an event never arrives before its subject.
+
+| Knob | Default | What it is for |
+|---|---|---|
+| `NICHEDB_URL` | `https://nichedb.dev` | The mirror's origin |
+| `NICHEDB_PAGES_PER_PASS` | `250` | Pages of 200 one pass may fetch, across both kinds. nichedb allows 600 anonymous requests an hour |
+| `NICHEDB_DEADLINE_MS` | `600000` | Wall-clock ceiling on one pass |
+
+At steady state a pass is two requests, one drained page per kind, plus a page
+per 200 rows that changed. The first mirror is the IMDb half of the collection
+(about 430,000 titles, some 2,200 pages) arriving over a working day of hourly
+passes; the local rows serve the pages meanwhile. `bun run sync --only=nichedb`
+runs a pass by hand.
+
 ## Your own channel list
 
 Optional, per account, and **private by default**. Add the M3U your provider already

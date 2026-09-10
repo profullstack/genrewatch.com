@@ -329,6 +329,15 @@ export function startWorkers({ concurrency = {} } = {}) {
     new Worker(
       QUEUES.imdb,
       async (job) => {
+        /*
+         * Under the mirror there is no dump to walk: nichedb's IMDb source is
+         * what fills these rows, and the sync worker above pulls it. Answered
+         * here, before the progress row is even read, so the six-hourly tick
+         * costs nothing while the switch is on.
+         */
+        if (config.catalog.providers.includes('nichedb')) {
+          return { skipped: 'imdb comes from nichedb' };
+        }
         if (!job.data?.force) {
           const progress = await q.imdbProgress();
           const done = progress?.completed_at ? new Date(progress.completed_at).getTime() : 0;
