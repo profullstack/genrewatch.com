@@ -3360,6 +3360,23 @@ app.get('/manifest.webmanifest', (c) =>
 app.get('/robots.txt', (c) => c.text(robotsTxt()));
 
 /**
+ * The OpenAccess descriptor (logicsrc.com/openaccess): what this site is, where
+ * its OAuth 2.1 endpoints are and which scopes it grants, so a catalog that
+ * fetches it from our own origin can list the site and link an account.
+ *
+ * Checked in under public/, but public/ is an allowlist rather than a
+ * directory: a file dropped there is a 404 until a route names it, and this
+ * is that route. Static bytes, so no version hash -- five minutes is short
+ * enough that a redeploy reaches every catalog by its next refresh.
+ */
+app.get('/.well-known/openaccess.json', async (c) => {
+  const f = Bun.file(new URL('../public/.well-known/openaccess.json', import.meta.url).pathname);
+  c.header('content-type', 'application/json');
+  c.header('cache-control', 'public, max-age=300');
+  return c.body(await f.arrayBuffer());
+});
+
+/**
  * A browser's own account of itself, written to the server log.
  *
  * The diagnostics page can print its findings, but reading them off a television
