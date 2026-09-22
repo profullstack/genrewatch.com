@@ -6,11 +6,12 @@ import { config } from '@genre/config';
  * this entry exists so that splitting them is a Railway variable change and a
  * different start command, with no code to rewrite.
  */
-import { close as closeDb, sql } from '@genre/db';
+import { close as closeDb, healthcheck, sql } from '@genre/db';
 import { migrate } from '@genre/db/migrate';
 import { configurePayments } from '@genre/payments';
-import { closeQueues, installSchedules } from '@genre/queue';
+import { closeQueues, connection, installSchedules } from '@genre/queue';
 import { startWorkers } from '@genre/queue/workers';
+import { watchDependencies } from '@profullstack/watchdog';
 
 /*
  * Hand the payments package its database handle and settings.
@@ -27,8 +28,27 @@ await migrate();
 await installSchedules();
 const workers = startWorkers();
 
+/*
+ * The same two watchdogs the combined entry runs.
+ *
+ * A worker has less to show for a wedge than a web process does: there is no
+ * page to hang, so a worker stuck on a client just stops doing the work and
+ * nothing anywhere goes red. That is worse, not better. This entry answers no
+ * requests at all, so there is not even a slow page to notice.
+ *
+ * The probes go through the shared `sql` handle and the shared `connection`,
+ * which is the whole trick: a second connection is the one thing guaranteed to
+ * look healthy while the real one is wedged.
+ */
+const watchdogs = watchDependencies({
+  postgres: () => healthcheck(),
+  redis: () => connection.ping(),
+});
+
 async function shutdown(signal) {
   console.log(`[worker] ${signal}, draining`);
+  // FIRST: a clean drain closes these clients and must not look like a wedge.
+  watchdogs.stop();
   await Promise.allSettled(workers.map((w) => w.close()));
   await Promise.allSettled([closeQueues(), closeDb()]);
   process.exit(0);
