@@ -4,8 +4,8 @@ import { migrate } from '@genre/db/migrate';
 import { configurePayments } from '@genre/payments';
 import { closeQueues, connection, installSchedules } from '@genre/queue';
 import { startWorkers } from '@genre/queue/workers';
+import { watchDependencies } from '@profullstack/watchdog';
 import { app } from './app.js';
-import { startDbWatchdog } from './lib/db-watchdog.js';
 
 /*
  * Hand the payments package its database handle and settings.
@@ -72,7 +72,6 @@ if (config.roles.includes('worker')) {
 }
 
 let server;
-let watchdog;
 /**
  * Drop the rendered page cache on boot.
  *
@@ -115,24 +114,6 @@ if (config.roles.includes('web')) {
   // still reports healthy.
   server = Bun.serve({ port: config.port, fetch: app.fetch, idleTimeout: 30 });
   console.log(`[web] listening on :${server.port} as ${config.roles.join('+')}`);
-
-  /*
-   * Watch the pool the requests actually use.
-   *
-   * `healthcheck()` runs `select 1` on the shared `sql` handle, which is the
-   * point: the 2026-09-07 outage was this pool refusing to hand out connections
-   * while Postgres, the container and a freshly opened connection inside it were
-   * all healthy. Nothing else here would have caught it -- see db-watchdog.js.
-   * Read from the environment directly, the way DB_POOL_MAX already is.
-   */
-  watchdog = startDbWatchdog({
-    probe: async () => {
-      if (!(await healthcheck())) throw new Error('select 1 did not come back');
-    },
-    intervalMs: Number(process.env.DB_WATCHDOG_INTERVAL_MS ?? 30_000),
-    timeoutMs: Number(process.env.DB_WATCHDOG_TIMEOUT_MS ?? 10_000),
-    failures: Number(process.env.DB_WATCHDOG_FAILURES ?? 3),
-  });
 } else {
   /*
    * A worker-only service still has to answer the healthcheck.
@@ -158,11 +139,36 @@ if (config.roles.includes('web')) {
   console.log(`[worker] healthcheck on :${server.port} as ${config.roles.join('+')}`);
 }
 
+/*
+ * Watch the two clients the requests actually use.
+ *
+ * Out of the role branch on purpose. The pool watchdog used to live in the web
+ * half, but a worker wedged on Redis stops every catalogue pass with nothing
+ * going red, and both roles talk to both clients.
+ *
+ * The probes go through the shared `sql` handle and the shared `connection`
+ * rather than a fresh one, which is the entire trick: on 2026-09-07 this pool
+ * refused to hand out connections for 29 hours while Postgres, the container and
+ * a freshly opened connection inside it were all healthy. Its sibling
+ * tipoffwatch then lost the same bet twice on Redis, whose client is built with
+ * `maxRetriesPerRequest: null` for BullMQ and therefore hangs rather than
+ * rejecting.
+ *
+ * Timings, the DB_WATCHDOG and REDIS_WATCHDOG knobs, and the reason Redis is
+ * allowed one more failure than the pool now live in the package, so the sibling
+ * sites cannot drift apart on the part that took an outage to work out.
+ */
+const watchdogs = watchDependencies({
+  postgres: () => healthcheck(),
+  redis: () => connection.ping(),
+});
+
 async function shutdown(signal) {
   console.log(`[main] ${signal}, draining`);
   // Stop taking new work before closing the pool, so an in-flight fan-out finishes
   // its claim rather than half-sending a batch.
-  watchdog?.stop();
+  // FIRST: a clean drain closes these clients and must not look like a wedge.
+  watchdogs.stop();
   await Promise.allSettled([server?.stop(true), ...workers.map((w) => w.close())]);
   await Promise.allSettled([closeQueues(), closeDb()]);
   process.exit(0);
