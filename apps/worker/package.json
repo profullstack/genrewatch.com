@@ -12,6 +12,7 @@
     "@genre/db": "workspace:*",
     "@genre/notify": "workspace:*",
     "@genre/payments": "workspace:*",
-    "@genre/queue": "workspace:*"
+    "@genre/queue": "workspace:*",
+    "@profullstack/watchdog": "^0.2.0"
   }
 }
