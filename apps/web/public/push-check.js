@@ -64,27 +64,39 @@ run.addEventListener('click', async () => {
   const result = { ua: navigator.userAgent, brave: await isBrave() };
 
   try {
-    // 1. Does this browser have the pieces at all?
-    const supported = 'serviceWorker' in navigator && 'PushManager' in window;
+    // The same client the toggle uses (@profullstack/notifications), served by the app.
+    const push = await import('/vendor-notifications.js');
+
+    // 1. Does this browser have the pieces at all? Blocked notifications are the
+    // permission step's finding, not this one's.
+    const support = push.pushSupport();
+    const supported = support.supported || support.reason === 'denied';
     result.supported = supported;
+    result.reason = support.reason;
     step(
       'Browser support',
-      supported ? 'service workers and push are both present' : 'this browser has no push support',
+      supported ? 'service workers and push are both present' : support.message,
       supported ? 'ok' : 'bad',
     );
     if (!supported) {
-      say('This browser cannot do web push at all. Email reminders still work.', 'error');
+      say(`${support.message} Email reminders still work.`, 'error');
       return;
     }
 
-    // 2. Is the key on the page?
-    result.vapid = Boolean(window.__VAPID);
+    // 2. Does the server hand out its key? Asked at runtime, the way the toggle asks.
+    let vapid = null;
+    try {
+      vapid = await push.getVapidPublicKey();
+    } catch (err) {
+      result.vapidError = err?.message ?? String(err);
+    }
+    result.vapid = Boolean(vapid);
     step(
       'Server key',
-      result.vapid ? `present, ${window.__VAPID.length} characters` : 'missing from the page',
-      result.vapid ? 'ok' : 'bad',
+      vapid ? `present, ${vapid.length} characters` : 'the server did not send one',
+      vapid ? 'ok' : 'bad',
     );
-    if (!result.vapid) {
+    if (!vapid) {
       say('The site did not send its notification key. That is our bug, not yours.', 'error');
       return;
     }
@@ -124,13 +136,7 @@ run.addEventListener('click', async () => {
       return;
     }
 
-    const key = (() => {
-      const b = window.__VAPID;
-      const padded = (b + '='.repeat((4 - (b.length % 4)) % 4))
-        .replace(/-/g, '+')
-        .replace(/_/g, '/');
-      return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
-    })();
+    const key = push.urlBase64ToUint8Array(vapid);
 
     const pending = step('Subscribing', `waiting up to ${SUBSCRIBE_MS / 1000}s…`, 'wait');
     const started = performance.now();

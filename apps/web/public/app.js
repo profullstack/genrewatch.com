@@ -112,12 +112,14 @@ function say(el, message, kind = 'info') {
 
 /* ------------------------------------------------------------------ push -- */
 
-const urlB64ToUint8Array = (b64) => {
-  const padded = (b64 + '='.repeat((4 - (b64.length % 4)) % 4))
-    .replace(/-/g, '+')
-    .replace(/_/g, '/');
-  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
-};
+/**
+ * The house push client (@profullstack/notifications), served by the app at a stable
+ * path and imported on first use. It says why push is unavailable when it is, and
+ * fetches the server's public key at runtime rather than trusting one written into
+ * the page. `window` is passed as its environment explicitly, so the same calls
+ * work in the tests, which run this file with stubbed globals.
+ */
+const loadPushClient = () => import('/vendor-notifications.js');
 
 /**
  * Register the worker and wait for it to be *active*.
@@ -233,11 +235,32 @@ async function initPush() {
   const msg = document.getElementById('push-msg');
   if (!box || !btn) return;
 
-  const supported = 'serviceWorker' in navigator && 'PushManager' in window && window.__VAPID;
-  if (!supported) {
+  let push;
+  try {
+    push = await loadPushClient();
+  } catch (err) {
+    console.warn('[push] client failed to load', err);
     box.hidden = false;
     if (label)
-      label.textContent = 'This browser cannot show notifications. Email reminders still work.';
+      label.textContent = 'Notifications are unavailable here. Email reminders still work.';
+    btn.hidden = true;
+    return;
+  }
+
+  // Blocked is handled by paint() below, which re-reads it when the tab comes back.
+  const support = push.pushSupport(window);
+  let unavailable = support.supported || support.reason === 'denied' ? null : support.message;
+  if (!unavailable) {
+    // Asked now rather than on the click, so a server with no key says so up front
+    // instead of offering a button that cannot work. Cached for the click.
+    unavailable = await push
+      .getVapidPublicKey({ fetch })
+      .then(() => null)
+      .catch((err) => err?.message ?? String(err));
+  }
+  if (unavailable) {
+    box.hidden = false;
+    if (label) label.textContent = `${unavailable} Email reminders still work.`;
     btn.hidden = true;
     return;
   }
@@ -254,9 +277,10 @@ async function initPush() {
   async function paint() {
     // Bounded: this read is what reveals the control, so a wedged push manager must
     // not be able to hide the whole thing behind a promise that never settles.
-    const sub = await withDeadline(reg.pushManager.getSubscription(), READBACK_DEADLINE_MS).catch(
-      () => null,
-    );
+    const sub = await withDeadline(
+      push.getSubscription({ env: window }),
+      READBACK_DEADLINE_MS,
+    ).catch(() => null);
     box.hidden = false;
 
     if (Notification.permission === 'denied') {
@@ -294,10 +318,10 @@ async function initPush() {
     say(msg, 'Saving…', 'info');
     let res;
     try {
-      res = await postJson('/api/push/subscribe', sub.toJSON(), { timeoutMs: SAVE_DEADLINE_MS });
+      res = await postJson('/api/push/subscribe', sub, { timeoutMs: SAVE_DEADLINE_MS });
     } catch (err) {
       console.warn('[push] save failed', err);
-      await sub.unsubscribe().catch(() => {});
+      await push.unsubscribe({ env: window }).catch(() => {});
       say(msg, 'Could not reach the server. Try again in a moment.', 'error');
       return;
     }
@@ -305,7 +329,7 @@ async function initPush() {
     // perfectly fine 200 for the sign-in page, which used to read as success.
     if (res.redirected || !res.ok) {
       // Do not leave the browser subscribed to something the server never stored.
-      await sub.unsubscribe().catch(() => {});
+      await push.unsubscribe({ env: window }).catch(() => {});
       say(
         msg,
         res.redirected
@@ -324,7 +348,7 @@ async function initPush() {
       if (current) {
         say(msg, 'Turning off…', 'info');
         const { endpoint } = current;
-        await current.unsubscribe();
+        await push.unsubscribe({ env: window });
         await postJson('/api/push/unsubscribe', { endpoint });
         say(msg, 'Notifications are off.', 'info');
         return;
@@ -357,19 +381,23 @@ async function initPush() {
       say(msg, 'Setting up…', 'info');
       let sub;
       try {
+        // Permission is already granted above, so this never prompts. It uses the key
+        // fetched at startup, and replaces a subscription made with an older key.
         sub = await withDeadline(
-          reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlB64ToUint8Array(window.__VAPID),
-          }),
+          push.subscribe({ env: window, fetch, serviceWorkerUrl: '/sw.js' }),
           SUBSCRIBE_DEADLINE_MS,
         );
       } catch (err) {
+        // The client's own errors are sentences meant for the reader.
+        if (err?.name === 'PushError') {
+          say(msg, err.message, 'error');
+          return;
+        }
         if (!err?.timedOut) throw err;
         console.warn('[push] subscribe did not finish within', SUBSCRIBE_DEADLINE_MS, 'ms');
         // It may still have completed after the deadline; take that if it did. Bounded
         // too, because a wedged push manager makes this read hang alongside subscribe.
-        sub = await withDeadline(reg.pushManager.getSubscription(), READBACK_DEADLINE_MS).catch(
+        sub = await withDeadline(push.getSubscription({ env: window }), READBACK_DEADLINE_MS).catch(
           () => null,
         );
         if (!sub) {

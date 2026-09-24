@@ -1,10 +1,6 @@
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
-import webpush from 'web-push';
-
-if (config.push.enabled) {
-  webpush.setVapidDetails(config.push.subject, config.push.publicKey, config.push.privateKey);
-}
+import { sendPushToMany } from '@profullstack/notifications/server';
 
 /** "in 1 minute" / "in 1 hour" -- the phrase people actually read on a lock screen. */
 function phrase(offsetMinutes) {
@@ -37,28 +33,20 @@ export async function sendPush(target, { event, offsetMinutes }) {
     url: `${config.siteUrl}/events/${event.id}`,
   });
 
-  const results = await Promise.allSettled(
-    target.push_subscriptions.map((s) =>
-      webpush.sendNotification(
-        { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
-        payload,
-        { TTL: Math.max(60, offsetMinutes * 60) },
-      ),
-    ),
+  const results = await sendPushToMany(
+    target.push_subscriptions.map((s) => ({
+      endpoint: s.endpoint,
+      keys: { p256dh: s.p256dh, auth: s.auth },
+    })),
+    payload,
+    {
+      keys: { publicKey: config.push.publicKey, privateKey: config.push.privateKey },
+      subject: config.push.subject,
+      ttl: Math.max(60, offsetMinutes * 60),
+      onGone: (endpoint) => q.disablePushSubscription(endpoint),
+    },
   );
-
-  let delivered = 0;
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    if (r.status === 'fulfilled') {
-      delivered++;
-      continue;
-    }
-    const code = r.reason?.statusCode;
-    if (code === 404 || code === 410) {
-      await q.disablePushSubscription(target.push_subscriptions[i].endpoint);
-    }
-  }
+  const delivered = results.filter((r) => r.sent).length;
 
   // Every endpoint being dead is not a delivery. Throwing lets the caller mark the
   // row failed, which is the difference between "we tried" and "they were told".

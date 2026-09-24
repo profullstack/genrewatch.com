@@ -114,8 +114,8 @@ const CategoryNav = ({ current }) => (
   </nav>
 );
 
-export const Landing = ({ user, today, vapidKey }) => (
-  <Layout title="Know before it drops" user={user} vapidKey={vapidKey}>
+export const Landing = ({ user, today }) => (
+  <Layout title="Know before it drops" user={user}>
     <section class="hero">
       <h1>Know before it drops.</h1>
       <p class="lede">
@@ -1389,8 +1389,8 @@ const countPhrase = (follows, counts) => {
   return parts.join(' and ') || 'nothing';
 };
 
-export const Following = ({ user, events, follows, cleared, vapidKey, calendarUrl }) => (
-  <Layout title="Your calendar" user={user} vapidKey={vapidKey}>
+export const Following = ({ user, events, follows, cleared, calendarUrl }) => (
+  <Layout title="Your calendar" user={user}>
     <h1>Your calendar</h1>
 
     {/* Rendered always and revealed by script once it knows the real state, so the
@@ -2795,11 +2795,10 @@ export const NotFound = ({ user }) => (
  * answer, and telling those apart otherwise means DevTools. This runs the same
  * calls the toggle makes, one at a time, and prints what each one did.
  */
-export const PushCheck = ({ user, vapidKey }) => (
+export const PushCheck = ({ user }) => (
   <Layout
     title="Notification check"
     user={user}
-    vapidKey={vapidKey}
     canonical="/push-check"
     script={assetUrl('push-check.js')}
   >

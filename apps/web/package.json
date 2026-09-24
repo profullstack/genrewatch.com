@@ -18,6 +18,7 @@
     "@genre/payments": "workspace:*",
     "@genre/playlists": "workspace:*",
     "@genre/queue": "workspace:*",
+    "@profullstack/notifications": "^0.1.0",
     "@profullstack/player": "0.5.0",
     "@profullstack/x402-gateway": "^0.7.0",
     "@simplewebauthn/browser": "^13.2.0",
