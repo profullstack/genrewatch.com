@@ -11,9 +11,8 @@ import { createHmac } from 'node:crypto';
  * module imported config first -- the thing that made these very tests a coin flip
  * decided by the rest of the suite -- is now three explicit lines.
  */
-const { configurePayments, createCheckout, verifyWebhook, settleWebhook } = await import(
-  '../packages/payments/src/index.js'
-);
+const { configurePayments, createCheckout, verifyWebhook, settleWebhook, readWebhook } =
+  await import('../packages/payments/src/index.js');
 
 configurePayments({
   // Not touched by signature verification. A throwing stub is a louder failure
@@ -87,22 +86,39 @@ describe('settlement gating', () => {
     return fn(tx);
   };
 
-  const settleWith = async (status) => {
+  /*
+   * The envelope CoinPay actually sends. These tests used to pass the flat shape
+   * -- { id, status, metadata } -- which is the same wrong assumption the code
+   * made, so they confirmed the bug instead of finding it. Settlement is now
+   * exercised through the real nested body by default.
+   */
+  const nested = (status) => ({
+    id: `evt_pay_1_${Math.floor(Date.now() / 1000)}`,
+    type: `payment.${status || 'unknown'}`,
+    data: {
+      payment_id: 'pay_1',
+      status,
+      amount: 5,
+      amount_usd: 5,
+      metadata: { user_id: 'u1', event_id: '5' },
+    },
+    created_at: new Date().toISOString(),
+    business_id: 'biz_test',
+  });
+
+  const settleWith = async (status, body = nested(status)) => {
     const calls = [];
     configurePayments({
       sql: fakeSql,
       coinpay: { webhookSecret: 'whsec_test_secret', enabled: true },
       siteUrl: 'https://example.test',
     });
-    const result = await settleWebhook(
-      { id: 'pay_1', status, metadata: { user_id: 'u1', event_id: '5' } },
-      {
-        grant: async () => {
-          calls.push(status);
-          return { ok: true };
-        },
+    const result = await settleWebhook(body, {
+      grant: async () => {
+        calls.push(status);
+        return { ok: true };
       },
-    );
+    });
     return { result, granted: calls.length };
   };
 
@@ -131,6 +147,45 @@ describe('settlement gating', () => {
       expect(result.granted).toBe(false);
       expect(result.settled).toBe(false);
     }
+  });
+
+  /*
+   * The regression this whole change exists for. Before it, a genuine
+   * payment.confirmed threw "webhook missing metadata" and nothing ever settled.
+   */
+  test('a real nested confirmation settles', async () => {
+    const { result, granted } = await settleWith('confirmed');
+    expect(granted).toBe(1);
+    expect(result.settled).toBe(true);
+  });
+
+  test('the older flat shape still settles', async () => {
+    // The test-webhook sender has not moved to the nested envelope.
+    const { result, granted } = await settleWith('paid', {
+      id: 'pay_1',
+      status: 'paid',
+      metadata: { user_id: 'u1', event_id: '5' },
+    });
+    expect(granted).toBe(1);
+    expect(result.settled).toBe(true);
+  });
+
+  test('the reference is the payment, never the event id', () => {
+    const body = nested('confirmed');
+    const { ref, status, meta, event } = readWebhook(body);
+    expect(ref).toBe('pay_1');
+    // The bug in one line: evt_... is what `payload.id` used to return.
+    expect(ref).not.toBe(body.id);
+    expect(status).toBe('confirmed');
+    expect(meta.user_id).toBe('u1');
+    expect(event).toBe('payment.confirmed');
+  });
+
+  test('a nested failure is still refused', async () => {
+    // Reading the envelope right must not weaken the gate behind it.
+    const { result, granted } = await settleWith('failed');
+    expect(granted).toBe(0);
+    expect(result.settled).toBe(false);
   });
 
   test('the list of statuses that count as paid has not quietly grown', async () => {
