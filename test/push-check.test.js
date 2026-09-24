@@ -16,7 +16,7 @@ const render = async (node) => (await node.toString()).toString();
 
 describe('notification self-check page', () => {
   test('loads its own script, and only it does', async () => {
-    const out = await render(PushCheck({ user: null, vapidKey: 'k' }));
+    const out = await render(PushCheck({ user: null }));
     expect(out).toContain('src="/push-check.js"');
 
     // Every other page must stay clear of it: a support tool that ships on all
@@ -27,9 +27,15 @@ describe('notification self-check page', () => {
     expect(plain).not.toContain('push-check.js');
   });
 
-  test('carries the server key, or it cannot test anything', async () => {
-    const out = await render(PushCheck({ user: null, vapidKey: 'BDU8swQU' }));
-    expect(out).toContain('window.__VAPID = "BDU8swQU"');
+  test('asks the server for its key at runtime instead of carrying it', async () => {
+    const out = await render(PushCheck({ user: null }));
+    expect(out).not.toContain('__VAPID');
+    const js = await readFile(CHECK_JS, 'utf8');
+    expect(js).toContain("import('/vendor-notifications.js')");
+    expect(js).toContain('getVapidPublicKey');
+    const src = await readFile(APP, 'utf8');
+    expect(src).toContain("app.get('/api/push/vapid-public-key'");
+    expect(src).toContain("'/vendor-notifications.js', '@profullstack/notifications/client'");
   });
 
   test('the route is open to signed-out visitors', async () => {
@@ -41,7 +47,6 @@ describe('notification self-check page', () => {
     // requireUser here would put an account between someone and the answer, for a
     // failure that happens entirely in the browser.
     expect(route).not.toContain('requireUser');
-    expect(route).toContain('config.push.publicKey');
   });
 
   test('the script is actually served', async () => {

@@ -68,11 +68,9 @@ const pages = {
       { subject_type: 'team', subject_id: 11, label: 'Atlético Madrid' },
       { subject_type: 'league', subject_id: 3, label: 'Premier League' },
     ],
-    vapidKey:
-      'BExampleVapidPublicKeyForLayoutOnly_notARealKey_0000000000000000000000000000000000000',
     calendarUrl: 'https://genrewatch.com/calendar/me/00000000-0000-4000-8000-000000000000.ics',
   }),
-  'push-check.html': PushCheck({ user: { id: 1 }, vapidKey: 'BDU8swQU' }),
+  'push-check.html': PushCheck({ user: { id: 1 } }),
   'event.html': EventPage({
     user: { id: 1 },
     event: {

@@ -30,6 +30,7 @@ import {
   verdictToStore,
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
+import { vapidKeysFromEnv, vapidPublicKeyResponse } from '@profullstack/notifications/server';
 import { createGateway, isTrainingAgent } from '@profullstack/x402-gateway';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -352,7 +353,7 @@ app.get('/', async (c) => {
   const viewer = c.get('user');
   return cached(c, `page:home:${today}`, config.cache.scheduleTtlSeconds, async () => {
     const events = await q.scheduleForDay({ day: today, limit: 40, viewerId: viewer?.id ?? null });
-    return render(<Landing user={c.get('user')} today={events} vapidKey={config.push.publicKey} />);
+    return render(<Landing user={c.get('user')} today={events} />);
   });
 });
 
@@ -615,7 +616,6 @@ app.get('/following', async (c) => {
         events={events}
         follows={follows}
         cleared={cleared}
-        vapidKey={config.push.publicKey}
         calendarUrl={`${config.siteUrl}/calendar/me/${user.calendar_token}.ics`}
       />,
     ),
@@ -2886,9 +2886,7 @@ app.get('/settings', async (c) => {
  * browser, before anything is saved, so requiring an account only adds a step
  * between someone and the answer.
  */
-app.get('/push-check', (c) =>
-  c.html(render(<PushCheck user={c.get('user')} vapidKey={config.push.publicKey} />)),
-);
+app.get('/push-check', (c) => c.html(render(<PushCheck user={c.get('user')} />)));
 
 /**
  * Where the self-check reports to.
@@ -2903,6 +2901,16 @@ app.post('/api/push/diag', async (c) => {
   console.log('[push-diag]', trimmed);
   return c.json({ ok: true });
 });
+
+/**
+ * The push public key, read from the environment on every request.
+ *
+ * Served rather than written into the page, so a key that was missing or wrong at
+ * render time cannot leave a cached page telling every browser that push is not
+ * supported. 503 with a reason when the server has no key pair, which is what the
+ * toggle then says instead of a generic "not supported".
+ */
+app.get('/api/push/vapid-public-key', () => vapidPublicKeyResponse(vapidKeysFromEnv(process.env)));
 
 app.post('/api/push/subscribe', async (c) => {
   const user = requireUser(c);
@@ -3460,6 +3468,31 @@ const VERSIONED_ICONS = [
 
 // Hashed once at boot so pages can link /styles.css?v=<hash>. See lib/asset-version.js.
 await loadAssetVersions([...STATIC_FILES.map(([, file]) => file), ...VERSIONED_ICONS]);
+
+/**
+ * Files served straight out of a package rather than out of public/.
+ *
+ * The push client is @profullstack/notifications, and a copy vendored into
+ * public/ would drift from the package the server side uses. Resolving through
+ * node_modules means the deployed bytes are whatever the install pinned. An ES
+ * module: app.js and push-check.js import it on first use.
+ */
+const PACKAGE_FILES = [
+  ['/vendor-notifications.js', '@profullstack/notifications/client', 'text/javascript'],
+];
+
+for (const [route, spec, type] of PACKAGE_FILES) {
+  // Resolved once at boot: a missing dependency should stop the container
+  // rather than 404 a file the push toggle cannot work without.
+  const path = Bun.fileURLToPath(import.meta.resolve(spec));
+  app.get(route, async (c) => {
+    c.header('content-type', type);
+    // Short, like the other unversioned assets: the URL carries no hash, so a
+    // deploy that bumps the package has to be able to reach a warm cache.
+    c.header('cache-control', 'public, max-age=60');
+    return c.body(await Bun.file(path).arrayBuffer());
+  });
+}
 
 for (const [route, file, type] of STATIC_FILES) {
   app.get(route, async (c) => {
