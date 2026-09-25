@@ -34,6 +34,7 @@ import { vapidKeysFromEnv, vapidPublicKeyResponse } from '@profullstack/notifica
 import { createGateway, isTrainingAgent } from '@profullstack/x402-gateway';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
+import { nextAdvert } from './lib/ads.js';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { attempt, callerAddress, forgive, MISS, VIEW } from './lib/auth-throttle.js';
 import { buildCalendar } from './lib/ics.js';
@@ -347,6 +348,19 @@ async function cached(c, key, ttl, produce) {
 }
 
 app.get('/healthz', (c) => c.text('ok'));
+
+/**
+ * An advert for a break in the player.
+ *
+ * Unauthenticated on purpose: the viewers who get adverts are the ones who have
+ * not signed in. Nothing about which advert plays is decided here — that is the
+ * ad network's auction, and it meters the impression — so this must not cache
+ * or ask twice for one break.
+ */
+app.get('/api/ads/next', async (c) => {
+  c.header('cache-control', 'no-store');
+  return c.json(await nextAdvert(c.req.query('kind') ?? null));
+});
 
 app.get('/', async (c) => {
   const today = new Date().toISOString().slice(0, 10);
