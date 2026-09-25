@@ -7,6 +7,7 @@ import {
   FollowButton,
   fmtDayUtc,
   GenreChips,
+  GenreRow,
   LocalTime,
   StartTime,
   SubjectRow,
@@ -120,8 +121,8 @@ export const Landing = ({ user, today }) => (
       <h1>Know before it drops.</h1>
       <p class="lede">
         Follow a genre or a name — a show, a film, an artist, a rocket — and we will tell you before
-        it is out. Free, no ads, and it works as a calendar feed if you would rather not be notified
-        at all.
+        it is out. Free, nothing on your own list is advertising, and it works as a calendar feed if
+        you would rather not be notified at all.
       </p>
       {user ? (
         <a class="cta" href="/following">
@@ -138,7 +139,13 @@ export const Landing = ({ user, today }) => (
 
     <section>
       <h2>Today</h2>
-      <EventList events={today} emptyText="Nothing lands today. Try a genre." />
+      <EventList
+        events={today}
+        emptyText="Nothing lands today. Try a genre."
+        user={user}
+        next="/"
+        showFollow
+      />
       <p class="more">
         <a href="/genres">Browse every genre →</a>
       </p>
@@ -221,12 +228,7 @@ export const GenresIndex = ({
           </h2>
           <ul class="genre-grid">
             {list.map((g) => (
-              <li class={g.upcoming > 0 ? 'genre' : 'genre quiet'}>
-                <a href={`/genres/${g.slug}`}>{g.name}</a>
-                <span class="meta">
-                  {g.upcoming > 0 ? `${g.upcoming.toLocaleString('en-US')} coming` : 'quiet'}
-                </span>
-              </li>
+              <GenreRow genre={g} user={user} next="/genres" />
             ))}
           </ul>
         </section>
@@ -263,6 +265,9 @@ export const GenresIndex = ({
         <EventList
           events={soon}
           emptyText="Nothing with a start time lands in the next few hours."
+          user={user}
+          next="/genres"
+          showFollow
         />
       </section>
     </Layout>
@@ -281,19 +286,20 @@ export const CategoryPage = ({ user, category, genres, events }) => {
         <h2>Genres</h2>
         <ul class="genre-grid">
           {genres.map((g) => (
-            <li class={g.upcoming > 0 ? 'genre' : 'genre quiet'}>
-              <a href={`/genres/${g.slug}`}>{g.name}</a>
-              <span class="meta">
-                {g.upcoming > 0 ? `${g.upcoming.toLocaleString('en-US')} coming` : 'quiet'}
-              </span>
-            </li>
+            <GenreRow genre={g} user={user} next={`/categories/${category}`} />
           ))}
         </ul>
       </section>
 
       <section>
         <h2>Today</h2>
-        <EventList events={events} emptyText="Nothing in this category today." />
+        <EventList
+          events={events}
+          emptyText="Nothing in this category today."
+          user={user}
+          next={`/categories/${category}`}
+          showFollow
+        />
         <p class="more">
           <a href={`/feeds/category/${category}.xml`}>RSS</a>
         </p>
@@ -326,7 +332,13 @@ export const GenrePage = ({ user, genre, subjects, events, following }) => (
 
     <section>
       <h2>Coming up</h2>
-      <EventList events={events} emptyText="Nothing scheduled in this genre yet." />
+      <EventList
+        events={events}
+        emptyText="Nothing scheduled in this genre yet."
+        user={user}
+        next={`/genres/${genre.slug}`}
+        showFollow
+      />
     </section>
 
     {/* Between the two lists: a real seam in the page, where a reader has
@@ -424,6 +436,8 @@ export const SubjectPage = ({
         emptyText={past.length > 0 ? 'Nothing new scheduled.' : 'Nothing scheduled.'}
       />
     </section>
+
+    <Ad />
 
     {/* Already out. Bounded to a dozen: this is "what is this and can I watch it",
         not an archive of fourteen seasons. */}
@@ -656,7 +670,11 @@ export const OwnLine = ({ own, shared, streamDead, title, liveOffer = null, sign
         </section>
       ) : null}
       {hasOwn ? (
-        <section class="own-line" data-player-src={assetUrl('vendor-mpegts.js')}>
+        <section
+          class="own-line"
+          data-player-src={assetUrl('vendor-mpegts.js')}
+          data-ads-src={assetUrl('vendor-ads.js')}
+        >
           <h2>In your list</h2>
 
           {/* Why the last attempt handed back nothing, in the words of the probe.
@@ -757,7 +775,11 @@ export const OwnLine = ({ own, shared, streamDead, title, liveOffer = null, sign
       ) : null}
 
       {hasShared ? (
-        <section class="own-line shared-line" data-player-src={assetUrl('vendor-mpegts.js')}>
+        <section
+          class="own-line shared-line"
+          data-player-src={assetUrl('vendor-mpegts.js')}
+          data-ads-src={assetUrl('vendor-ads.js')}
+        >
           <h2>Shared with you</h2>
           {shared.channels.length > 0 ? (
             <>
@@ -1794,8 +1816,9 @@ export const Invite = ({
   <Layout title="Invite friends" user={user}>
     <h1>Invite friends</h1>
     <p class="muted">
-      Anyone who follows something will get told before it drops. It is free, there are no ads, and
-      there is nothing to unlock — so this is a recommendation rather than a referral scheme.
+      Anyone who follows something will get told before it drops. It is free, nothing on your own
+      list is advertising, and there is nothing to unlock — so this is a recommendation rather than
+      a referral scheme.
     </p>
 
     {notice ? (

@@ -405,7 +405,7 @@ app.get('/genres', async (c) => {
   return cached(c, 'page:genres', 60, async () => {
     const [categories, genres, soon, soonTotal] = await Promise.all([
       q.listCategories(),
-      q.listGenres({}),
+      q.listGenres({ viewerId: user?.id ?? null }),
       q.outSoon({ hours: config.catalog.soonWindowHours, viewerId: user?.id ?? null }),
       q.outSoonCount({ hours: config.catalog.soonWindowHours }),
     ]);
@@ -450,11 +450,12 @@ app.get('/categories/:name', async (c) => {
 
   return cached(c, `page:category:${name}`, 300, async () => {
     const [genres, events] = await Promise.all([
-      q.listGenres({ category: name }),
+      q.listGenres({ category: name, viewerId: user?.id ?? null }),
       q.scheduleForDay({
         day: new Date().toISOString().slice(0, 10),
         category: name,
         limit: 40,
+        viewerId: user?.id ?? null,
       }),
     ]);
     return render(<CategoryPage user={user} category={name} genres={genres} events={events} />);
@@ -3457,6 +3458,10 @@ const STATIC_FILES = [
   // the layout: it is a few hundred kilobytes and app.js injects the tag only
   // when somebody actually presses Play.
   ['/vendor-mpegts.js', 'vendor-mpegts.js', 'text/javascript'],
+  // The break machinery, in a bundle of its own. 4.5KB, injected by app.js on the
+  // same press -- including on the path that never loads the demuxer above, which
+  // is the one that plays a film.
+  ['/vendor-ads.js', 'vendor-ads.js', 'text/javascript'],
   ['/sw.js', 'sw.js', 'text/javascript'],
   ['/logo.png', 'logo.png', 'image/png'],
   // Header logo, in two shapes. The originals are 436KB and 722KB -- fine as

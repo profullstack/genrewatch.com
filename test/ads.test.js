@@ -80,6 +80,49 @@ describe('what gets rendered, and where', () => {
     expect(components).toContain('banner_300x250');
   });
 
+  /*
+   * And at least one on every browse page, which is the half that was missing.
+   *
+   * A name's own page -- one film, one show, one artist -- carried none. It is the
+   * page a reader arrives on from a search engine and by a wide margin the most
+   * visited kind on the site, and ad.js was being loaded on every one of them with
+   * nothing to fill: the script ran, scanned once, found no unit and earned zero.
+   * Listed by name rather than derived, so adding a browse page and forgetting the
+   * unit fails here rather than being noticed in a revenue report.
+   */
+  test("every browse page carries one, the name's own page included", async () => {
+    const pages = await readFile(PAGES, 'utf8');
+    for (const name of ['CategoryPage', 'GenrePage', 'SubjectPage', 'EventPage', 'SearchPage']) {
+      const start = pages.indexOf(`export const ${name} = `);
+      expect({ page: name, found: start > -1 }).toEqual({ page: name, found: true });
+      const next = pages.indexOf('export const ', start + 10);
+      const body = pages.slice(start, next > 0 ? next : undefined);
+      expect({ page: name, ads: (body.match(/<Ad[\s/>]/g) ?? []).length }).toEqual({
+        page: name,
+        ads: 1,
+      });
+    }
+  });
+
+  /*
+   * Where it sits on a name's page, and why not at the end.
+   *
+   * ad.js bills the impression when it FILLS the unit, at one DOMContentLoaded
+   * scan, with no visibility check -- so a unit below everything is billed exactly
+   * like one somebody read. Under "Coming up" is a real seam: the reader has
+   * finished the question they arrived with, and there is still a list and a footer
+   * below it.
+   */
+  test("the unit on a name's page is at a seam, not at the bottom", async () => {
+    const pages = await readFile(PAGES, 'utf8');
+    const start = pages.indexOf('export const SubjectPage = ');
+    const next = pages.indexOf('export const ', start + 10);
+    const body = pages.slice(start, next > 0 ? next : undefined);
+    const ad = body.indexOf('<Ad />');
+    expect(ad).toBeGreaterThan(body.indexOf('Coming up'));
+    expect(ad).toBeLessThan(body.indexOf('Already out'));
+  });
+
   test('at most one unit per page', async () => {
     const pages = await readFile(PAGES, 'utf8');
     for (const m of pages.matchAll(/export const (\w+) = /g)) {

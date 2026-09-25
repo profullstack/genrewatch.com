@@ -122,7 +122,7 @@ export async function sendInviteEmail({ email, url, from }) {
       text:
         `${from} uses GenreWatch to know before things drop — shows, films, albums, rocket launches.\n\n` +
         `Have a look:\n\n${url}\n\n` +
-        'It is free, there are no ads, and it works as a plain calendar feed if you would rather not be notified at all.\n\n' +
+        'It is free, nothing on your own list is advertising, and it works as a plain calendar feed if you would rather not be notified at all.\n\n' +
         'You received this because somebody typed your address into an invite form. ' +
         'We have not created an account for you and will not email you again about it.',
     }),

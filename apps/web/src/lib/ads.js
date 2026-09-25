@@ -7,21 +7,14 @@
  * numbers. This is a proxy with an opinion about failure, nothing more.
  *
  * The opinion is that a break nobody can fill does not happen. The player
- * treats anything without a url as "no advert" and keeps the station playing,
- * which is the only behaviour worth defaulting to when the alternative is dead
- * air on a live stream.
+ * treats anything without a url as "no advert" and keeps the programme playing,
+ * which is the only behaviour worth defaulting to when the alternative is a dead
+ * rectangle in front of something the reader chose.
  */
 
 /** The network's break endpoint. Overridable so a deployment can point elsewhere. */
 const AD_ORIGIN = process.env.AD_ORIGIN ?? 'https://crawlproof.com';
 
-/**
- * This property's slot at the network.
- *
- * Unset means adverts are off, which is the right default for a development
- * copy: it has no advertising relationship and should not spend a request per
- * break being told so.
- */
 /**
  * genrewatch's own slot at the network. Not a secret: the browser sends it on
  * every break, so it is already public, and a property's own slot is no more
@@ -34,9 +27,10 @@ const AD_SLOT = process.env.AD_SLOT ?? DEFAULT_AD_SLOT;
 /**
  * How long to wait.
  *
- * A break is a gap in a live station, so the budget is what a listener will not
- * notice. Past it the advert is not worth having: the player falls back to the
- * stream, which beats a pause while a third party thinks about it.
+ * A break interrupts something somebody is already watching, so the budget is
+ * what a viewer will not notice. Past it the advert is not worth having: the
+ * player falls back to the programme, which beats a pause while a third party
+ * thinks about it.
  */
 const TIMEOUT_MS = 1500;
 
@@ -52,10 +46,8 @@ export async function nextAdvert(kindParam, deps = {}) {
   const slot = deps.slot ?? AD_SLOT;
   if (!slot) return NONE;
 
-  // Audio unless a caller says otherwise. The radio bar is audio-only and has
-  // nowhere to put a picture.
-  // Video by default: genrewatch plays TV into a <video>, so a picture has
-  // somewhere to go. The radio properties default the other way.
+  // Video by default: genrewatch plays TV and films into a <video>, so a picture
+  // has somewhere to go. The radio properties default the other way.
   const kind = kindParam === 'audio' ? 'audio' : 'video';
   const doFetch = deps.fetchImpl ?? fetch;
   const origin = deps.origin ?? AD_ORIGIN;
@@ -80,7 +72,7 @@ export async function nextAdvert(kindParam, deps = {}) {
     }
     if (parsed.protocol !== 'https:') return NONE;
 
-    return { url: parsed.toString(), kind: body.kind === 'video' ? 'video' : 'audio' };
+    return { url: parsed.toString(), kind: body.kind === 'audio' ? 'audio' : 'video' };
   } catch {
     // A timeout, a refused connection, malformed JSON. All the same answer.
     return NONE;

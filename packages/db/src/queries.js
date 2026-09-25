@@ -1241,15 +1241,20 @@ export async function listCategories() {
  * genres, putting the empty ones first is the difference between looking stocked
  * and looking broken.
  */
-export async function listGenres({ category = null, limit = 500 } = {}) {
+export async function listGenres({ category = null, limit = 500, viewerId = null } = {}) {
   return sql`
-    select g.*, count(e.id) filter (where e.starts_at > now())::int as upcoming
+    select g.*, count(e.id) filter (where e.starts_at > now())::int as upcoming,
+           /* So a browse page can render the right button per row without a round
+              trip each. Same shape as subjectsForGenre above, and the same reason. */
+           (${viewerId}::uuid is not null and f.user_id is not null) as following
     from genres g
     left join event_genres eg on eg.genre_id = g.id
     left join events e on e.id = eg.event_id
+    left join follows f
+      on f.subject_type = 'genre' and f.subject_id = g.id and f.user_id = ${viewerId}::uuid
     where g.active
       and (${category}::text is null or g.category = ${category})
-    group by g.id
+    group by g.id, f.user_id
     order by upcoming desc, g.priority, g.name
     limit ${limit}
   `;
@@ -1304,6 +1309,10 @@ const EVENT_COLUMNS = sql`
   e.name, e.short_name, e.summary, e.image_url, e.backdrop_url, e.url,
   e.venue, e.venue_region, e.tagline, e.rating, e.rating_count, e.trailer_url,
   e.detail, e.season, e.number, e.runtime_min,
+  /* The id, not only the slug. A row could link to the name it is about and could
+     not offer to follow it: the follow form posts an id, and the id stopped at the
+     query. Every list on the site was read-only for that one missing column. */
+  e.subject_id,
   s.slug as subject_slug, s.display_name as subject_name, s.kind as subject_kind,
   s.image_url as subject_image, s.backdrop_url as subject_backdrop,
   /*
