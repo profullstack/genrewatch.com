@@ -1008,6 +1008,33 @@ function initOwnChannelActions(root = document) {
  * watching", on a page showing no player at all.
  */
 
+/**
+ * The break machinery, on demand.
+ *
+ * Separate from the player bundle because the film path never loads that one --
+ * see the comment on `__genreAds`. Failing to load it must not stop playback:
+ * every caller treats a rejection as "no adverts this time" and plays the
+ * programme, which is the only defensible order of priority when the reader asked
+ * for one and not the other.
+ */
+function loadAdsBundle(src) {
+  if (!src) return Promise.reject(new Error('no ads bundle'));
+  if (window.__genreAds) return Promise.resolve(window.__genreAds);
+  if (window.__genreAdsLoading) return window.__genreAdsLoading;
+  window.__genreAdsLoading = new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = () =>
+      window.__genreAds ? resolve(window.__genreAds) : reject(new Error('no ads'));
+    el.onerror = () => {
+      window.__genreAdsLoading = null;
+      reject(new Error('could not load the adverts'));
+    };
+    document.head.append(el);
+  });
+  return window.__genreAdsLoading;
+}
+
 function loadPlayerBundle(src) {
   if (window.__genrePlayer) return Promise.resolve(window.__genrePlayer);
   if (window.__genrePlayerLoading) return window.__genrePlayerLoading;
@@ -1346,6 +1373,10 @@ function initPlayerSection(section) {
   const src = section.dataset.playerSrc;
   let stop = null;
   let stage = null;
+  // The break controller. It holds a timer and listeners on the media element, so
+  // a channel switched twice would otherwise leave two of them running against
+  // elements nobody can see -- the same leak the player handle exists to prevent.
+  let breaks = null;
   // The address of whatever is playing, under the picture. Torn down with the
   // stage, because it names the channel that stage is carrying and nothing else.
   let copyBar = null;
@@ -1368,6 +1399,11 @@ function initPlayerSection(section) {
   const teardown = () => {
     if (stop) stop();
     stop = null;
+    // Before the stage goes, not after: the controller reaches into it.
+    try {
+      breaks?.destroy();
+    } catch {}
+    breaks = null;
     stage?.remove();
     stage = null;
     copyBar?.remove();
@@ -1577,6 +1613,26 @@ function initPlayerSection(section) {
         copyBar.append(copy, hint);
         stage.after(copyBar);
       }
+
+      /*
+       * Breaks, on both paths.
+       *
+       * Awaited, and that is deliberate on the film path: `preroll` means the
+       * advert goes in FRONT of the programme, so the controller has to exist
+       * before anything is handed to the element. 4.5KB, already warm after the
+       * first press.
+       *
+       * Never allowed to fail the press. A reader who asked for a film and got an
+       * error because an advert would not download has been served the priorities
+       * backwards, so this swallows everything and plays the programme.
+       */
+      try {
+        const ads = await loadAdsBundle(section.dataset.adsSrc);
+        if (mine === generation) breaks = ads.startBreaks(stage, video, { live: !vod });
+      } catch {
+        breaks = null;
+      }
+      if (mine !== generation) return;
 
       // A file is handed to the element itself; only the TS path has a stream to
       // reconnect, so only it takes the notice channel.

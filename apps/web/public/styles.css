@@ -309,6 +309,14 @@ li.event time .d {
   margin-top: 0.3rem;
 }
 
+.row-follow {
+  justify-self: end;
+  white-space: nowrap;
+}
+.row-follow .small-btn {
+  font-size: 0.72rem;
+}
+
 .matchup {
   display: flex;
   flex-direction: column;
@@ -703,6 +711,10 @@ footer {
   li.event {
     grid-template-columns: 4.4rem 1fr;
     row-gap: 0.5rem;
+  }
+  li.event .row-follow {
+    grid-column: 2;
+    justify-self: end;
   }
   .topbar {
     padding: calc(0.75rem + env(safe-area-inset-top, 0px))
@@ -1599,6 +1611,15 @@ ul.genre-grid .meta {
   color: var(--muted);
   font-size: 0.78rem;
 }
+ul.genre-grid li .inline,
+ul.genre-grid li > a.small-btn {
+  align-self: flex-start;
+  margin-top: 0.4rem;
+}
+ul.genre-grid li .small-btn {
+  font-size: 0.72rem;
+}
+
 /* A genre with nothing coming is still worth listing and must not look like a
    genre that is busy. Dimmed rather than hidden: an empty page is a dead end, but
    a missing genre looks like a gap in the catalogue. */

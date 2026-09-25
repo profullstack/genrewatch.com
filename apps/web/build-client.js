@@ -12,6 +12,17 @@
 const BUNDLES = [
   ['webauthn-entry.js', 'vendor-webauthn.js'],
   ['player-entry.js', 'vendor-mpegts.js'],
+  /*
+   * Three rather than two, for the same reason there were two.
+   *
+   * The break machinery is 4.5KB once the house player is tree-shaken down to it,
+   * and the path that most needs it -- a film handed straight to the element -- is
+   * precisely the path that deliberately never loads the demuxer above. Putting
+   * breaks in that bundle would mean an iPhone downloading a transport stream
+   * demuxer it cannot use in order to see an advert before a film it can play
+   * natively. So: its own bundle, loaded whenever anything is about to play.
+   */
+  ['ads-entry.js', 'vendor-ads.js'],
 ];
 
 for (const [entry, name] of BUNDLES) {

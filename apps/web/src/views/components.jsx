@@ -227,7 +227,23 @@ const CATEGORY_NAME = {
   space: 'Spaceflight',
 };
 
-export const EventRow = ({ event }) => (
+export const EventRow = ({
+  event,
+  // Whose follow state the row renders, and where a signed-out reader is returned
+  // to after signing in. Both belong to the page, not to the row.
+  user = null,
+  next = null,
+  /*
+   * Opt-in, and only for a list whose rows are about DIFFERENT names.
+   *
+   * On a name's own page every row is that same name, so a button per row is the
+   * one in the page header repeated a dozen times. The lists that earn it are the
+   * mixed ones -- today, a category, a genre, what is out in the next few hours --
+   * and those were exactly the pages a reader could scroll from top to bottom
+   * without finding anything to follow at all.
+   */
+  showFollow = false,
+}) => (
   <li class={`event ${event.category}${event.following ? ' followed' : ''}`}>
     <LocalTime at={event.starts_at} event={event} />
 
@@ -255,19 +271,60 @@ export const EventRow = ({ event }) => (
         <KindBadge kind={event.kind} />
       </span>
     </div>
+
+    {/* `following` is already the answer to exactly the right question here: it is
+        set when the viewer follows THIS ROW'S subject, which is the thing the button
+        follows. Nothing narrower is needed, unlike on the sibling brand where the
+        same flag also covers the competition. */}
+    {showFollow && event.subject_id ? (
+      <span class="row-follow">
+        <FollowButton
+          user={user}
+          subjectType="subject"
+          subjectId={event.subject_id}
+          following={event.following}
+          next={next}
+          label={event.subject_name}
+        />
+      </span>
+    ) : null}
   </li>
 );
 
-export const EventList = ({ events, emptyText }) =>
+export const EventList = ({ events, emptyText, user = null, next = null, showFollow = false }) =>
   events.length === 0 ? (
     <p class="empty">{emptyText ?? 'Nothing scheduled.'}</p>
   ) : (
     <ul class="events">
       {events.map((e) => (
-        <EventRow event={e} />
+        <EventRow event={e} user={user} next={next} showFollow={showFollow} />
       ))}
     </ul>
   );
+
+/**
+ * One genre in a browse grid.
+ *
+ * Extracted because the same markup was written twice -- once on /genres and once
+ * on a category page -- and both copies listed followable genres with no way to
+ * follow one. A reader had to open a genre to find its button, which is the click
+ * the grid exists to save.
+ */
+export const GenreRow = ({ genre, user, next }) => (
+  <li class={genre.upcoming > 0 ? 'genre' : 'genre quiet'}>
+    <a href={`/genres/${genre.slug}`}>{genre.name}</a>
+    <span class="meta">
+      {genre.upcoming > 0 ? `${genre.upcoming.toLocaleString('en-US')} coming` : 'quiet'}
+    </span>
+    <FollowButton
+      user={user}
+      subjectType="genre"
+      subjectId={genre.id}
+      following={genre.following}
+      next={next}
+    />
+  </li>
+);
 
 /** One followable name in a picker: a show, a film, an artist, an agency. */
 export const SubjectRow = ({ subject, user, next }) => (
