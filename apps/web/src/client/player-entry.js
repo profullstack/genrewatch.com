@@ -17,6 +17,7 @@
  * alternative is ffmpeg per viewer, which is a fleet rather than a feature.
  */
 
+import { attachAds } from '@profullstack/player';
 import mpegts from 'mpegts.js';
 import { unplayableReason } from './codecs.js';
 import { isTvBrowser, playerConfig } from './tv.js';
@@ -76,6 +77,15 @@ const STALL_LIMIT = 3;
  *   player is working through. NOT terminal -- null clears it again.
  * @returns {() => void} tears the player down AND drops the connection
  */
+/**
+ * How often a break comes round.
+ *
+ * TEMPORARY: 10 seconds while the ad network is being tested end to end. Nobody
+ * would ship an advert every ten seconds; this goes back to 300 once the fills,
+ * the impressions and the playback have been watched working.
+ */
+const AD_EVERY_SECONDS = 10;
+
 function attach(video, url, onError, onNotice = () => {}) {
   const config = playerConfig(isTvBrowser(navigator.userAgent));
 
@@ -342,8 +352,66 @@ function attach(video, url, onError, onNotice = () => {}) {
 
   start();
 
+  // Adverts between programmes on a live channel.
+  //
+  // attachAds is the house player's own break machinery, so nothing about
+  // scheduling or playback is reimplemented here — this file already has enough
+  // of its own recovery logic without a second timer competing with it. What it
+  // needs is a source of creatives, and that is the server route: it proxies the
+  // ad network, which runs the auction and meters the impression.
+  //
+  // A break that cannot be filled does not happen. Every failure path on the
+  // server answers with a null url and `next` returns null, which attachAds
+  // treats as "no advert" — the channel keeps playing, which is the only
+  // acceptable outcome on something live.
+  // Wrapped, because playback must not depend on the advert layer.
+  //
+  // attachAds builds DOM, so it needs a document; in a headless run there is
+  // none and it throws, which took the whole stream down with it — every
+  // reconnect test failed on a ReferenceError before this guard existed. The
+  // same reasoning holds in a browser: a break that cannot be set up is a break
+  // that does not happen, never a channel that does not play.
+  let ads = null;
+  // Only where there is a document to build into.
+  //
+  // attachAds creates DOM and starts an interval. Without the check it threw in
+  // any headless run — taking the whole stream down, since this is the same
+  // call path playback uses — and the try/catch that first fixed that still
+  // left the interval alive in runs that never tear a player down, which hung
+  // the suite rather than failing it. Feature-detecting means no timer is ever
+  // created where nothing can watch an advert.
+  //
+  // The catch stays for the browser case: a break that cannot be set up is a
+  // break that does not happen, never a channel that does not play.
+  if (typeof document !== 'undefined') {
+    try {
+      ads = attachAds(video.parentElement ?? video, video, {
+        everySeconds: AD_EVERY_SECONDS,
+        next: async () => {
+          try {
+            const answer = await fetch('/api/ads/next', {
+              headers: { accept: 'application/json' },
+            });
+            if (!answer.ok) return null;
+            const body = await answer.json();
+            return body && typeof body.url === 'string' ? { url: body.url, kind: body.kind } : null;
+          } catch {
+            return null;
+          }
+        },
+        onError: (error) => console.warn('advert failed', error),
+      });
+    } catch (error) {
+      console.warn('adverts unavailable', error);
+    }
+  }
+
   return () => {
     stopped = true;
+    // Before the element is released: the break controller holds a timer and
+    // listeners on it, and a channel switched twice would otherwise leave two
+    // of them running against a video nobody is watching.
+    ads?.destroy();
     clearTimers();
     video.removeEventListener('playing', onPlaying);
     destroyPlayer();
