@@ -1748,7 +1748,8 @@ app.post('/api/webhooks/coinpay', async (c) => {
   });
   if (!ok) return c.json({ error: 'bad signature' }, 401);
 
-  const result = await pay.settleWebhook(JSON.parse(raw), {
+  const payload = JSON.parse(raw);
+  const result = await pay.settleWebhook(payload, {
     grant: async (tx, { meta, payment }) => {
       /*
        * A settled payload is an amount and a status; nothing in it says what was
@@ -1807,7 +1808,10 @@ app.post('/api/webhooks/coinpay', async (c) => {
    * here leaves /live showing "set up my channels", which calls the same thing.
    */
   if (result.granted && result.result?.kind === live.LIVE_PASS_KIND) {
-    const meta = JSON.parse(raw)?.metadata ?? {};
+    // Through readWebhook, never `payload.metadata`: that is the flat shape, and on
+    // every real (nested) webhook it is undefined, so the line was never set up and
+    // the log named nobody.
+    const { meta } = pay.readWebhook(payload);
     try {
       const outcome = await live.ensureLine(meta.user_id);
       console.log(`[live] pass for ${meta.user_id}: ${outcome.done?.join(', ') || outcome.reason}`);

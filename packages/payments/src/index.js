@@ -251,8 +251,19 @@ export function verifyWebhook({ rawBody, signatureHeader, toleranceSeconds = 300
  * A webhook fires for failures and cancellations too, and granting on any VERIFIED
  * webhook is the mistake this set exists to prevent: the signature proves the
  * message is genuine, never that it says yes.
+ *
+ * `forwarded` is here because CoinPay sends TWO events for one payment --
+ * payment.confirmed, then payment.forwarded once the funds have gone on to the
+ * merchant wallet -- and forwarded is strictly later than confirmed, so it is paid
+ * by definition. Leaving it out is not a harmless omission: CoinPay's durable
+ * retry queue (webhook_deliveries, backing off for about a day) is where a failed
+ * payment.forwarded waits, while a failed payment.confirmed is only re-sent while
+ * the monitor still sees the payment as unsettled (about twelve minutes). A
+ * receiver that settles on confirmed alone loses a real payment for good once
+ * confirmed has failed. Both count; every grant is idempotent per payment, so
+ * receiving both grants once.
  */
-const SETTLED = new Set(['paid', 'completed', 'confirmed', 'succeeded', 'settled']);
+const SETTLED = new Set(['paid', 'completed', 'confirmed', 'forwarded', 'succeeded', 'settled']);
 
 /**
  * Pull the payment out of a webhook body, whichever envelope it arrived in.
@@ -332,6 +343,11 @@ export async function settleWebhook(payload, { grant } = {}) {
     `;
 
     if (!SETTLED.has(status)) return { settled: false, granted: false, reason: `status ${status}` };
+    // No row means no checkout of ours: nothing recorded what was charged, so there
+    // is nothing safe to grant against. Said plainly rather than handing `grant` an
+    // undefined payment -- which either threw (a 500, retried for a day) or, worse,
+    // granted with a null payment id that no unique index can dedupe on.
+    if (!payment) return { settled: false, granted: false, reason: `unknown payment ${ref}` };
     if (!grant) return { settled: true, granted: false, reason: 'nothing to grant' };
 
     const result = await grant(tx, { meta, payment, payload });

@@ -123,7 +123,7 @@ describe('settlement gating', () => {
   };
 
   test('a settled status reaches the grant', async () => {
-    for (const good of ['paid', 'completed', 'confirmed', 'succeeded', 'settled']) {
+    for (const good of ['paid', 'completed', 'confirmed', 'forwarded', 'succeeded', 'settled']) {
       const { result, granted } = await settleWith(good);
       expect(granted).toBe(1);
       expect(result.granted).toBe(true);
@@ -188,13 +188,38 @@ describe('settlement gating', () => {
     expect(result.settled).toBe(false);
   });
 
+  test('a settled payment we never checked out is answered, not thrown', async () => {
+    // No row of ours means nothing recorded what was charged. It used to reach the
+    // grant with an undefined payment and answer 500, which CoinPay retries for a day.
+    const noRow = () => [];
+    noRow.begin = async (fn) => fn(() => []);
+    configurePayments({
+      sql: noRow,
+      coinpay: { webhookSecret: 'whsec_test_secret', enabled: true },
+      siteUrl: 'https://example.test',
+    });
+    let called = 0;
+    const result = await settleWebhook(nested('forwarded'), {
+      grant: async () => {
+        called++;
+        return { ok: true };
+      },
+    });
+    expect(called).toBe(0);
+    expect(result).toMatchObject({
+      settled: false,
+      granted: false,
+      reason: 'unknown payment pay_1',
+    });
+  });
+
   test('the list of statuses that count as paid has not quietly grown', async () => {
     const src = await Bun.file(
       new URL('../packages/payments/src/index.js', import.meta.url).pathname,
     ).text();
     const listed = src.slice(src.indexOf('const SETTLED = new Set('));
     expect(listed.slice(0, listed.indexOf(']'))).toContain(
-      "'paid', 'completed', 'confirmed', 'succeeded', 'settled'",
+      "'paid', 'completed', 'confirmed', 'forwarded', 'succeeded', 'settled'",
     );
   });
 });
