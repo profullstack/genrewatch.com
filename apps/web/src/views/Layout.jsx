@@ -1,6 +1,11 @@
 import { config, dataSource, network } from '@genre/config';
+import { footerHtml } from '@profullstack/footer';
+import { raw } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
 import { serialise } from '../lib/jsonld.js';
+
+/** @profullstack/footer, rendered on the server (it caches its template for an hour). */
+const ProfullstackFooter = async () => raw(await footerHtml({ site: 'https://genrewatch.com/' }));
 
 /**
  * The single HTML shell. Everything renders through here, including the signed-out
@@ -292,33 +297,10 @@ export const Layout = (props) => (
           ))}
           {' · '}Data furnished by <a href={dataSource.url}>{dataSource.name}</a>
         </p>
-        {/* The Profullstack OpenWebring. `from` must be this site's own apex
-            address or the ring sends the reader to a random member. */}
-        <nav class="webring muted" aria-label="Profullstack webring">
-          <a
-            href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2Fgenrewatch.com%2F"
-            rel="prev"
-            title="Previous site"
-          >
-            {'<<'}
-          </a>{' '}
-          <a href="https://rssamplifier.com/ring/profullstack">Profullstack</a>{' '}
-          <a
-            href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2Fgenrewatch.com%2F"
-            rel="next"
-            title="Next site"
-          >
-            {'>>'}
-          </a>{' '}
-          <a
-            href="https://rssamplifier.com/ring/profullstack/random?from=https%3A%2F%2Fgenrewatch.com%2F"
-            title="Random site"
-            aria-label="Random site"
-          >
-            {'⚄'}
-          </a>
-        </nav>
       </footer>
+      {/* The bottom bar: @profullstack/footer, the same on every Profullstack
+          site (copyright and the webring), rendered here per request. */}
+      <ProfullstackFooter />
 
       {/* Registers the service worker and wires the push opt-in. Everything on the
           site works without this file -- it only adds notifications. */}

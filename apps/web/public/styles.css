@@ -681,6 +681,12 @@ footer {
   text-align: center;
 }
 
+/* @profullstack/footer follows the site footer and brings its own padding; only
+   the home-indicator inset is ours to add. */
+footer.pfs-footer {
+  padding: 0 0 env(safe-area-inset-bottom, 0px);
+}
+
 .inline {
   display: inline;
 }
