@@ -298,6 +298,7 @@ export const Layout = (props) => (
           <a
             href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2Fgenrewatch.com%2F"
             rel="prev"
+            title="Previous site"
           >
             {'<<'}
           </a>{' '}
@@ -305,8 +306,16 @@ export const Layout = (props) => (
           <a
             href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2Fgenrewatch.com%2F"
             rel="next"
+            title="Next site"
           >
             {'>>'}
+          </a>{' '}
+          <a
+            href="https://rssamplifier.com/ring/profullstack/random?from=https%3A%2F%2Fgenrewatch.com%2F"
+            title="Random site"
+            aria-label="Random site"
+          >
+            {'⚄'}
           </a>
         </nav>
       </footer>
