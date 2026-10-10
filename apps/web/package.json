@@ -18,13 +18,14 @@
     "@genre/payments": "workspace:*",
     "@genre/playlists": "workspace:*",
     "@genre/queue": "workspace:*",
+    "@profullstack/footer": "latest",
+    "@profullstack/leaderboard": "^0.3.0",
     "@profullstack/notifications": "^0.1.0",
     "@profullstack/player": "0.12.0",
+    "@profullstack/watchdog": "^0.2.0",
     "@profullstack/x402-gateway": "^0.7.0",
     "@simplewebauthn/browser": "^13.2.0",
     "hono": "^4.10.3",
-    "mpegts.js": "1.8.2",
-    "@profullstack/leaderboard": "^0.3.0",
-    "@profullstack/watchdog": "^0.2.0"
+    "mpegts.js": "1.8.2"
   }
 }
