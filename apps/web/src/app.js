@@ -212,7 +212,7 @@ const crawlGateway = createGateway({
   // so '/leaderboard' alone would open the index and still charge for every
   // board on it. An agent that hits a 402 on the page ranking its own spend
   // cannot read the case for buying a pass.
-  openPaths: ['/leaderboard', '/leaderboard/'],
+  openPaths: ['/leaderboard', '/leaderboard/', '/.well-known/openwebring.json'],
   /*
    * Lightpanda is a headless browser sold to scrapers, and on 2026-09-02 a
    * fleet of it fetched 8,500 pages from the sibling site in a day, from 104
@@ -3385,6 +3385,20 @@ app.get('/manifest.webmanifest', (c) =>
  * at, and /api/ answers callers rather than readers.
  */
 app.get('/robots.txt', (c) => c.text(robotsTxt()));
+
+/**
+ * The OpenWebring descriptor (logicsrc.com/openwebring): this site's membership
+ * in the Profullstack ring.
+ */
+app.get('/.well-known/openwebring.json', (c) => {
+  c.header('cache-control', 'public, max-age=3600');
+  return c.json({
+    openwebring: '0.1',
+    site: { url: 'https://genrewatch.com/', name: 'GenreWatch' },
+    made_by: 'both',
+    rings: [{ ring: 'https://rssamplifier.com/ring/profullstack', slug: 'genrewatch-com' }],
+  });
+});
 
 /**
  * The OpenAccess descriptor (logicsrc.com/openaccess): what this site is, where
