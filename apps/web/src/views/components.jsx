@@ -3,6 +3,19 @@ import { config } from '@genre/config';
 /** Shared bits of markup. Kept small and dumb on purpose. */
 
 /**
+ * TVmaze purges `original_untouched` poster files over time, so stored URLs for
+ * shows 404 while the same image at `medium_portrait` is still served. Every
+ * poster here is shown as a thumbnail (<= 90px), so serve the medium file.
+ */
+export const posterUrl = (u) =>
+  typeof u === 'string'
+    ? u.replace(
+        'static.tvmaze.com/uploads/images/original_untouched/',
+        'static.tvmaze.com/uploads/images/medium_portrait/',
+      )
+    : u;
+
+/**
  * Times are rendered in UTC on the server and localised in the browser.
  *
  * Genre pages are cached in Redis and served byte-identical to everyone, so a
@@ -330,7 +343,7 @@ export const GenreRow = ({ genre, user, next }) => (
 export const SubjectRow = ({ subject, user, next }) => (
   <li class="subject">
     {subject.image_url ? (
-      <img src={subject.image_url} alt="" loading="lazy" width="28" height="28" />
+      <img src={posterUrl(subject.image_url)} alt="" loading="lazy" width="28" height="28" />
     ) : (
       <span class="subject-blank" />
     )}
