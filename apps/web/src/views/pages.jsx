@@ -9,6 +9,7 @@ import {
   GenreChips,
   GenreRow,
   LocalTime,
+  posterUrl,
   StartTime,
   SubjectRow,
   whenLabel,
@@ -388,7 +389,7 @@ export const SubjectPage = ({
     <header class="page-head">
       <div class="subject-head">
         {subject.image_url ? (
-          <img src={subject.image_url} alt="" width="64" height="64" loading="lazy" />
+          <img src={posterUrl(subject.image_url)} alt="" width="64" height="64" loading="lazy" />
         ) : null}
         <div>
           <h1>{subject.display_name}</h1>
@@ -974,7 +975,7 @@ export const EventPage = ({
         {event.image_url || event.subject_image ? (
           <img
             class="event-poster"
-            src={event.image_url ?? event.subject_image}
+            src={posterUrl(event.image_url ?? event.subject_image)}
             alt=""
             loading="lazy"
             decoding="async"
@@ -1272,7 +1273,13 @@ export const SearchPage = ({ user, term, category, results, owned }) => (
               {results.subjects.map((r) => (
                 <li class="result">
                   {r.image_url ? (
-                    <img src={r.image_url} alt="" loading="lazy" width="60" height="90" />
+                    <img
+                      src={posterUrl(r.image_url)}
+                      alt=""
+                      loading="lazy"
+                      width="60"
+                      height="90"
+                    />
                   ) : (
                     <span class="subject-blank" />
                   )}
@@ -1346,7 +1353,13 @@ export const SearchPage = ({ user, term, category, results, owned }) => (
               {results.events.map((e) => (
                 <li class="result">
                   {e.image_url ? (
-                    <img src={e.image_url} alt="" loading="lazy" width="60" height="90" />
+                    <img
+                      src={posterUrl(e.image_url)}
+                      alt=""
+                      loading="lazy"
+                      width="60"
+                      height="90"
+                    />
                   ) : (
                     <span class="subject-blank" />
                   )}
