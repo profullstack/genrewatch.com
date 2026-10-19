@@ -460,8 +460,8 @@ describe('what the page offers, and to whom', () => {
       new URL('../apps/web/src/views/Layout.jsx', import.meta.url).pathname,
       'utf8',
     );
-    expect(layout).not.toContain('vendor-mpegts.js');
-    expect(view).toContain("data-player-src={assetUrl('vendor-mpegts.js')}");
+    expect(layout).not.toContain('vendor-player-ts.js');
+    expect(view).toContain("data-player-src={assetUrl('vendor-player-ts.js')}");
   });
 
   test('navigating away stops the stream rather than orphaning it', () => {

@@ -3497,10 +3497,10 @@ const STATIC_FILES = [
   ['/diag.js', 'diag.js', 'text/javascript'],
   ['/push-check.js', 'push-check.js', 'text/javascript'],
   ['/vendor-webauthn.js', 'vendor-webauthn.js', 'text/javascript'],
-  // The transport-stream demuxer. Served like the others but never linked from
+  // The house player's transport stream engine. Served like the others but never linked from
   // the layout: it is a few hundred kilobytes and app.js injects the tag only
   // when somebody actually presses Play.
-  ['/vendor-mpegts.js', 'vendor-mpegts.js', 'text/javascript'],
+  ['/vendor-player-ts.js', 'vendor-player-ts.js', 'text/javascript'],
   // The break machinery, in a bundle of its own. 4.5KB, injected by app.js on the
   // same press -- including on the path that never loads the demuxer above, which
   // is the one that plays a film.
