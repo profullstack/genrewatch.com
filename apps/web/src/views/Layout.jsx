@@ -29,6 +29,8 @@ export const Layout = (props) => (
       {/* Matches the stylesheet's ground so browser chrome and the PWA splash do
           not flash white before a dark page paints. */}
       <meta name="theme-color" content="#12161f" />
+      {/* ad.network site verification: it reads this page's raw HTML for the code. */}
+      {props.adNetwork ? <meta name="ad.network" content={props.adNetwork} /> : null}
       <link rel="manifest" href="/manifest.webmanifest" />
 
       {/* Deliberately NOT linking the 1254x1254 /favicon.png the generator emits:

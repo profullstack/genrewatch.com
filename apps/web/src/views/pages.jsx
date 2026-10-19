@@ -1,3 +1,4 @@
+import { config } from '@genre/config';
 import { assetUrl } from '../lib/asset-version.js';
 import { watchListNode } from '../lib/jsonld.js';
 import { WATCH_KIND_LABEL, watchSourcesOf } from '../lib/watch-sources.js';
@@ -117,7 +118,11 @@ const CategoryNav = ({ current }) => (
 );
 
 export const Landing = ({ user, today }) => (
-  <Layout title="Know before it drops" user={user}>
+  <Layout
+    title="Know before it drops"
+    user={user}
+    adNetwork={config.ads.network.enabled ? config.ads.network.code : null}
+  >
     <section class="hero">
       <h1>Know before it drops.</h1>
       <p class="lede">
@@ -137,6 +142,12 @@ export const Landing = ({ user, today }) => (
     </section>
 
     <CategoryNav />
+
+    {/* Under the hero and the category nav, above the day's list: in the
+        content, never against the footer. The one unit on this page. */}
+    {config.ads.network.enabled ? (
+      <Ad slot={config.ads.network.slot} adNetwork={config.ads.network.code} />
+    ) : null}
 
     <section>
       <h2>Today</h2>

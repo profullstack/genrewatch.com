@@ -663,6 +663,23 @@ export const config = {
     get enabled() {
       return Boolean(this.slot);
     },
+    /**
+     * ad.network unit for the home page: its claim code and its own slot. Same
+     * no-default rule as the slot above. ad.network verifies the site by
+     * fetching the raw HTML of the home page for the code, so it is rendered
+     * into a <meta> as well as onto the unit.
+     */
+    network: {
+      get code() {
+        return opt('AD_NETWORK_CODE');
+      },
+      get slot() {
+        return opt('AD_NETWORK_SLOT');
+      },
+      get enabled() {
+        return Boolean(this.code && this.slot);
+      },
+    },
   },
 
   cache: {
