@@ -674,17 +674,17 @@ footer {
   border-top: 1px solid var(--line);
   /* The bottom inset clears the home indicator, which otherwise sits over the
      footer links for the same reason the status bar sat over the nav. */
-  padding: 1.5rem max(1.15rem, env(safe-area-inset-right, 0px))
-    calc(1.5rem + env(safe-area-inset-bottom, 0px)) max(1.15rem, env(safe-area-inset-left, 0px));
+  padding: 1.5rem max(1.15rem, env(safe-area-inset-right, 0px)) 0.75rem
+    max(1.15rem, env(safe-area-inset-left, 0px));
   color: var(--muted);
   font-size: 0.82rem;
   text-align: center;
 }
 
-/* @profullstack/footer follows the site footer and brings its own padding; only
-   the home-indicator inset is ours to add. */
-footer.pfs-footer {
-  padding: 0 0 env(safe-area-inset-bottom, 0px);
+/* The pit.world network footer follows the site footer and brings its own
+   padding; only the home-indicator inset is ours to add. */
+nav[data-pit-footer] {
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
 }
 
 .inline {

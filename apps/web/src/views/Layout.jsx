@@ -1,11 +1,11 @@
-import { config, dataSource, network } from '@genre/config';
-import { footerHtml } from '@profullstack/footer';
+import { config, dataSource } from '@genre/config';
 import { raw } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
 import { serialise } from '../lib/jsonld.js';
+import { pitFooterHtml } from '../lib/pit-footer.js';
 
-/** @profullstack/footer, rendered on the server (it caches its template for an hour). */
-const ProfullstackFooter = async () => raw(await footerHtml({ site: 'https://genrewatch.com/' }));
+/** The pit.world network footer, last in <body>; nothing when pit.world is unreachable. */
+const PitFooter = async () => raw(await pitFooterHtml());
 
 /**
  * The single HTML shell. Everything renders through here, including the signed-out
@@ -244,15 +244,14 @@ export const Layout = (props) => (
       <main id="main">{props.children}</main>
 
       <footer>
-        <p>
-          GenreWatch is free. Times are shown in your own time zone (
-          <span data-tz-label>your device</span>).
-        </p>
-        {/* The providers this catalogue is actually built from. The sports wording
-            here was inherited from the sibling site and named ESPN, which supplies
-            nothing to this one. TMDB's terms require the disclaimer verbatim. */}
         <p class="muted">
-          Catalogue data from{' '}
+          <a href="/about">About</a> · <a href="/feeds">RSS &amp; calendars</a> ·{' '}
+          <a href="/api/v1">Public API</a>
+        </p>
+        {/* The providers this catalogue is actually built from. TMDB's terms
+            require the disclaimer verbatim. */}
+        <p class="muted">
+          © {new Date().getFullYear()} GenreWatch · Catalogue data from{' '}
           <a href="https://www.themoviedb.org" rel="noopener nofollow">
             TMDB
           </a>
@@ -276,33 +275,10 @@ export const Layout = (props) => (
           <a href="https://developer.imdb.com/non-commercial-datasets/" rel="noopener nofollow">
             IMDb
           </a>
-          . This product uses the TMDB API but is not endorsed or certified by TMDB.
-        </p>
-        <p class="muted">
-          <a href="/genres">Browse genres</a> · <a href="/about">About</a> ·{' '}
-          <a href="/feeds">RSS &amp; calendars</a> · <a href="/api/v1">Public API</a>
-        </p>
-        {/* The rest of the network, on every page of every site in it. This one
-            is named but not linked: a link to where you already are is noise,
-            while leaving it out entirely would make each footer a different
-            list and lose the fact that these three are one shop. */}
-        <p class="muted">
-          {network.map((site, i) => (
-            <>
-              {i ? ' · ' : null}
-              {site.self ? (
-                <span aria-current="true">{site.name}</span>
-              ) : (
-                <a href={site.url}>{site.name}</a>
-              )}
-            </>
-          ))}
-          {' · '}Data furnished by <a href={dataSource.url}>{dataSource.name}</a>
+          , furnished by <a href={dataSource.url}>{dataSource.name}</a>. This product uses the TMDB
+          API but is not endorsed or certified by TMDB.
         </p>
       </footer>
-      {/* The bottom bar: @profullstack/footer, the same on every Profullstack
-          site (copyright and the webring), rendered here per request. */}
-      <ProfullstackFooter />
 
       {/* Registers the service worker and wires the push opt-in. Everything on the
           site works without this file -- it only adds notifications. */}
@@ -321,6 +297,7 @@ export const Layout = (props) => (
         run after the document is parsed or it finds nothing to fill.
       */}
       {config.ads.enabled ? <script src="https://crawlproof.com/ad.js" defer /> : null}
+      <PitFooter />
     </body>
   </html>
 );
