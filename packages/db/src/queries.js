@@ -839,22 +839,39 @@ export async function saveEventDetail(rows) {
  *
  * So: released films first, most recent first, then the unreleased ones by how
  * soon they open.
+ *
+ * Ahead of all of that, a film somebody follows -- and on a shorter cycle. Ten
+ * days suits the catalogue at large, but a follower is waiting on exactly this
+ * answer: a studio dates a streaming release two or three weeks out, so a ten-day
+ * stamp can spend half the notice before we notice. Followed films are a small
+ * slice of the catalogue, so the shorter cycle costs a few requests a pass.
  */
-export async function eventsNeedingDigitalCheck({ limit = 80, staleDays = 10 } = {}) {
+export async function eventsNeedingDigitalCheck({
+  limit = 80,
+  staleDays = 10,
+  followedStaleDays = 2,
+} = {}) {
   return sql`
-    select id, provider_key, subject_id, name, summary, image_url, backdrop_url,
-           url, rating, rating_count
-    from events
-    where provider = 'tmdb'
-      and kind = 'release'
-      and provider_key like 'tmdb:release:%'
-      and starts_at > now() - interval '9 months'
-      and (digital_checked_at is null
-           or digital_checked_at < now() - make_interval(days => ${staleDays}))
+    select e.id, e.provider_key, e.subject_id, e.name, e.summary, e.image_url,
+           e.backdrop_url, e.url, e.rating, e.rating_count
+    from events e
+    cross join lateral (
+      select exists (select 1 from follows f
+                      where f.subject_type = 'subject' and f.subject_id = e.subject_id)
+        as followed
+    ) fw
+    where e.provider = 'tmdb'
+      and e.kind = 'release'
+      and e.provider_key like 'tmdb:release:%'
+      and e.starts_at > now() - interval '9 months'
+      and (e.digital_checked_at is null
+           or e.digital_checked_at < now() - make_interval(days =>
+                case when fw.followed then ${followedStaleDays}::int else ${staleDays}::int end))
     order by
-      case when starts_at <= now() then 0 else 1 end,
-      case when starts_at <= now() then starts_at end desc nulls last,
-      starts_at
+      fw.followed desc,
+      case when e.starts_at <= now() then 0 else 1 end,
+      case when e.starts_at <= now() then e.starts_at end desc nulls last,
+      e.starts_at
     limit ${limit}
   `;
 }
@@ -1377,6 +1394,27 @@ export async function upcomingForSubject(subjectId, { limit = 60, viewerId = nul
  * Bounded tightly on purpose. A show with fourteen seasons has hundreds of these
  * and the page is not an archive -- it is "what is this, and can I watch it".
  */
+/**
+ * A film's three windows -- cinemas, rent or buy, each subscription service.
+ *
+ * Read on its own rather than picked out of the upcoming and past lists, which
+ * are capped and split at "now": a film whose cinema date is three months back
+ * and whose streaming date is next week has its two halves in different lists,
+ * and the page needs them side by side, including the ones not dated yet.
+ */
+export async function releaseWindowsForSubject(subjectId) {
+  return sql`
+    select e.id, e.provider_key, e.starts_at, e.venue, e.state
+    from events e
+    where e.subject_id = ${subjectId}
+      and e.provider = 'tmdb'
+      and (e.provider_key like 'tmdb:release:%'
+           or e.provider_key like 'tmdb:digital:%'
+           or e.provider_key like 'tmdb:stream:%')
+    order by e.starts_at
+  `;
+}
+
 export async function pastForSubject(subjectId, { limit = 12, viewerId = null } = {}) {
   return sql`
     select ${EVENT_COLUMNS},
@@ -1435,7 +1473,7 @@ export async function scheduleForDay({ day, category = null, limit = 300, viewer
 
 export async function getEvent(eventId) {
   const [row] = await sql`
-    select ${EVENT_COLUMNS}, e.provider, e.subject_id, s.url as subject_url,
+    select ${EVENT_COLUMNS}, e.provider, e.provider_key, e.subject_id, s.url as subject_url,
            s.description as subject_description,
            -- One genre name, for matching a reader's own 24/7 genre channels.
            -- The first alphabetically rather than "the" genre: there is no primary
@@ -1996,6 +2034,75 @@ export async function followersOfEventPage({
       on (f.subject_type = 'subject' and f.subject_id = e.subject_id)
       or (f.subject_type = 'genre'
           and f.subject_id in (select genre_id from event_genres where event_id = e.id))
+    where e.id = ${eventId} and f.user_id > ${after}::uuid
+    order by f.user_id
+    limit ${limit}
+  `;
+}
+
+/* ----------------------------------------------------------- announcements -- */
+
+/**
+ * The offset an announcement is filed under in reminder_deliveries.
+ *
+ * Reminders are keyed (event, user, offset, channel), and an offset is minutes
+ * BEFORE the event, so no real reminder is ever negative. Borrowing -1 gives an
+ * announcement the same claim-before-send dedupe as a reminder without a second
+ * delivery table to keep in step with the first.
+ */
+export const ANNOUNCE_OFFSET = -1;
+
+/**
+ * A film's release windows that have been dated and not yet announced.
+ *
+ * Only the three windows -- cinemas, rent or buy, a service. A new TV episode is
+ * the next row of a schedule the follower already has; a streaming date is news.
+ * `recent` is false for a window that opened more than a fortnight ago: that is a
+ * back-catalogue date filled in late, and "it came out in March" is not an alert,
+ * so the scan stamps it without telling anyone.
+ */
+export async function eventsToAnnounce({ limit = 500 } = {}) {
+  return sql`
+    select e.id, e.starts_at, e.provider_key,
+           e.starts_at > now() - interval '14 days' as recent,
+           exists (select 1 from follows f
+                    where f.subject_type = 'subject' and f.subject_id = e.subject_id)
+             as followed
+    from events e
+    where e.announced_at is null
+      and e.provider = 'tmdb'
+      and (e.provider_key like 'tmdb:release:%'
+           or e.provider_key like 'tmdb:digital:%'
+           or e.provider_key like 'tmdb:stream:%')
+    order by e.id
+    limit ${limit}
+  `;
+}
+
+export async function markAnnounced(eventIds) {
+  if (eventIds.length === 0) return;
+  await sql`
+    update events set announced_at = now()
+    where id = any(${pgArray(eventIds)}::bigint[])
+  `;
+}
+
+/**
+ * Followers of the TITLE only, for an announcement.
+ *
+ * A reminder also goes to genre followers, which is right for "a horror film opens
+ * tomorrow". An announcement is not: every horror film gaining a rent-or-buy date
+ * would buzz everyone who follows horror several times a day.
+ */
+export async function subjectFollowersOfEventPage({
+  eventId,
+  after = '00000000-0000-0000-0000-000000000000',
+  limit = 500,
+}) {
+  return sql`
+    select distinct f.user_id
+    from events e
+    join follows f on f.subject_type = 'subject' and f.subject_id = e.subject_id
     where e.id = ${eventId} and f.user_id > ${after}::uuid
     order by f.user_id
     limit ${limit}

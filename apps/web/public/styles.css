@@ -1719,6 +1719,29 @@ time.line.undated {
   color: var(--muted);
 }
 
+/* A film's three windows, side by side, with the undated ones said out loud. */
+.windows {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.25rem;
+  margin: 0.5rem 0 0.75rem;
+}
+.windows dt {
+  color: var(--muted);
+}
+.windows dd {
+  margin: 0;
+}
+.windows .pending {
+  color: var(--muted);
+  font-style: italic;
+}
+.windows-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+  max-width: 62ch;
+}
+
 /* Kind badges. Deliberately quiet: they label the exception, not the rule, and
    "episode" is never badged at all. */
 .badge.kind-premiere,

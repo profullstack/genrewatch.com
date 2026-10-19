@@ -68,7 +68,41 @@ async function runScan() {
   // a later tick and being deduplicated away. Logging them as queued work makes a
   // quiet scanner look like a busy one.
   if (matched) log(`scan matched ${matched} due (event, offset) pair(s)`);
+  await runAnnounce();
   return matched;
+}
+
+/**
+ * Tell a film's followers the moment one of its windows is dated.
+ *
+ * The reminders above fire the day before and the day of, which is only half of
+ * "tell me when I can stream it": the other half is hearing that a date exists
+ * at all, weeks out, when the studio announces it. Two writers create these rows
+ * (the TMDB digital pass and the nichedb mirror), so this reads the table rather
+ * than hooking either of them.
+ *
+ * Every candidate is stamped, followed or not, so the set stays small and the
+ * scan stays one indexed read on a quiet tick. The fan-out job id is
+ * deterministic, so a scan that runs twice before the stamp lands is harmless.
+ */
+async function runAnnounce() {
+  const rows = await q.eventsToAnnounce();
+  if (rows.length === 0) return 0;
+
+  let queued = 0;
+  for (const e of rows) {
+    if (!e.followed || !e.recent) continue;
+    await queues.fanout.add(
+      'fanout',
+      { eventId: e.id, offsetMinutes: q.ANNOUNCE_OFFSET, startsAt: e.starts_at, announce: true },
+      { jobId: `fo-${e.id}-announce` },
+    );
+    queued++;
+  }
+  await q.markAnnounced(rows.map((e) => e.id));
+
+  if (queued) log(`announce: ${queued} newly dated window(s) of ${rows.length} new row(s)`);
+  return queued;
 }
 
 /* ------------------------------------------------------------------ fanout -- */
@@ -88,11 +122,12 @@ async function runScan() {
  * when someone follows the show mid-fan-out.
  */
 async function runFanout(job) {
-  const { eventId, offsetMinutes, startsAt, timed = true } = job.data;
+  const { eventId, offsetMinutes, startsAt, timed = true, announce = false } = job.data;
 
+  // An announcement has no moment to be late for: it is news whenever it lands.
   const dueAt = new Date(startsAt).getTime() - offsetMinutes * 60_000;
   const lateBy = (Date.now() - dueAt) / 1000;
-  if (lateBy > config.reminders.maxLatenessSeconds) {
+  if (!announce && lateBy > config.reminders.maxLatenessSeconds) {
     // Telling someone something starts in an hour, an hour after it started, is
     // worse than silence. A backlog is dropped rather than delivered wrong.
     log(`fanout ${eventId}/${offsetMinutes} dropped, ${Math.round(lateBy)}s late`);
@@ -104,7 +139,8 @@ async function runFanout(job) {
   let users = 0;
 
   for (;;) {
-    const rows = await q.followersOfEventPage({
+    const page = announce ? q.subjectFollowersOfEventPage : q.followersOfEventPage;
+    const rows = await page({
       eventId,
       after,
       limit: config.reminders.batchSize,
@@ -114,7 +150,7 @@ async function runFanout(job) {
     const userIds = rows.map((r) => r.user_id);
     await queues.batch.add(
       'batch',
-      { eventId, offsetMinutes, userIds, timed },
+      { eventId, offsetMinutes, userIds, timed, announce },
       { jobId: `bt-${eventId}-${offsetMinutes}-${after}` },
     );
 
@@ -139,7 +175,7 @@ async function runFanout(job) {
  * one -- the right way round for something that buzzes a phone.
  */
 async function runBatch(job) {
-  const { eventId, offsetMinutes, userIds, timed = true } = job.data;
+  const { eventId, offsetMinutes, userIds, timed = true, announce = false } = job.data;
   const event = await q.getEvent(eventId);
   if (!event) return { skipped: 'event-gone' };
 
@@ -155,8 +191,9 @@ async function runBatch(job) {
      * silently deliver nothing at all, because 1440 is never in offsets_minutes
      * and 60 is never in date_offsets_minutes.
      */
+    // An announcement is not an offset anyone picks; following the title is the ask.
     const wanted = timed ? t.offsets_minutes : t.date_offsets_minutes;
-    if (!wanted.includes(offsetMinutes)) continue;
+    if (!announce && !wanted.includes(offsetMinutes)) continue;
 
     for (const channel of t.channels) {
       if (channel === 'webpush' && t.push_subscriptions.length === 0) continue;
