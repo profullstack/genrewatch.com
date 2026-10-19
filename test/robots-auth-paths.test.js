@@ -146,7 +146,7 @@ describe('training crawlers that come in anyway are sold a pass', () => {
     const src = await readFile(APP, 'utf8');
     const wiring = src.slice(
       src.indexOf('createGateway({'),
-      src.indexOf('x402Gateway(crawlGateway)'),
+      src.indexOf('crawlGateway.handle(c.req.raw)'),
     );
     expect(wiring).toContain('denyCidrs: OVH_RANGES');
     expect(wiring).toContain('chargeSpoofedBrowsers: true');
@@ -160,7 +160,7 @@ describe('training crawlers that come in anyway are sold a pass', () => {
     const src = await readFile(APP, 'utf8');
     const wiring = src.slice(
       src.indexOf('createGateway({'),
-      src.indexOf('x402Gateway(crawlGateway)'),
+      src.indexOf('crawlGateway.handle(c.req.raw)'),
     );
     for (const key of [
       'config.coinpay.x402Key',

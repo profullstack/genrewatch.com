@@ -1,3 +1,4 @@
+import { SCRAPER_AGENTS, TRAINING_AGENTS } from '@profullstack/x402-gateway/agents';
 import { config } from '@genre/config';
 import { robotsTxt as gatewayRobots } from '@profullstack/x402-gateway/robots';
 
@@ -33,4 +34,4 @@ export {
 } from '@profullstack/x402-gateway/agents';
 
 export const robotsTxt = () =>
-  gatewayRobots({ siteUrl: config.siteUrl, disallow: DISALLOW, refused: ['AwarioBot'] });
+  gatewayRobots({ siteUrl: config.siteUrl, disallow: DISALLOW, refused: ['AwarioBot'], training: [...TRAINING_AGENTS, ...SCRAPER_AGENTS] });

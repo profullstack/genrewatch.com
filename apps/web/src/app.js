@@ -31,7 +31,8 @@ import {
 } from '@genre/playlists';
 import { connection } from '@genre/queue';
 import { vapidKeysFromEnv, vapidPublicKeyResponse } from '@profullstack/notifications/server';
-import { createGateway, isTrainingAgent } from '@profullstack/x402-gateway';
+import { createThrottle } from '@profullstack/throttle';
+import { createGateway } from '@profullstack/x402-gateway';
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { nextAdvert } from './lib/ads.js';
@@ -214,13 +215,13 @@ const crawlGateway = createGateway({
   // cannot read the case for buying a pass.
   openPaths: ['/leaderboard', '/leaderboard/', '/.well-known/openwebring.json'],
   /*
-   * Lightpanda is a headless browser sold to scrapers, and on 2026-09-02 a
-   * fleet of it fetched 8,500 pages from the sibling site in a day, from 104
-   * countries. It is not on any robots list because it reads none, and it
-   * self-identifies, which is all the gate needs. A scraper is a crawler that
-   * has not paid yet.
+   * Who pays is the gateway's own list since 0.8.0: training crawlers, SEO
+   * resellers, headless browsers that say so (Lightpanda fetched 8,500 pages
+   * here on 2026-09-02 from 104 countries) and desktop browser strings about
+   * two years behind their auto-updates, which is what a scraper's rotation
+   * pool looks like (Chrome 118-120 / Firefox 120-121 from thousands of
+   * residential addresses, 2026-10-19). Signed-in readers are exempt below.
    */
-  isPaidAgent: (ua) => isTrainingAgent(ua) || /lightpanda/i.test(ua),
   /*
    * Crawlers that do not say who they are.
    *
@@ -269,8 +270,30 @@ const crawlGateway = createGateway({
  * the cost is one upsert on a request that was going to be refused anyway,
  * and never awaited.
  */
+/*
+ * The site-wide allowance, on every route: 100 requests a minute per address,
+ * 600 for a signed-in reader, and over it a 402 with the same offer the
+ * gateway makes (@profullstack/throttle). The gateway alone only judges who a
+ * caller says it is; this is what stops one that says nothing and asks a lot.
+ * Real search crawlers (name and address agree) are never metered.
+ */
+const throttle = createThrottle({
+  gateway: crawlGateway,
+  limit: 100,
+  credential: { limit: 600, ceiling: 1200 },
+  credentialFrom: (request) => {
+    const m = (request.headers.get('cookie') ?? '').match(new RegExp(`${config.session.cookie}=([^;]+)`));
+    return m ? `session:${m[1]}` : null;
+  },
+  rules: [
+    { path: '/api/auth/', limit: 10, credential: false },
+    { path: '/auth/', limit: 10, credential: false },
+    { path: '/healthz', open: true },
+  ],
+});
+
 app.use('*', async (c, next) => {
-  const answer = await crawlGateway.handle(c.req.raw);
+  const answer = (await crawlGateway.handle(c.req.raw)) ?? (await throttle.handle(c.req.raw));
   if (!answer) return next();
   if (answer.status === 402)
     q.recordCrawlDemand(agentName(c.req.header('user-agent'))).catch(() => {});
