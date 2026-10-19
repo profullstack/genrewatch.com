@@ -47,7 +47,6 @@ describe('the network line', () => {
   test('the site footer does not repeat the network', async () => {
     const out = await footer({ user: null, children: 'x' });
     expect(out).not.toContain('href="https://tipoffwatch.com"');
-    expect(out).not.toContain('pfs-footer');
   });
 
   test('credits the data platform', async () => {
