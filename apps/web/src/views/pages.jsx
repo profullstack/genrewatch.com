@@ -283,6 +283,10 @@ export const CategoryPage = ({ user, category, genres, events }) => {
       <p class="muted">{meta.blurb}</p>
       <CategoryNav current={category} />
 
+      {/* Under the heading, at the top of the content: never at the bottom,
+          pressed against the footer. */}
+      <Ad />
+
       <section>
         <h2>Genres</h2>
         <ul class="genre-grid">
@@ -305,8 +309,6 @@ export const CategoryPage = ({ user, category, genres, events }) => {
           <a href={`/feeds/category/${category}.xml`}>RSS</a>
         </p>
       </section>
-
-      <Ad />
     </Layout>
   );
 };
@@ -1322,6 +1324,12 @@ export const SearchPage = ({ user, term, category, results, owned }) => (
       </button>
     </form>
 
+    {/* At the top of the results, never at the bottom pressed against the
+        footer. Only once there are results: an ad over an empty result set is
+        the only thing on the page, which is both worse to read and billed
+        identically. */}
+    {term && results.total > 0 ? <Ad format="text_link" /> : null}
+
     {!term ? (
       <p class="muted">
         Everything we know about, whether it is out yet or not — titles, genres, episodes and
@@ -1462,10 +1470,6 @@ export const SearchPage = ({ user, term, category, results, owned }) => (
       </>
     )}
 
-    {/* Only once there is something to sit under. An ad above an empty result
-        set is the only thing on the page, which is both worse to read and
-        billed identically. */}
-    {term && results.total > 0 ? <Ad format="text_link" /> : null}
   </Layout>
 );
 

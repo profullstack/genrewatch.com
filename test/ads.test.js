@@ -123,6 +123,15 @@ describe('what gets rendered, and where', () => {
     expect(ad).toBeLessThan(body.indexOf('Already out'));
   });
 
+  /*
+   * Never the last thing on a page, pressed against the footer (Anthony: no ads
+   * in footers). A unit right before </Layout> renders directly above <footer>.
+   */
+  test('no page ends with the unit, right above the footer', async () => {
+    const pages = await readFile(PAGES, 'utf8');
+    expect(pages).not.toMatch(/<Ad[^>]*\/>(\s*:\s*null\})?\s*<\/Layout>/);
+  });
+
   test('at most one unit per page', async () => {
     const pages = await readFile(PAGES, 'utf8');
     for (const m of pages.matchAll(/export const (\w+) = /g)) {
