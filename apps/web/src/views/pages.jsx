@@ -752,7 +752,7 @@ export const OwnLine = ({ own, shared, streamDead, title, liveOffer = null, sign
       {hasOwn ? (
         <section
           class="own-line"
-          data-player-src={assetUrl('vendor-mpegts.js')}
+          data-player-src={assetUrl('vendor-player-ts.js')}
           data-ads-src={assetUrl('vendor-ads.js')}
         >
           <h2>In your list</h2>
@@ -857,7 +857,7 @@ export const OwnLine = ({ own, shared, streamDead, title, liveOffer = null, sign
       {hasShared ? (
         <section
           class="own-line shared-line"
-          data-player-src={assetUrl('vendor-mpegts.js')}
+          data-player-src={assetUrl('vendor-player-ts.js')}
           data-ads-src={assetUrl('vendor-ads.js')}
         >
           <h2>Shared with you</h2>

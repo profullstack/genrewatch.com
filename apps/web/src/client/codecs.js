@@ -25,7 +25,7 @@ import {
 } from '@profullstack/player/codecs';
 
 /** What to do instead, which only this page knows. */
-const ADVICE = 'VLC can — the button is beside Play.';
+export const ADVICE = 'VLC can — the button is beside Play.';
 
 /**
  * The sentence to show, or null if this browser can play what arrived.

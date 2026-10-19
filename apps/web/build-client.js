@@ -11,7 +11,9 @@
  */
 const BUNDLES = [
   ['webauthn-entry.js', 'vendor-webauthn.js'],
-  ['player-entry.js', 'vendor-mpegts.js'],
+  // The house player (@profullstack/player) cut to its transport stream engine:
+  // hls.js is external below, so a channel press never downloads it.
+  ['player-entry.js', 'vendor-player-ts.js'],
   /*
    * Three rather than two, for the same reason there were two.
    *
@@ -32,6 +34,12 @@ for (const [entry, name] of BUNDLES) {
     naming: name,
     minify: true,
     target: 'browser',
+    /*
+     * The player loads its engines on demand, and a bundler with no code
+     * splitting answers a dynamic import by inlining it. A live channel is
+     * always `kind: 'mpegts'`, so hls.js stays a bare specifier never reached.
+     */
+    ...(entry === 'player-entry.js' ? { external: ['hls.js'] } : {}),
   });
   if (!out.success) {
     for (const l of out.logs) console.error(l);
