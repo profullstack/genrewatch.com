@@ -397,14 +397,19 @@ export const GenreChips = ({ genres }) =>
  *
  * The consequence worth stating: at most ONE unit renders per page.
  */
-export const Ad = ({ format = 'banner_300x250', label = 'Advertisement' }) => {
+export const Ad = ({
+  format = 'banner_300x250',
+  label = 'Advertisement',
+  slot = config.ads.slot,
+  adNetwork,
+}) => {
   if (!config.ads.enabled) return null;
   return (
     <aside class={`ad ad-${format}`} aria-label={label}>
       {/* Named for a screen reader and marked as an aside, so it is skippable
           and is not read as part of the page's own content. */}
       <span class="ad-label">{label}</span>
-      <div data-cp-ad="" data-slot={config.ads.slot} data-format={format} />
+      <div data-ad-network={adNetwork} data-cp-ad="" data-slot={slot} data-format={format} />
     </aside>
   );
 };
