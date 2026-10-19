@@ -40,6 +40,12 @@ for (const [entry, name] of BUNDLES) {
      * always `kind: 'mpegts'`, so hls.js stays a bare specifier never reached.
      */
     ...(entry === 'player-entry.js' ? { external: ['hls.js'] } : {}),
+    /*
+     * The breaks-and-films bundle plays a stored file natively, so neither
+     * library is ever reached: both stay bare specifiers, and the bundle stays a
+     * few kilobytes on the path an iPhone takes.
+     */
+    ...(entry === 'ads-entry.js' ? { external: ['hls.js', 'mpegts.js'] } : {}),
   });
   if (!out.success) {
     for (const l of out.logs) console.error(l);

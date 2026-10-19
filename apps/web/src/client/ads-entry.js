@@ -11,12 +11,14 @@
  * film.
  *
  * Hence a bundle of its own, loaded by app.js on the same press for either path.
+ * It also carries the film path's delivery (`attachFilm`, the house player's
+ * native engine), since this is the bundle that path loads anyway.
  * Tree-shaken to itself attachAds is 4.5KB, which any press can afford, and the
  * interval and the creative source now live in one place instead of two that can
  * drift apart.
  */
 
-import { attachAds } from '@profullstack/player';
+import { attachAds, attachSource } from '@profullstack/player';
 
 /**
  * How often a break comes round.
@@ -111,4 +113,61 @@ function startBreaks(stage, media, opts = {}) {
   }
 }
 
-window.__genreAds = { startBreaks };
+/**
+ * Play a stored file through the house player's native engine.
+ *
+ * The film half of the page's playback, and it lives in this bundle because this
+ * is the one bundle the film path already loads. `kind: 'mp4'` sends it straight
+ * to `attachSource`'s native engine, which sets the element's src and nothing
+ * else: no hls.js, no transport stream demuxer (both are external to this
+ * bundle, so neither is even downloaded), and an iPhone -- no Media Source at
+ * all -- still plays the MP4 itself, exactly as it did when app.js set the src.
+ *
+ * Synchronous for the same reason as the live player's `attach`: app.js holds
+ * the returned function as the one handle that drops the connection, and a Stop
+ * pressed while the engine is still attaching must win.
+ *
+ * @param {HTMLVideoElement} video
+ * @param {string} url the same-origin proxy route
+ * @param {() => void} onFailure the element gave up (not us stopping it). The
+ *   element is handed no status code, so app.js asks the route what it meant.
+ * @returns {() => void} tears down AND drops the connection
+ */
+function attachFilm(video, url, onFailure) {
+  let stopped = false;
+  let attached = null;
+  const onErr = () => {
+    // MEDIA_ERR_ABORTED is us tearing the player down. Reporting it would put an
+    // error on the page every time the reader pressed Stop.
+    if (stopped || video.error?.code === 1) return;
+    onFailure();
+  };
+  video.addEventListener('error', onErr);
+
+  attachSource(video, { src: url, kind: 'mp4' }).then(
+    (handle) => {
+      if (stopped) {
+        handle.destroy();
+        return;
+      }
+      attached = handle;
+      video.play?.()?.catch?.(() => {});
+    },
+    () => {
+      if (!stopped) onFailure();
+    },
+  );
+
+  return () => {
+    stopped = true;
+    video.removeEventListener('error', onErr);
+    attached?.destroy();
+    attached = null;
+    // Clearing src is what actually drops the socket; removing the element does
+    // not, and the reader's line counts the connection either way.
+    video.removeAttribute('src');
+    video.load();
+  };
+}
+
+window.__genreAds = { startBreaks, attachFilm };

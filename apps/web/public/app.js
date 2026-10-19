@@ -1124,37 +1124,6 @@ async function explainStreamFailure(url) {
 }
 
 /**
- * Play a file the way a browser already can.
- *
- * No library at all, and that is the point twice over: a film should not pull
- * 270KB of MPEG-2 demuxer to be handed to <video>, and iPhone Safari -- which has
- * no Media Source Extensions, and therefore loses the button entirely for a live
- * channel -- plays an MP4 perfectly well.
- *
- * Mirrors the shape of the bundle's `attach`: same arguments, and the same
- * teardown contract of releasing the connection rather than only the element.
- */
-function attachNative(video, url, onError) {
-  const onErr = () => {
-    // MEDIA_ERR_ABORTED is us tearing the player down. Reporting it would put an
-    // error on the page every time the reader pressed Stop.
-    if (video.error?.code === 1) return;
-    explainStreamFailure(url).then(onError);
-  };
-  video.addEventListener('error', onErr);
-  video.src = url;
-  video.play()?.catch(() => {});
-
-  return () => {
-    video.removeEventListener('error', onErr);
-    // Clearing src is what actually drops the socket; removing the element does
-    // not, and the reader's line counts the connection either way.
-    video.removeAttribute('src');
-    video.load();
-  };
-}
-
-/**
  * Ask the provider whether each listed entry is actually there.
  *
  * A provider playlist is mostly aspirational: the slot exists, the title matches
@@ -1626,19 +1595,34 @@ function initPlayerSection(section) {
        * error because an advert would not download has been served the priorities
        * backwards, so this swallows everything and plays the programme.
        */
+      let ads = null;
       try {
-        const ads = await loadAdsBundle(section.dataset.adsSrc);
+        ads = await loadAdsBundle(section.dataset.adsSrc);
         if (mine === generation) breaks = ads.startBreaks(stage, video, { live: !vod });
       } catch {
         breaks = null;
       }
       if (mine !== generation) return;
 
-      // A file is handed to the element itself; only the TS path has a stream to
-      // reconnect, so only it takes the notice channel.
+      /*
+       * A file plays through the house player's native engine, which rides in
+       * the same small bundle as the breaks (`attachFilm`): the element still
+       * reads the MP4 itself, so an iPhone plays it as before, and no demuxer is
+       * fetched. Without that bundle there is no player for a film either, so
+       * its absence is reported the way a missing live bundle is.
+       *
+       * Only the TS path has a stream to reconnect, so only it takes the notice
+       * channel. A native failure carries no status code, so the route is asked
+       * what it meant, after the element has let go of the connection.
+       */
+      if (vod && typeof ads?.attachFilm !== 'function') {
+        fail('The player could not be loaded. Try VLC, or reload the page.');
+        return;
+      }
+      const url = button.dataset.play;
       stop = vod
-        ? attachNative(video, button.dataset.play, fail)
-        : player.attach(video, button.dataset.play, fail, notice);
+        ? ads.attachFilm(video, url, () => explainStreamFailure(url).then(fail))
+        : player.attach(video, url, fail, notice);
       button.dataset.playing = '1';
       button.textContent = 'Stop';
     });
