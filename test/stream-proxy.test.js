@@ -435,9 +435,8 @@ describe('what the page offers, and to whom', () => {
      * quarter-megabyte demuxer to watch.
      */
     expect(client).toContain('const vod = isVod(button);');
-    expect(client).toMatch(
-      /stop = vod\s*\n?\s*\? attachNative\(video, button\.dataset\.play, fail\)/,
-    );
+    expect(client).toMatch(/stop = vod\s*\n?\s*\? ads\.attachFilm\(video, url,/);
+    expect(client).not.toContain('attachNative');
     // The bundle load sits behind the same test, so a file never waits for it.
     expect(client).toMatch(
       /if \(!vod\) \{\s*\n\s*try \{\s*\n\s*player = await loadPlayerBundle\(src\);/,
@@ -448,10 +447,16 @@ describe('what the page offers, and to whom', () => {
     // <video> is handed no status code -- only MEDIA_ERR_SRC_NOT_SUPPORTED -- so
     // "your provider did not send a stream" and "somebody else is watching that
     // line" would otherwise arrive as the same shrug.
-    expect(client).toContain('explainStreamFailure(url).then(onError)');
+    expect(client).toContain('explainStreamFailure(url).then(fail)');
     expect(client).toContain("if (status === 409) return 'Somebody else is watching");
-    // And an abort is us pressing Stop, not something to put on the page.
-    expect(client).toContain('if (video.error?.code === 1) return;');
+    // And an abort is us pressing Stop, not something to put on the page. The
+    // listener lives with the film's delivery now, in the breaks bundle.
+    const films = readFileSync(
+      new URL('../apps/web/src/client/ads-entry.js', import.meta.url).pathname,
+      'utf8',
+    );
+    expect(films).toContain('if (stopped || video.error?.code === 1) return;');
+    expect(films).toContain("attachSource(video, { src: url, kind: 'mp4' })");
   });
 
   test('the demuxer is fetched on demand, not linked from the Layout', () => {

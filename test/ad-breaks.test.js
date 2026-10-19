@@ -125,7 +125,7 @@ describe('the route', () => {
 describe('the player side', () => {
   test('the house break machinery is used, not a local reimplementation', async () => {
     const entry = await read('../apps/web/src/client/ads-entry.js');
-    expect(entry).toContain("import { attachAds } from '@profullstack/player'");
+    expect(entry).toContain("import { attachAds, attachSource } from '@profullstack/player'");
     expect(entry).toContain("fetch('/api/ads/next'");
     expect(entry).toContain('window.__genreAds');
   });
@@ -164,6 +164,8 @@ describe('the player side', () => {
   test('breaks ship separately from the demuxer', async () => {
     const build = await read('../apps/web/build-client.js');
     expect(build).toContain("['ads-entry.js', 'vendor-ads.js']");
+    // Films play from this bundle too, through the native engine only.
+    expect(build).toContain("entry === 'ads-entry.js' ? { external: ['hls.js', 'mpegts.js'] }");
     const player = await read('../apps/web/src/client/player-entry.js');
     expect(player).not.toContain('attachAds');
     // Served, and cache-busted like every other asset.
@@ -180,9 +182,14 @@ describe('the player side', () => {
    */
   test('an advert that cannot be loaded never costs the reader their programme', async () => {
     const client = await read('../apps/web/public/app.js');
-    const at = client.indexOf('const ads = await loadAdsBundle(');
+    // A creative that fails is attachAds' business and never stops anything. The
+    // bundle itself failing still leaves a live channel playing; a film needs it,
+    // because the film's delivery (attachFilm) now rides in it, and says so in
+    // the same words as a missing live bundle.
+    const at = client.indexOf('ads = await loadAdsBundle(');
     expect(at).toBeGreaterThan(-1);
     expect(client.slice(at, at + 220)).toContain('} catch {');
+    expect(client).toContain("if (vod && typeof ads?.attachFilm !== 'function') {");
     // And the controller is released with the stage it drew into, or a channel
     // switched twice leaves two timers running against an element nobody can see.
     expect(client).toContain('breaks?.destroy()');
