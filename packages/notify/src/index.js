@@ -15,6 +15,63 @@ function titleFor(event) {
 }
 
 /**
+ * Which of a film's three windows a row is, as the phrase a reader expects.
+ *
+ * Without it every reminder for a film said "starts", which is right for a
+ * premiere and wrong for the day something lands on Netflix -- and the three
+ * windows of one film read as the same reminder three times.
+ */
+export function windowPhrase(event) {
+  const key = String(event.provider_key ?? '');
+  if (key.startsWith('tmdb:stream:')) return event.venue ? `On ${event.venue}` : 'Streaming';
+  if (key.startsWith('tmdb:digital:')) return 'To rent or buy';
+  if (key.startsWith('tmdb:release:')) return 'In cinemas';
+  return null;
+}
+
+/**
+ * The words on a lock screen and in an inbox, for a reminder or an announcement.
+ *
+ * Date-only events (films, albums -- most of this site) are anchored to noon UTC,
+ * so "starts in 24 hours" and "starts in 0 minutes" were both literally true and
+ * both wrong; they read as tomorrow and today. The sports fields this was cloned
+ * with (league_name) do not exist here, which is why every body ended in
+ * "undefined".
+ */
+export function messageFor(event, offsetMinutes, { timezone = 'UTC' } = {}) {
+  const title = titleFor(event);
+  const window = windowPhrase(event);
+  const timed = event.time_known !== false;
+  const date = new Date(event.starts_at).toLocaleDateString('en-US', {
+    timeZone: timed ? timezone : 'UTC',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+  const context = [window, event.genre_name].filter(Boolean)[0] ?? event.subject_name ?? '';
+
+  if (offsetMinutes === q.ANNOUNCE_OFFSET) {
+    const out = new Date(event.starts_at).getTime() <= Date.now();
+    const what = window ?? 'Out';
+    const body = out ? `${what} now` : `${what} from ${date}`;
+    return { title, body, subject: `${title}: ${body.charAt(0).toLowerCase()}${body.slice(1)}` };
+  }
+
+  if (!timed) {
+    const when = offsetMinutes >= 1440 ? 'tomorrow' : 'today';
+    const what = window ?? 'Out';
+    const body = `${what} ${when}`;
+    return { title, body, subject: `${title}: ${body.charAt(0).toLowerCase()}${body.slice(1)}` };
+  }
+
+  return {
+    title,
+    body: `Starts ${phrase(offsetMinutes)}${context ? ` — ${context}` : ''}`,
+    subject: `${title} starts ${phrase(offsetMinutes)}`,
+  };
+}
+
+/**
  * Web push to every live subscription a user has.
  *
  * A person with three browsers has three subscriptions and should be told once per
@@ -26,10 +83,13 @@ function titleFor(event) {
 export async function sendPush(target, { event, offsetMinutes }) {
   if (!config.push.enabled) throw new Error('VAPID keys not configured');
 
+  const msg = messageFor(event, offsetMinutes, { timezone: target.timezone || 'UTC' });
+  const announce = offsetMinutes === q.ANNOUNCE_OFFSET;
   const payload = JSON.stringify({
-    title: titleFor(event),
-    body: `Starts ${phrase(offsetMinutes)} — ${event.league_name}`,
-    tag: `event-${event.id}`,
+    title: msg.title,
+    body: msg.body,
+    // Its own tag, so the reminder later does not silently replace the news.
+    tag: announce ? `announce-${event.id}` : `event-${event.id}`,
     url: `${config.siteUrl}/events/${event.id}`,
   });
 
@@ -42,7 +102,9 @@ export async function sendPush(target, { event, offsetMinutes }) {
     {
       keys: { publicKey: config.push.publicKey, privateKey: config.push.privateKey },
       subject: config.push.subject,
-      ttl: Math.max(60, offsetMinutes * 60),
+      // A reminder is worthless once its moment passes; an announcement is still
+      // news to a phone that was off overnight.
+      ttl: announce ? 86_400 : Math.max(60, offsetMinutes * 60),
       onGone: (endpoint) => q.disablePushSubscription(endpoint),
     },
   );
@@ -61,12 +123,20 @@ export async function sendPush(target, { event, offsetMinutes }) {
 export async function sendEmail(target, { event, offsetMinutes }) {
   if (!config.mail.enabled) throw new Error('RESEND_API_KEY not configured');
 
-  const title = titleFor(event);
-  const when = new Date(event.starts_at).toLocaleString('en-US', {
-    timeZone: target.timezone || 'UTC',
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  const msg = messageFor(event, offsetMinutes, { timezone: target.timezone || 'UTC' });
+  const timed = event.time_known !== false;
+  // A date-only row is anchored to noon UTC; printing that as a clock time in the
+  // reader's zone is a time nobody announced.
+  const when = timed
+    ? `${new Date(event.starts_at).toLocaleString('en-US', {
+        timeZone: target.timezone || 'UTC',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })} (${target.timezone || 'UTC'})`
+    : new Date(event.starts_at).toLocaleDateString('en-US', {
+        timeZone: 'UTC',
+        dateStyle: 'full',
+      });
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -77,11 +147,11 @@ export async function sendEmail(target, { event, offsetMinutes }) {
     body: JSON.stringify({
       from: config.mail.from,
       to: target.email,
-      subject: `${title} starts ${phrase(offsetMinutes)}`,
+      subject: msg.subject,
       text: [
-        `${title}`,
-        `${event.league_name}${event.venue ? ` — ${event.venue}` : ''}`,
-        `Starts ${when} (${target.timezone || 'UTC'})`,
+        msg.title,
+        msg.body,
+        when,
         '',
         `${config.siteUrl}/events/${event.id}`,
         '',

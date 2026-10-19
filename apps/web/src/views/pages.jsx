@@ -372,6 +372,69 @@ export const GenrePage = ({ user, genre, subjects, events, following }) => (
   </Layout>
 );
 
+/**
+ * Group a film's window rows into the three slots a reader asks about.
+ *
+ * Exported for the test. Streaming can hold several rows -- a film can land on
+ * two services -- and the other two hold the first dated row, if any.
+ */
+export function releaseSlots(windows = []) {
+  const of = (prefix) => windows.filter((w) => String(w.provider_key ?? '').startsWith(prefix));
+  return {
+    cinemas: of('tmdb:release:')[0] ?? null,
+    rent: of('tmdb:digital:')[0] ?? null,
+    stream: of('tmdb:stream:'),
+  };
+}
+
+/**
+ * When can I see it: in cinemas, to rent or buy, on a service.
+ *
+ * The page used to list whichever rows existed, so a film with only a cinema date
+ * said nothing at all about home release -- and "nothing" reads as "never", not
+ * as "not announced yet". Saying the missing ones out loud, with what following
+ * will do about them, is the whole answer for somebody who will not go to a
+ * cinema.
+ */
+export const ReleaseWindows = ({ windows, following, signedIn }) => {
+  const { cinemas, rent, stream } = releaseSlots(windows);
+  if (!cinemas && !rent && stream.length === 0) return null;
+  const date = (w) => (
+    <time datetime={new Date(w.starts_at).toISOString()}>{fmtDayUtc(w.starts_at)}</time>
+  );
+  const pending = <span class="pending">Not announced yet</span>;
+  return (
+    <section>
+      <h2>Release dates</h2>
+      <dl class="windows">
+        <dt>In cinemas</dt>
+        <dd>{cinemas ? date(cinemas) : pending}</dd>
+        <dt>Rent or buy</dt>
+        <dd>{rent ? date(rent) : pending}</dd>
+        <dt>Streaming</dt>
+        <dd>
+          {stream.length === 0
+            ? pending
+            : stream.map((w, i) => (
+                <>
+                  {i > 0 ? ', ' : null}
+                  {w.venue ? `${w.venue}, ` : null}
+                  {date(w)}
+                </>
+              ))}
+        </dd>
+      </dl>
+      <p class="windows-note">
+        {following
+          ? "You're following this. You'll be told as soon as each date is announced, then again the day before and on the day."
+          : signedIn
+            ? 'Follow to be told as soon as each date is announced, then again the day before and on the day.'
+            : 'Sign in and follow to be told as soon as each date is announced, then again the day before and on the day.'}
+      </p>
+    </section>
+  );
+};
+
 export const SubjectPage = ({
   user,
   subject,
@@ -379,6 +442,7 @@ export const SubjectPage = ({
   past = [],
   genres,
   following,
+  windows = [],
   ownChannels = null,
   sharedChannels = null,
   // The live TV pass for sale, or null when passes are off or the reader
@@ -412,6 +476,8 @@ export const SubjectPage = ({
 
     {subject.description ? <p class="blurb">{subject.description}</p> : null}
     <GenreChips genres={genres} />
+
+    <ReleaseWindows windows={windows} following={following} signedIn={Boolean(user)} />
 
     {/*
       The question somebody who searched for a film actually has.

@@ -491,7 +491,7 @@ app.get('/subjects/:slug', async (c) => {
   const subject = await q.getSubjectBySlug(c.req.param('slug'));
   if (!subject) return c.html(await render(<NotFound user={user} />), 404);
 
-  const [events, past, genres, following] = await Promise.all([
+  const [events, past, genres, following, windows] = await Promise.all([
     q.upcomingForSubject(subject.id, { viewerId: user?.id ?? null }),
     // Without this a back-catalogue title is a dead end: a 2022 film has no
     // upcoming event, so the page a reader reached by searching for something to
@@ -499,6 +499,7 @@ app.get('/subjects/:slug', async (c) => {
     q.pastForSubject(subject.id, { viewerId: user?.id ?? null }),
     q.genresForSubject(subject.id),
     q.isFollowing({ userId: user?.id, subjectType: 'subject', subjectId: subject.id }),
+    subject.category === 'film' ? q.releaseWindowsForSubject(subject.id) : [],
   ]);
 
   /*
@@ -534,6 +535,7 @@ app.get('/subjects/:slug', async (c) => {
         past={past}
         genres={genres}
         following={following}
+        windows={windows}
         ownChannels={ownChannels}
         sharedChannels={sharedChannels}
       />,
