@@ -41,12 +41,16 @@ describe('the network line', () => {
   });
 
   /*
-   * The footer itself no longer lists the network: the pit.world footer after
-   * it does, on every site, so the site footer stays two rows.
+   * The footer itself no longer lists the sibling sites; the webring row after
+   * it is the network link.
    */
   test('the site footer does not repeat the network', async () => {
     const out = await footer({ user: null, children: 'x' });
     expect(out).not.toContain('href="https://tipoffwatch.com"');
+    const page = (await Layout({ user: null, children: 'x' }).toString()).toString();
+    expect(page).toContain('ring/profullstack');
+    // genrewatch.com is not a Moshpit name; the pit.world footer is not for it.
+    expect(page).not.toContain('data-pit-footer');
   });
 
   test('credits the data platform', async () => {
