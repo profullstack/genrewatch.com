@@ -3,6 +3,7 @@ import { footerHtml } from '@profullstack/footer';
 import { raw } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
 import { serialise } from '../lib/jsonld.js';
+import { pitFooterHtml } from '../lib/pit-footer.js';
 
 /** @profullstack/footer: the links, copyright and webring row every fleet site ends with. */
 const ProfullstackFooter = async () =>
@@ -16,6 +17,9 @@ const ProfullstackFooter = async () =>
       ],
     }),
   );
+
+/** The pit.world network footer, last in <body>; nothing when pit.world is unreachable. */
+const PitFooter = async () => raw(await pitFooterHtml());
 
 /**
  * The single HTML shell. Everything renders through here, including the signed-out
@@ -285,7 +289,7 @@ export const Layout = (props) => (
           API but is not endorsed or certified by TMDB.
         </p>
       </footer>
-      {/* The links, copyright and webring row. */}
+      {/* The links, copyright and webring row; the pit.world footer is last. */}
       <ProfullstackFooter />
 
       {/* Registers the service worker and wires the push opt-in. Everything on the
@@ -305,6 +309,7 @@ export const Layout = (props) => (
         run after the document is parsed or it finds nothing to fill.
       */}
       {config.ads.enabled ? <script src="https://crawlproof.com/ad.js" defer /> : null}
+      <PitFooter />
     </body>
   </html>
 );
