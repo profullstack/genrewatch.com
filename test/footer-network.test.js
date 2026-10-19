@@ -40,26 +40,19 @@ describe('the network line', () => {
     expect(self[0].domain).toBe('genrewatch.com');
   });
 
-  test('links the siblings on any page', async () => {
-    const out = await footer({ user: null, children: 'x' });
-    expect(out).toContain('href="https://tipoffwatch.com"');
-    expect(out).toContain('href="https://watchnews.now"');
-  });
-
   /*
-   * A link to where the reader already is, is noise -- but dropping the name
-   * would make each site's footer a different list, which is how a reader stops
-   * being able to tell these are one shop.
+   * The footer itself no longer lists the network: the pit.world footer after
+   * it does, on every site, so the site footer stays two rows.
    */
-  test('names this site without linking it', async () => {
+  test('the site footer does not repeat the network', async () => {
     const out = await footer({ user: null, children: 'x' });
-    expect(out).toContain('GenreWatch');
-    expect(out).not.toContain('href="https://genrewatch.com"');
+    expect(out).not.toContain('href="https://tipoffwatch.com"');
+    expect(out).not.toContain('pfs-footer');
   });
 
   test('credits the data platform', async () => {
     const out = await footer({ user: null, children: 'x' });
-    expect(out).toContain('Data furnished by');
+    expect(out).toContain('furnished by');
     expect(out).toContain(`href="${dataSource.url}"`);
     expect(out).toContain('nichedb.dev');
   });
