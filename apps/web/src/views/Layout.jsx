@@ -1,8 +1,22 @@
 import { config, dataSource } from '@genre/config';
+import { footerHtml } from '@profullstack/footer';
 import { raw } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
 import { serialise } from '../lib/jsonld.js';
 import { pitFooterHtml } from '../lib/pit-footer.js';
+
+/** @profullstack/footer: the links, copyright and webring row every fleet site ends with. */
+const ProfullstackFooter = async () =>
+  raw(
+    await footerHtml({
+      site: 'https://genrewatch.com/',
+      links: [
+        { label: 'About', href: '/about' },
+        { label: 'RSS & calendars', href: '/feeds' },
+        { label: 'Public API', href: '/api/v1' },
+      ],
+    }),
+  );
 
 /** The pit.world network footer, last in <body>; nothing when pit.world is unreachable. */
 const PitFooter = async () => raw(await pitFooterHtml());
@@ -244,14 +258,10 @@ export const Layout = (props) => (
       <main id="main">{props.children}</main>
 
       <footer>
-        <p class="muted">
-          <a href="/about">About</a> · <a href="/feeds">RSS &amp; calendars</a> ·{' '}
-          <a href="/api/v1">Public API</a>
-        </p>
         {/* The providers this catalogue is actually built from. TMDB's terms
             require the disclaimer verbatim. */}
         <p class="muted">
-          © {new Date().getFullYear()} GenreWatch · Catalogue data from{' '}
+          Catalogue data from{' '}
           <a href="https://www.themoviedb.org" rel="noopener nofollow">
             TMDB
           </a>
@@ -279,6 +289,8 @@ export const Layout = (props) => (
           API but is not endorsed or certified by TMDB.
         </p>
       </footer>
+      {/* The links, copyright and webring row; the pit.world footer is last. */}
+      <ProfullstackFooter />
 
       {/* Registers the service worker and wires the push opt-in. Everything on the
           site works without this file -- it only adds notifications. */}
