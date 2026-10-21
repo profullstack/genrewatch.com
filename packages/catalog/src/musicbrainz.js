@@ -45,6 +45,13 @@ const MIN_GAP_MS = 1100;
 
 /** Per page. MusicBrainz caps the search endpoint at 100. */
 const PAGE = 100;
+/**
+ * MusicBrainz's search answers 400 "Must retrieve at most 500 search results"
+ * once offset + limit passes 500, and a throw there failed the whole pass (the
+ * horizon holds ~2,500 releases, so every pass reached it). The walk stops at the
+ * window instead, so a pass writes the first 500 rather than nothing.
+ */
+const SEARCH_WINDOW = 500;
 
 const ymd = (d) => d.toISOString().slice(0, 10);
 
@@ -156,7 +163,7 @@ export async function fetchAll({
   const pending = [];
   const subjects = new Map();
 
-  for (let page = 0; page < maxPages; page++) {
+  for (let page = 0; page < maxPages && (page + 1) * PAGE <= SEARCH_WINDOW; page++) {
     if (outOfTime()) break;
     const url = `${BASE}/release?query=${query}&fmt=json&limit=${PAGE}&offset=${page * PAGE}`;
     const res = await getJson(url, { minGapMs: MIN_GAP_MS, timeoutMs: 45_000 });
