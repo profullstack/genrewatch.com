@@ -11,8 +11,9 @@ import { createHmac } from 'node:crypto';
  * module imported config first -- the thing that made these very tests a coin flip
  * decided by the rest of the suite -- is now three explicit lines.
  */
-const { configurePayments, createCheckout, verifyWebhook, settleWebhook, readWebhook } =
-  await import('../packages/payments/src/index.js');
+const { configurePayments, verifyWebhook, settleWebhook, readWebhook } = await import(
+  '../packages/payments/src/index.js'
+);
 
 configurePayments({
   // Not touched by signature verification. A throwing stub is a louder failure
@@ -224,111 +225,4 @@ describe('settlement gating', () => {
   });
 });
 
-describe('createCheckout', () => {
-  /*
-   * The real fetch, put back after every test.
-   *
-   * bun:test runs every file in one process, so a global left swapped out is not
-   * scoped to this file -- it is the fetch every later test gets. Leaving it
-   * clobbered took out 26 unrelated tests across the espn adapter, the roster
-   * sweep and the stream proxy, none of which have anything to do with payments,
-   * and each of which failed in a way that pointed at itself rather than here.
-   */
-  const realFetch = globalThis.fetch;
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  const capture = () => {
-    const calls = [];
-    globalThis.fetch = async (url, opts) => {
-      calls.push({ url, body: JSON.parse(opts.body) });
-      return new Response(JSON.stringify({ success: true, payment: { id: 'pay_9' } }), {
-        status: 201,
-        headers: { 'content-type': 'application/json' },
-      });
-    };
-    const rows = [];
-    const sql = (...args) => {
-      rows.push(args);
-      return [];
-    };
-    configurePayments({
-      sql,
-      coinpay: {
-        enabled: true,
-        apiKey: 'cp_test_x',
-        businessId: 'biz_1',
-        baseUrl: 'https://pay.example',
-        webhookSecret: 'whsec_test_secret',
-      },
-      siteUrl: 'https://example.test',
-    });
-    return calls;
-  };
-
-  const base = {
-    user: { id: 'u1' },
-    amountCents: 500,
-    description: 'a thing',
-    blockchain: 'BTC',
-    payTo: 'bc1qexample',
-  };
-
-  /*
-   * The payee belongs on the BUSINESS, not in every call.
-   *
-   * merchant_wallet_address is an override. Omitted, the upstream forwards to the
-   * business's own wallet for that chain, falls back to the account-global one,
-   * and refuses the payment with "No <coin> wallet configured for this business"
-   * if neither exists — it does NOT quietly settle somewhere else. A single
-   * address in configuration could only ever be right for one chain anyway.
-   */
-  test('omits the payee so the business wallet resolves per chain', async () => {
-    const calls = capture();
-    await createCheckout({ ...base, payTo: undefined });
-    expect(calls[0].body).not.toHaveProperty('merchant_wallet_address');
-  });
-
-  test('and sends one only when overriding to a third party', async () => {
-    const calls = capture();
-    await createCheckout(base);
-    expect(calls[0].body.merchant_wallet_address).toBe('bc1qexample');
-  });
-
-  /* The upstream refuses a crypto payment with no chain: "Invalid or missing
-     cryptocurrency type". Failing at the call site beats failing at the moment a
-     buyer presses pay. */
-  test('a crypto checkout must name its chain', async () => {
-    capture();
-    expect(createCheckout({ ...base, blockchain: undefined })).rejects.toThrow(/blockchain/);
-  });
-
-  test('a card checkout does not need one', async () => {
-    const calls = capture();
-    await createCheckout({ ...base, blockchain: undefined, paymentMethod: 'card' });
-    expect(calls[0].body.payment_method).toBe('card');
-  });
-
-  /*
-   * The response is { success, payment: {...} }. Reading body.id finds nothing, so
-   * the pending row would be written under an undefined reference and the webhook
-   * could never match it.
-   */
-  test('takes the reference from the nested payment', async () => {
-    capture();
-    const { paymentRef } = await createCheckout(base);
-    expect(paymentRef).toBe('pay_9');
-  });
-
-  /*
-   * There is no generic checkout_url field. A card payment returns a Stripe
-   * session; a crypto one returns an address, and the page that renders it is the
-   * hosted checkout.
-   */
-  test('sends a crypto buyer to the hosted checkout page', async () => {
-    capture();
-    const { checkoutUrl } = await createCheckout(base);
-    expect(checkoutUrl).toBe('https://pay.example/pay/pay_9');
-  });
-});
+// createCheckout (checkout sessions) is covered by payments-checkout-sessions.test.js.
