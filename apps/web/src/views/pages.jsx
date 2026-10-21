@@ -143,11 +143,7 @@ export const Landing = ({ user, today }) => (
 
     <CategoryNav />
 
-    {/* Under the hero and the category nav, above the day's list: in the
-        content, never against the footer. The one unit on this page. */}
-    {config.ads.network.enabled ? (
-      <Ad slot={config.ads.network.slot} adNetwork={config.ads.network.code} />
-    ) : null}
+    {/* The homepage carries no ad unit. */}
 
     <section>
       <h2>Today</h2>
@@ -1339,7 +1335,7 @@ export const SearchPage = ({ user, term, category, results, owned }) => (
         footer. Only once there are results: an ad over an empty result set is
         the only thing on the page, which is both worse to read and billed
         identically. */}
-    {term && results.total > 0 ? <Ad format="text_link" /> : null}
+    {term && results.total > 0 ? <Ad /> : null}
 
     {!term ? (
       <p class="muted">

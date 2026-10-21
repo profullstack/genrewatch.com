@@ -395,21 +395,15 @@ export const GenreChips = ({ genres }) =>
  * need a viewport test to place honestly, and ad.js offers no way to make one --
  * no matchMedia, no resize handler, no auto format -- so they are not used.
  *
- * The consequence worth stating: at most ONE unit renders per page.
+ * The consequence worth stating: at most ONE unit renders per page, and it is
+ * always the low-profile text_link line (it carries its own "Sponsored" mark,
+ * so no label is added here). The homepage carries none.
  */
-export const Ad = ({
-  format = 'banner_300x250',
-  label = 'Advertisement',
-  slot = config.ads.slot,
-  adNetwork,
-}) => {
+export const Ad = ({ label = 'Advertisement', slot = config.ads.slot, adNetwork }) => {
   if (!config.ads.enabled) return null;
   return (
-    <aside class={`ad ad-${format}`} aria-label={label}>
-      {/* Named for a screen reader and marked as an aside, so it is skippable
-          and is not read as part of the page's own content. */}
-      <span class="ad-label">{label}</span>
-      <div data-ad-network={adNetwork} data-cp-ad="" data-slot={slot} data-format={format} />
+    <aside class="ad ad-text_link" aria-label={label}>
+      <div data-ad-network={adNetwork} data-cp-ad="" data-slot={slot} data-format="text_link" />
     </aside>
   );
 };

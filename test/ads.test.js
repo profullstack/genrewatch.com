@@ -71,13 +71,20 @@ describe('what gets rendered, and where', () => {
    * inside the narrowest phone. The 728x90 and 320x50 banners would each need a
    * viewport test that ad.js gives no way to make.
    */
-  test('only the two width-safe formats are used', async () => {
+  test('only the low-profile text_link format is used', async () => {
     const pages = await readFile(PAGES, 'utf8');
     const components = await readFile(COMPONENTS, 'utf8');
     const both = pages + components;
-    expect(both).not.toContain('banner_728x90');
-    expect(both).not.toContain('banner_320x50');
-    expect(components).toContain('banner_300x250');
+    expect(both).not.toContain('banner_');
+    expect(components).toContain('data-format="text_link"');
+  });
+
+  test('the homepage (Landing) carries no unit', async () => {
+    const pages = await readFile(PAGES, 'utf8');
+    const start = pages.indexOf('export const Landing = ');
+    expect(start).toBeGreaterThan(-1);
+    const next = pages.indexOf('export const ', start + 10);
+    expect(pages.slice(start, next > 0 ? next : undefined)).not.toMatch(/<Ad[\s/>]/);
   });
 
   /*
@@ -173,10 +180,9 @@ describe('what gets rendered, and where', () => {
 });
 
 describe('the unit itself', () => {
-  test('is labelled and set aside, not dressed as content', async () => {
+  test('is set aside, not dressed as content', async () => {
     const components = await readFile(COMPONENTS, 'utf8');
     expect(components).toContain('<aside');
-    expect(components).toContain('ad-label');
     expect(components).toContain('aria-label');
   });
 
@@ -189,7 +195,6 @@ describe('the unit itself', () => {
       new URL('../apps/web/public/styles.css', import.meta.url).pathname,
       'utf8',
     );
-    expect(css).toMatch(/\.ad-banner_300x250\s*\{[^}]*min-height/);
     expect(css).toMatch(/\.ad-text_link\s*\{[^}]*min-height/);
   });
 });
