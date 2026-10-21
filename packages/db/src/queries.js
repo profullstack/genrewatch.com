@@ -1609,6 +1609,24 @@ export async function subjectsByProviderKeys(keys) {
   return new Map(rows.map((r) => [r.provider_key, r]));
 }
 
+/**
+ * Subjects already carrying these tconsts, keyed by tconst.
+ *
+ * The linking pass writes an IMDb id onto a TMDB or TVmaze row, and the partial
+ * unique index on imdb_id then forbids an IMDb row of its own for that title. The
+ * nichedb mirror asks here first so it files such a title onto the row that
+ * holds it instead of inserting one the index rejects (which failed the whole
+ * page and wedged the walk on it).
+ */
+export async function subjectsByImdbIds(ids) {
+  if (!ids?.length) return new Map();
+  const rows = await sql`
+    select imdb_id, id, slug from subjects
+    where imdb_id = any(${pgArray(ids)}::text[])
+  `;
+  return new Map(rows.map((r) => [r.imdb_id, r]));
+}
+
 /** Powers the follow picker's search box. */
 export async function searchSubjects(term, limit = 25) {
   const like = `%${term}%`;

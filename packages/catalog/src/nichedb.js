@@ -603,7 +603,15 @@ export async function writeTitles(items, { db = q, now = new Date() } = {}) {
   const known = imdb.length
     ? await db.subjectsByProviderKeys(imdb.map((s) => s.providerKey))
     : new Map();
+  /* A tconst the linking pass already put on a TMDB or TVmaze row is that row,
+     whatever its name has become: the unique index on imdb_id forbids an IMDb
+     row beside it, and inserting one fails the whole page (so the walk retried
+     that page forever). It links again, which is idempotent. */
   const fresh = imdb.filter((s) => !known.has(s.providerKey));
+  const claimed =
+    fresh.length && db.subjectsByImdbIds
+      ? await db.subjectsByImdbIds(fresh.map((s) => s.imdbId ?? s.providerKey))
+      : new Map();
 
   /* The exact join first. An IMDb film the artwork enricher matched to a TMDB
      id links to that film's row when this catalogue holds it -- from an earlier
@@ -621,7 +629,8 @@ export async function writeTitles(items, { db = q, now = new Date() } = {}) {
   const toLink = [];
   const toCreate = [];
   for (const s of fresh) {
-    const exact = byTmdb.get(tmdbKeyOf(s))?.id ?? null;
+    const exact =
+      claimed.get(s.imdbId ?? s.providerKey)?.id ?? byTmdb.get(tmdbKeyOf(s))?.id ?? null;
     const hit =
       exact ?? (s.normTitle ? existing.get(`${s.category} ${s.normTitle} ${s.year ?? ''}`) : null);
     if (hit) toLink.push({ subjectId: hit, tconst: s.providerKey, ...s });

@@ -88,6 +88,10 @@ function fakeDb() {
       const out = new Map();
       for (const s of rows ?? []) {
         const prev = subjects.get(k(s.provider, s.providerKey));
+        // The partial unique index on imdb_id, as in the real table.
+        const tconst = prev?.imdbId ?? s.imdbId ?? null;
+        if (tconst && [...subjects.values()].some((x) => x !== prev && x.imdbId === tconst))
+          throw new Error('duplicate key value violates unique constraint "subjects_imdb_id_idx"');
         const id = prev?.id ?? nextId++;
         subjects.set(k(s.provider, s.providerKey), {
           ...prev,
@@ -142,6 +146,11 @@ function fakeDb() {
       const out = new Map();
       for (const s of subjects.values())
         if (keys.includes(s.providerKey)) out.set(s.providerKey, s);
+      return out;
+    },
+    async subjectsByImdbIds(ids) {
+      const out = new Map();
+      for (const s of subjects.values()) if (s.imdbId && ids.includes(s.imdbId)) out.set(s.imdbId, s);
       return out;
     },
     async subjectsByNormTitle(keys) {
@@ -749,6 +758,35 @@ describe('writing a page of titles', () => {
     expect(r.subjects).toBe(1);
     expect(db.subjects.get('imdb|tt0133093').id).toBe(first.id);
     expect(db.subjects.get('imdb|tt0133093').rating).toBe(8.8);
+  });
+});
+
+describe('a tconst the linking pass already put on another row', () => {
+  test('files the IMDb title onto that row instead of inserting one the index rejects', async () => {
+    const db = fakeDb();
+    // A TVmaze show the linking pass matched to Severance's tconst earlier, under
+    // a name the heuristic would no longer match.
+    await db.upsertSubjects([
+      {
+        provider: 'tvmaze',
+        providerKey: 'tvmaze:show:44933',
+        category: 'tv',
+        kind: 'show',
+        slug: 'severance-44933',
+        name: 'Severance (US)',
+        normTitle: 'severance us',
+        year: 2022,
+        imdbId: 'tt11280740',
+      },
+    ]);
+    const held = db.subjects.get('tvmaze|tvmaze:show:44933');
+    const r = await writeTitles([byId(105)], { db, now: NOW });
+    expect(r.linked).toBe(1);
+    expect(r.created).toBe(0);
+    expect(db.subjects.size).toBe(1);
+    expect(db.subjects.has('imdb|tt11280740')).toBe(false);
+    expect(db.events.size).toBe(0);
+    expect(db.subjects.get('tvmaze|tvmaze:show:44933').id).toBe(held.id);
   });
 });
 
