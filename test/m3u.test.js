@@ -23,6 +23,8 @@ describe('parsing a provider playlist', () => {
         title: 'BBC One HD',
         group: 'UK | Entertainment',
         url: 'http://example.test/live/u/p/1.ts',
+        // @profullstack/player 0.16 also keeps the EPG id.
+        tvgId: 'bbc1',
         // Every entry is labelled at parse time, because one list carries both
         // live channels and on-demand files.
         kind: 'live',

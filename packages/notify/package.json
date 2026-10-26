@@ -9,6 +9,6 @@
   "dependencies": {
     "@genre/config": "workspace:*",
     "@genre/db": "workspace:*",
-    "@profullstack/notifications": "^0.1.0"
+    "@profullstack/notifications": "^0.1.4"
   }
 }

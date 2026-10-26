@@ -1,6 +1,6 @@
 # One image, one Railway service. Web and workers are the same binary; ROLES picks
 # which of them this container runs.
-FROM oven/bun:1.3.14-slim AS base
+FROM oven/bun:1.4.4-slim AS base
 WORKDIR /app
 
 # Dependencies first, so a code-only change does not reinstall the world.
