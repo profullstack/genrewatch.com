@@ -1,6 +1,6 @@
 {
   "name": "genrewatch.com",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "type": "module",
   "description": "A release calendar for every genre. Follow a genre or a name, get told before it drops.",
@@ -17,6 +17,7 @@
     "test": "bun test",
     "lint": "bun run --bun biome check .",
     "format": "bun run --bun biome format --write .",
+    "credits": "bun packages/credits/src/cli.js",
     "imdb": "bun apps/worker/src/imdb-cli.js"
   },
   "engines": {

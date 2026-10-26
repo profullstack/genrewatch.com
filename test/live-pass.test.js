@@ -160,7 +160,10 @@ describe('the module', () => {
     const grant = src.slice(src.indexOf('export async function grantLivePass'));
     const body = grant.slice(0, grant.indexOf('\n}\n'));
     expect(body).toContain('greatest(now(), coalesce(max(expires_at), now()))');
-    expect(body).toContain('on conflict (payment_id) do nothing');
+    // Bare since 0040: a paid term is unique on payment_id, a gift from a code
+    // or an invite on (user_id, grant_ref). Either replay inserts nothing.
+    expect(body).toContain('on conflict do nothing');
+    expect(body).toContain('grant_ref');
     expect(body).toContain('make_interval(days => ${days}::int)');
   });
 

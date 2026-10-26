@@ -12,6 +12,7 @@
     "@genre/auth": "workspace:*",
     "@genre/catalog": "workspace:*",
     "@genre/config": "workspace:*",
+    "@genre/credits": "workspace:*",
     "@genre/db": "workspace:*",
     "@genre/live": "workspace:*",
     "@genre/notify": "workspace:*",
