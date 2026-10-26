@@ -597,6 +597,29 @@ select {
   width: 100%;
   margin-top: 1rem;
 }
+/* The shared profile fields (@profullstack/profile renderProfileFields): a bare
+   fieldset of label + input rows, made to read like the email box above them on
+   the signup page and like the other forms in settings. */
+.pfs-profile {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.pfs-profile__row label {
+  display: block;
+  margin: 1rem 0 0.25rem;
+  font-size: 0.9rem;
+}
+.pfs-profile__optional {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.pfs-profile__error {
+  color: var(--live);
+  font-size: 0.85rem;
+  margin: 0.3rem 0 0;
+}
 .or {
   text-align: center;
   color: var(--muted);
