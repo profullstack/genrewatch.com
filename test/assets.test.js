@@ -16,6 +16,7 @@ const ROUTE_SERVED = new Map([
   ['/manifest.webmanifest', null], // generated JSON
   ['/sitemap.xml', null], // generated XML
   ['/favicon.ico', 'icons/favicon.ico'], // root alias for the generated icon
+  ['/vendor-profile.js', null], // @profullstack/profile's PROFILE_ENHANCE_SCRIPT export
 ]);
 
 /*

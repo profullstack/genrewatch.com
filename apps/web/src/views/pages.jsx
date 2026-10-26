@@ -1,4 +1,6 @@
 import { config } from '@genre/config';
+import { COLUMNS as PROFILE_COLUMNS, renderProfileFields } from '@profullstack/profile';
+import { raw } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
 import { watchListNode } from '../lib/jsonld.js';
 import { WATCH_KIND_LABEL, watchSourcesOf } from '../lib/watch-sources.js';
@@ -1998,8 +2000,18 @@ export const Invite = ({
   </Layout>
 );
 
-export const SignIn = ({ mode, sent, next, passwordError, magicError }) => (
-  <Layout title={mode === 'signup' ? 'Create your account' : 'Sign in'}>
+/*
+ * The rest of the shared profile, asked for on the signup page only. Email is
+ * this form's own box above it, so the package renders the other five. A plain
+ * sign-in never sees or needs them.
+ */
+const SIGNUP_FIELDS = PROFILE_COLUMNS.filter((f) => f !== 'email');
+
+export const SignIn = ({ mode, sent, next, passwordError, magicError, values, errors }) => (
+  <Layout
+    title={mode === 'signup' ? 'Create your account' : 'Sign in'}
+    script={mode === 'signup' ? '/vendor-profile.js' : undefined}
+  >
     <section class="auth">
       <h1>{mode === 'signup' ? 'Create your account' : 'Sign in'}</h1>
       {sent ? (
@@ -2021,6 +2033,7 @@ export const SignIn = ({ mode, sent, next, passwordError, magicError }) => (
           ) : null}
           <form method="post" action="/api/auth/magic">
             <input type="hidden" name="next" value={next ?? '/following'} />
+            {mode === 'signup' ? <input type="hidden" name="mode" value="signup" /> : null}
             <label>
               Email
               <input
@@ -2029,8 +2042,17 @@ export const SignIn = ({ mode, sent, next, passwordError, magicError }) => (
                 required
                 autocomplete="email"
                 placeholder="you@example.com"
+                value={values?.email ?? undefined}
               />
             </label>
+            {errors?.email ? (
+              <p class="feedback error" role="alert">
+                {errors.email}
+              </p>
+            ) : null}
+            {mode === 'signup'
+              ? raw(renderProfileFields({ fields: SIGNUP_FIELDS, values, errors }))
+              : null}
             <button class="cta" type="submit">
               Email me a link
             </button>
@@ -2348,6 +2370,10 @@ export const Settings = ({
   playlistError,
   profileNotice,
   profileError,
+  // The shared @profullstack/profile row (names, company, title, LinkedIn).
+  contact = null,
+  contactError = null,
+  contactSaved = false,
   passwordNotice,
   passwordError,
   passwordMinLength,
@@ -2640,6 +2666,22 @@ export const Settings = ({
           {user.profile_public === false ? 'and only you can see it.' : 'to anyone who opens it.'}
         </p>
       ) : null}
+    </section>
+
+    <section>
+      <h2 id="contact">Contact details</h2>
+      <p class="muted small">
+        Private to your account and never shown on your public profile. Sent with{' '}
+        <code>{user.email}</code>.
+      </p>
+      {contactError ? <p class="feedback error">{contactError}</p> : null}
+      {contactSaved ? <p class="feedback ok">Contact details saved.</p> : null}
+      <form method="post" action="/api/settings/contact">
+        {raw(renderProfileFields({ fields: SIGNUP_FIELDS, values: contact ?? {} }))}
+        <button class="cta" type="submit">
+          Save contact details
+        </button>
+      </form>
     </section>
 
     <section>
