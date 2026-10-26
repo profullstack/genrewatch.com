@@ -23,7 +23,7 @@ const money = (cents, currency = 'USD') =>
   }).format((cents ?? 0) / 100);
 
 const termWord = { week: 'a week', month: 'a month', year: 'a year' };
-const planTitle = { week: 'Week', month: 'Month', year: 'Year' };
+const planTitle = { week: 'Week', month: 'Month', year: 'Year', gift: 'Code or invite' };
 
 /** "$1 a week"; a year is said as what it works out to per month. */
 const priceLine = (plan) =>
@@ -141,8 +141,8 @@ export const LivePage = ({
             ))}
           </ul>
           <p class="muted small">
-            Paid through the same checkout as Premium: any major coin or PayPal. Access begins the moment the
-            payment settles, usually within a few minutes.
+            Paid through the same checkout as Premium: any major coin or PayPal. Access begins the
+            moment the payment settles, usually within a few minutes.
           </p>
         </section>
       ) : null}

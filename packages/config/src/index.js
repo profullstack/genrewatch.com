@@ -494,6 +494,37 @@ export const config = {
     },
   },
 
+  /**
+   * Redeemable credit codes and scarce invites (@genre/credits).
+   *
+   * A code is minted by hand (`bun run credits mint`) and grants days: Live TV
+   * pass days by default, or Premium days. An invite is the other thing: a few
+   * per account, single use, and when it makes a NEW account (the emailed link
+   * spent, which proves the mailbox) both people get a few days.
+   *
+   * Live TV days are only worth giving while passes can actually be used, so
+   * the invite bonus is pass days when Live TV is switched on and Premium days
+   * when it is not. Read on use, so a flipped switch needs no redeploy.
+   */
+  credits: {
+    /** Invites each account may hand out. Scarce on purpose. */
+    get inviteQuota() {
+      return num('INVITE_QUOTA', 3);
+    },
+    /** Days an unused invite stays good. 0 = never expires. */
+    get inviteTtlDays() {
+      return num('INVITE_TTL_DAYS', 30);
+    },
+    /** Live TV days each side gets for an accepted invite (when Live TV is on). */
+    get inviteBonusPassDays() {
+      return num('INVITE_BONUS_PASS_DAYS', 3);
+    },
+    /** Premium days each side gets instead, while Live TV is off. 0 = nothing. */
+    get inviteBonusPremiumDays() {
+      return num('INVITE_BONUS_PREMIUM_DAYS', 7);
+    },
+  },
+
   coinpay: {
     /** Must be a MERCHANT api key (cp_live_/cp_test_ + 32 hex). An OAuth client id
      *  (cp_ + 24 hex) authenticates but cannot create payments -- it fails only at

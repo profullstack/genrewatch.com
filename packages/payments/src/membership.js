@@ -65,25 +65,31 @@ export function commissionCents({ amountCents, rateBps }) {
  * @param {string} args.currency
  * @param {number} args.termDays
  */
-export async function grantMembership(tx, { userId, paymentId, priceCents, currency, termDays }) {
+export async function grantMembership(
+  tx,
+  { userId, paymentId, priceCents, currency, termDays, grantRef = null },
+) {
   if (!userId) throw new Error('a membership needs a member');
   if (!Number.isFinite(termDays) || termDays <= 0) throw new Error('a membership needs a term');
   if (!Number.isFinite(priceCents) || priceCents < 0) throw new Error('bad price');
 
   const [row] = await tx`
-    insert into memberships (user_id, payment_id, started_at, expires_at, price_cents, currency)
+    insert into memberships (user_id, payment_id, started_at, expires_at, price_cents, currency, grant_ref)
     select ${userId}::uuid,
            ${paymentId ?? null},
            s.start_at,
            s.start_at + make_interval(days => ${Math.trunc(termDays)}::int),
            ${Math.trunc(priceCents)}::int,
-           ${currency ?? 'USD'}
+           ${currency ?? 'USD'},
+           ${grantRef ?? null}
     from (
       select greatest(now(), coalesce(max(expires_at), now())) as start_at
       from memberships
       where user_id = ${userId}::uuid and status = 'active'
     ) s
-    on conflict (payment_id) do nothing
+    -- Bare: a paid term is unique on payment_id, a free one (a redeemed code,
+    -- an invite bonus) on (user_id, grant_ref). Either replay inserts nothing.
+    on conflict do nothing
     returning started_at, expires_at
   `;
 
@@ -91,9 +97,14 @@ export async function grantMembership(tx, { userId, paymentId, priceCents, curre
   // webhook, which is normal and must answer the same way it did the first time
   // rather than looking like a failure and being retried harder.
   if (!row) {
-    const [existing] = await tx`
-      select started_at, expires_at from memberships where payment_id = ${paymentId ?? null}
-    `;
+    const [existing] = paymentId
+      ? await tx`
+          select started_at, expires_at from memberships where payment_id = ${paymentId}
+        `
+      : await tx`
+          select started_at, expires_at from memberships
+          where user_id = ${userId}::uuid and grant_ref = ${grantRef ?? null}
+        `;
     return existing ? { ...existing, replayed: true } : null;
   }
 

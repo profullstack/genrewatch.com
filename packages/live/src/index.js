@@ -39,6 +39,12 @@ export const PLAN_KEYS = ['week', 'month', 'year'];
 const TERM_DAYS = { week: 7, month: 30, year: 365 };
 
 /**
+ * The term a redeemed code or an invite bonus grants: however many days it
+ * said, never sold, so never in PLAN_KEYS. Its rows carry a grant_ref.
+ */
+export const GIFT_PLAN = 'gift';
+
+/**
  * What is for sale right now, priced from configuration. Never a number the
  * page could disagree with the webhook about: both read this.
  */
@@ -70,27 +76,35 @@ export function planFor(key) {
  * @param {Function} tx
  * @param {{userId: string, paymentId: number|null, plan: string, priceCents: number, currency: string}} args
  */
-export async function grantLivePass(tx, { userId, paymentId, plan, priceCents, currency }) {
+export async function grantLivePass(
+  tx,
+  { userId, paymentId, plan, priceCents, currency, days: giftDays = null, grantRef = null },
+) {
   if (!userId) throw new Error('a pass needs a holder');
-  const days = TERM_DAYS[plan];
-  if (!days) throw new Error(`unknown plan ${plan}`);
+  // A gift is days from a code or an invite: no payment, so it must carry the
+  // grant_ref that makes it idempotent instead.
+  const days = plan === GIFT_PLAN ? Math.trunc(Number(giftDays)) : TERM_DAYS[plan];
+  if (!days || days < 1) throw new Error(`unknown plan ${plan}`);
+  if (plan === GIFT_PLAN && !grantRef) throw new Error('a gifted pass needs a grant_ref');
   if (!Number.isFinite(priceCents) || priceCents < 0) throw new Error('bad price');
 
   const [row] = await tx`
-    insert into live_passes (user_id, payment_id, plan, started_at, expires_at, price_cents, currency)
+    insert into live_passes (user_id, payment_id, plan, started_at, expires_at, price_cents, currency, grant_ref)
     select ${userId}::uuid,
            ${paymentId ?? null},
            ${plan},
            s.start_at,
            s.start_at + make_interval(days => ${days}::int),
            ${Math.trunc(priceCents)}::int,
-           ${currency ?? 'USD'}
+           ${currency ?? 'USD'},
+           ${grantRef ?? null}
     from (
       select greatest(now(), coalesce(max(expires_at), now())) as start_at
       from live_passes
       where user_id = ${userId}::uuid and status = 'active'
     ) s
-    on conflict (payment_id) do nothing
+    -- Bare: a paid term is unique on payment_id, a gift on (user_id, grant_ref).
+    on conflict do nothing
     returning id, started_at, expires_at, plan
   `;
   return row ? { kind: LIVE_PASS_KIND, ...row } : null;

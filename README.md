@@ -205,3 +205,23 @@ the domain targeting 8080, every request 404s while the container reports health
 self-links, calendar feed URLs, notification click targets, every link in a reminder
 email, and the passkey `rpID`. Changing it invalidates every passkey already
 registered.
+
+## Credit codes and invites
+
+`packages/credits` wraps `@profullstack/redeem-credits` and `@profullstack/affiliates`
+over the site's Postgres (migration `0023`). Neither keeps a second balance: days go
+through the same insert a paid term takes (`grantMembership`, or `grantLivePass` with
+plan `gift`), idempotent on `grant_ref`.
+
+- **Codes** (`CR-XXXX-XXXX-XXXX-XXXX`) grant Premium days or Live TV pass days. With no
+  `--unit`, a code is whichever can be used here: Premium while Live TV is off.
+  Mint on the box: `docker exec genrewatchcom-app-1 bun run credits mint --days 30 --label "for Kim"`
+  (`--unit premium|live`, `--max N`, `--expires DAYS`; also `list`, `revoke <id>`, `quota <email> <n>`).
+  Redeem: "Have a code?" on `/settings`, `/redeem?code=...`, or `POST /api/credits/redeem {code}`.
+  A Live TV code is refused, unspent, while Live TV is switched off.
+- **Invites** (`INV-XXXX-XXXX-XXXX`): `INVITE_QUOTA` (3) per account at `/invites`
+  (`GET/POST /api/invites`, `POST /api/invites/:id/revoke`), landing at `/i/<code>`. When an
+  invite creates an account (the emailed link spent), both people get
+  `INVITE_BONUS_PREMIUM_DAYS` (7) of Premium, or `INVITE_BONUS_PASS_DAYS` (3) of Live TV
+  once Live TV is on. One accepted invite per account. The open commission link at
+  `/invite` is a separate, older programme and is unchanged.

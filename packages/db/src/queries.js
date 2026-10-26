@@ -276,11 +276,32 @@ export async function invitedRecently({ email, days = 30 }) {
  * the token because the account row does not exist until the link is spent.
  * Bound as text and cast, so the driver never has to guess how to encode jsonb.
  */
-export async function insertLoginToken({ tokenHash, email, expiresAt, profile = null }) {
+export async function insertLoginToken({
+  tokenHash,
+  email,
+  expiresAt,
+  profile = null,
+  inviteCode = null,
+}) {
   await sql`
-    insert into login_tokens (token_hash, email, expires_at, profile)
-    values (${tokenHash}, ${email}, ${expiresAt}, ${profile ? JSON.stringify(profile) : null}::jsonb)
+    insert into login_tokens (token_hash, email, expires_at, profile, invite_code)
+    values (${tokenHash}, ${email}, ${expiresAt}, ${profile ? JSON.stringify(profile) : null}::jsonb,
+            ${inviteCode ?? null})
   `;
+}
+
+/**
+ * The scarce invite (INV-...) a just-spent link carried, if any. Rides on the
+ * token like the signup profile, so an invite opened in one browser still
+ * counts when the emailed link is opened in another. Only a consumed token
+ * answers.
+ */
+export async function loginTokenInvite(tokenHash) {
+  const [row] = await sql`
+    select invite_code from login_tokens
+    where token_hash = ${tokenHash} and consumed_at is not null
+  `;
+  return row?.invite_code ?? null;
 }
 
 /**

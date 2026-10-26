@@ -66,7 +66,7 @@ const hashToken = (t) => createHash('sha256').update(t).digest();
  * a different response for a registered address turns this endpoint into a way to
  * enumerate who has an account.
  */
-export async function createLoginLink(email, { profile = null } = {}) {
+export async function createLoginLink(email, { profile = null, inviteCode = null } = {}) {
   const token = randomBytes(32).toString('base64url');
   await q.insertLoginToken({
     tokenHash: hashToken(token),
@@ -74,6 +74,9 @@ export async function createLoginLink(email, { profile = null } = {}) {
     expiresAt: new Date(Date.now() + TOKEN_TTL_MINUTES * 60_000),
     // Signup form fields, already validated by the caller; saved on verify.
     profile,
+    // A scarce invite (INV-...) the sign-up came with; accepted on verify, and
+    // only if spending the link creates the account.
+    inviteCode,
   });
   return `${config.siteUrl}/auth/magic?t=${token}`;
 }
@@ -89,13 +92,14 @@ export async function consumeLoginLink(token, { userAgent } = {}) {
   const email = await q.consumeLoginToken(tokenHash);
   if (!email) return null;
   const profile = await q.takeSignupProfile(tokenHash);
+  const inviteCode = await q.loginTokenInvite(tokenHash);
   const user = await q.findOrCreateUser(email);
   const sessionId = await q.startSession({
     userId: user.id,
     ttlDays: config.session.ttlDays,
     userAgent,
   });
-  return { user, sessionId, profile };
+  return { user, sessionId, created: Boolean(user.created), profile, inviteCode };
 }
 
 /* ---------------------------------------------------------------- passkey -- */
