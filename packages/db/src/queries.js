@@ -4069,3 +4069,95 @@ export async function managedPlaylistsLapsed({ graceHours = 24, limit = 100 } = 
     limit ${Math.min(Math.max(Number(limit) || 100, 1), 500)}
   `;
 }
+
+/* ------------------------------------------------------------ key vault -- */
+
+/** A locked reader's list: look again in a quarter of an hour, no error recorded. */
+export async function postponePlaylistRefresh({ userId, playlistId, minutes = 15 }) {
+  await sql`
+    update user_playlists set refresh_after = now() + (${Number(minutes)} || ' minutes')::interval
+    where user_id = ${userId} and id = ${playlistId}
+  `;
+}
+
+/** The reader's sealed vault record, or null. */
+export async function userVaultSeal(userId) {
+  const [row] = await sql`select seal from user_vaults where user_id = ${userId}`;
+  if (!row) return null;
+  return typeof row.seal === 'string' ? JSON.parse(row.seal) : row.seal;
+}
+
+export async function createUserVault({ userId, seal }) {
+  const rows = await sql`
+    insert into user_vaults (user_id, seal) values (${userId}, ${JSON.stringify(seal)}::jsonb)
+    on conflict (user_id) do nothing
+    returning user_id
+  `;
+  return rows.length > 0;
+}
+
+export async function replaceUserVault({ userId, seal }) {
+  await sql`update user_vaults set seal = ${JSON.stringify(seal)}::jsonb, updated_at = now() where user_id = ${userId}`;
+}
+
+/** Everything of this reader's still sealed under the old server key (v1). */
+export async function legacySealedFor(userId) {
+  const playlists = await sql`
+    select id, source_url from user_playlists where user_id = ${userId} and source_url like 'v1.%'
+  `;
+  const lines = await sql`
+    select user_id, line_user, line_secret, source_url from provider_lines
+    where user_id = ${userId}
+      and (line_user like 'v1.%' or line_secret like 'v1.%' or source_url like 'v1.%')
+  `;
+  return { playlists, lines };
+}
+
+export async function resealPlaylistSource({ userId, playlistId, before, after }) {
+  await sql`
+    update user_playlists set source_url = ${after}
+    where user_id = ${userId} and id = ${playlistId} and source_url = ${before}
+  `;
+}
+
+export async function resealProviderLine({ userId, lineUser, lineSecret, sourceUrl }) {
+  await sql`
+    update provider_lines set line_user = ${lineUser}, line_secret = ${lineSecret}, source_url = ${sourceUrl}
+    where user_id = ${userId}
+  `;
+}
+
+/** One batch of this reader's channel rows still on v1, oldest id first. */
+export async function legacyChannelBatch({ userId, afterId = 0, limit = 2000 }) {
+  return sql`
+    select c.id, c.stream_url
+    from user_playlist_channels c
+    join user_playlists p on p.id = c.playlist_id
+    where p.user_id = ${userId} and c.id > ${afterId} and c.stream_url like 'v1.%'
+    order by c.id
+    limit ${limit}
+  `;
+}
+
+export async function resealChannels(rows) {
+  if (rows.length === 0) return;
+  await sql`
+    update user_playlist_channels c set stream_url = v.url
+    from (select unnest(${pgArray(rows.map((r) => r.id))}::bigint[]) as id,
+                 unnest(${pgArray(rows.map((r) => r.url))}::text[]) as url) v
+    where c.id = v.id
+  `;
+}
+
+/** For the cutoff decision: how much is still under the old key. Counts only. */
+export async function legacySealedCounts() {
+  const [row] = await sql`
+    select
+      (select count(*)::int from user_playlists where source_url like 'v1.%') as playlists,
+      (select count(*)::int from provider_lines
+         where line_user like 'v1.%' or line_secret like 'v1.%' or source_url like 'v1.%') as lines,
+      (select count(*)::int from user_playlist_channels where stream_url like 'v1.%') as channels,
+      (select count(distinct user_id)::int from user_playlists where source_url like 'v1.%') as readers
+  `;
+  return row;
+}

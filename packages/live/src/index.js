@@ -1,4 +1,4 @@
-import { open, seal } from '@genre/auth';
+import { open, playlistKeyFor, seal } from '@genre/auth';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { importPlaylist } from '@genre/playlists';
@@ -132,6 +132,13 @@ export async function ensureLine(userId, { log = console.log } = {}) {
   const pass = await q.activeLivePass(userId);
   if (!pass) return { ok: false, reason: 'no active pass' };
 
+  /*
+   * The line's login is sealed with the reader's key vault, so nothing is opened
+   * at the provider until it can be stored: creating a line we then cannot save
+   * would leave a paid-for line nobody can find, and a retry would open another.
+   */
+  if (!playlistKeyFor(userId)) return { ok: false, reason: 'locked', locked: true };
+
   const done = [];
   let line = await q.providerLine(userId);
 
@@ -145,9 +152,9 @@ export async function ensureLine(userId, { log = console.log } = {}) {
       lineId: created.id,
       // Column names carry no "password": the schema guard keeps that word to
       // users alone, and these are sealed opaque strings either way.
-      lineUser: seal(created.username),
-      lineSecret: seal(created.password),
-      sourceUrl: seal(created.m3u),
+      lineUser: seal(created.username, userId),
+      lineSecret: seal(created.password, userId),
+      sourceUrl: seal(created.m3u, userId),
       expiresAt: created.expiresAt,
       maxConnections: null,
     });
@@ -186,7 +193,7 @@ export async function ensureLine(userId, { log = console.log } = {}) {
    */
   const existing = await q.managedPlaylistFor(userId);
   if (!existing) {
-    const m3u = open(line.source_url);
+    const m3u = open(line.source_url, userId);
     if (!m3u) throw new Error('the stored line could not be read');
 
     const result = await importPlaylist({ userId, url: m3u, label: 'GenreWatch Live TV' });

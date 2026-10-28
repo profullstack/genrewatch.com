@@ -25,6 +25,8 @@ const BUNDLES = [
    * natively. So: its own bundle, loaded whenever anything is about to play.
    */
   ['ads-entry.js', 'vendor-ads.js'],
+  // The key vault (Settings only): sealed-secrets' WebCrypto code, a few KB.
+  ['vault-entry.js', 'vendor-vault.js'],
 ];
 
 for (const [entry, name] of BUNDLES) {
