@@ -794,6 +794,12 @@ export const OwnLine = ({ own, shared, streamDead, title, liveOffer = null, sign
                 ))}
               </ul>
             </>
+          ) : own.locked ? (
+            <p class="empty">
+              Your list is sealed with your key vault, which is locked.{' '}
+              <a href="/settings#key-vault">Unlock it</a> to see which of your{' '}
+              {own.channelCount.toLocaleString('en-US')} entries carry this.
+            </p>
           ) : own.onDemand?.length > 0 || own.unavailable?.length > 0 ? null : (
             <p class="empty">
               None of your {own.channelCount.toLocaleString('en-US')} entries look like they carry{' '}
