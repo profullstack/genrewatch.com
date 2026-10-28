@@ -179,9 +179,12 @@ describe('the module', () => {
   test('every credential is sealed before it is stored, and the pass gates the line', () => {
     const ensure = src.slice(src.indexOf('export async function ensureLine'));
     const body = ensure.slice(0, ensure.indexOf('\n}\n'));
-    expect(body).toContain('lineUser: seal(created.username)');
-    expect(body).toContain('lineSecret: seal(created.password)');
-    expect(body).toContain('sourceUrl: seal(created.m3u)');
+    // Sealed with the reader's own vault, and nothing is opened at the provider
+    // while they are locked (a line we could not store would be lost).
+    expect(body).toContain('lineUser: seal(created.username, userId)');
+    expect(body).toContain('lineSecret: seal(created.password, userId)');
+    expect(body).toContain('sourceUrl: seal(created.m3u, userId)');
+    expect(body.indexOf('playlistKeyFor(userId)')).toBeLessThan(body.indexOf('provider.createLine'));
     expect(body).toContain("if (!pass) return { ok: false, reason: 'no active pass' }");
     /*
      * Our line is ADDED, never swapped in.

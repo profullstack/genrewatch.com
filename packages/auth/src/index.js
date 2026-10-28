@@ -215,4 +215,6 @@ export {
   setPassword,
   verifyPassword,
 } from './password.js';
-export { open, seal } from './secretbox.js';
+export { isLegacySealed, open, openLegacy, openOrLocked, seal } from './secretbox.js';
+export * from './vault.js';
+export { migrateChannels, migrateLegacyFor } from './vault-migrate.js';

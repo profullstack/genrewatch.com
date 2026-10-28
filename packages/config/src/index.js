@@ -215,26 +215,20 @@ export const config = {
    */
   playlists: {
     /**
-     * The key the stored playlist URL is encrypted with.
+     * The OLD key stored playlist URLs were encrypted with (seal v1).
      *
-     * PLAYLIST_SECRET when it is set, and otherwise derived from DATABASE_URL --
-     * which works because DATABASE_URL is required, so there is always a key, and
-     * because it is NOT stored in the database it protects. That is the whole
-     * point of encrypting these: the threat is a copy of the database (a backup, a
-     * dump pulled to a laptop), and a dump contains the sealed rows but not the
-     * environment that can open them.
-     *
-     * The trade for that convenience: rotating the database credentials makes
-     * stored lists unreadable, and every reader simply adds theirs again --
-     * decryption returns null rather than garbage, so nothing breaks loudly. Set
-     * PLAYLIST_SECRET explicitly to decouple the two.
+     * Read only by the one-shot migration to each reader's key vault
+     * (packages/auth/src/vault.js). It used to fall back to DATABASE_URL, which
+     * meant every login was readable by anyone holding the environment; that
+     * fallback is gone. LEGACY_KEY_MIGRATION=off is the cutoff, after which this
+     * can be removed.
      */
     get secret() {
-      return opt('PLAYLIST_SECRET') || opt('DATABASE_URL');
+      return opt('PLAYLIST_SECRET');
     },
-    /** Always on: there is no configuration left to forget. */
+    /** Always on: the readers' own vaults hold the keys now. */
     get enabled() {
-      return Boolean(this.secret);
+      return true;
     },
     /**
      * Refuse a list bigger than this, in bytes. 0 -- the default -- accepts any.

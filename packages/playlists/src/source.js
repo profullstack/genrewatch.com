@@ -48,7 +48,7 @@ export async function playlistSource(userId, { playlistId = null } = {}) {
     ? await q.getPlaylistFor({ userId, playlistId })
     : await q.getPlaylist(userId);
   if (!row) return null;
-  const url = open(row.source_url);
+  const url = open(row.source_url, userId);
   return {
     id: row.id,
     label: row.label ?? null,

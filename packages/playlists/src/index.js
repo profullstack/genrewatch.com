@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { open, seal } from '@genre/auth';
+import { ensurePlaylistKey, open, seal } from '@genre/auth';
 import { matchTerms, normaliseTitle, parseM3uStream, rankChannelsForTitle } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
@@ -66,7 +66,7 @@ export async function importPlaylist({ userId, playlistId = null, url, label, kn
     userId,
     playlistId,
     label: label || parsed.hostname,
-    sourceUrl: seal(url),
+    sourceUrl: seal(url, userId),
   });
   // Every write below is against THIS row. Without it an import into a reader's
   // second provider would wipe the channels of their first: the channel and status
@@ -102,7 +102,7 @@ export async function importPlaylist({ userId, playlistId = null, url, label, kn
     }
     // Compared unsealed: seal() carries a random nonce, so two ciphertexts of the
     // same URL never match and a ciphertext comparison would always roll back.
-    const before = open(previous.source_url);
+    const before = open(previous.source_url, userId);
     if (!before || before === url) return false;
     await q.savePlaylist({
       userId,
@@ -234,7 +234,7 @@ export async function importPlaylist({ userId, playlistId = null, url, label, kn
         fill: async (append) => {
           const list = await parseM3uStream(readSpill(spilled.path), {
             max: config.playlists.maxChannels,
-            onEntries: (entries) => append(entries.map(toChannelRow)),
+            onEntries: (entries) => append(entries.map((c) => toChannelRow(c, userId))),
           });
           // Only reachable when an operator has set PLAYLIST_MAX_CHANNELS: the
           // parser says so directly, where a length comparison could only infer it.
@@ -295,7 +295,7 @@ export async function importPlaylist({ userId, playlistId = null, url, label, kn
  * At module scope because it runs a few million times on a full catalogue and
  * there is no reason to rebuild the closure for every batch.
  */
-function toChannelRow(c) {
+function toChannelRow(c, ownerId) {
   return {
     title: c.title,
     // The provider's own group-title, verbatim. This is what makes a reader's own
@@ -303,7 +303,7 @@ function toChannelRow(c) {
     group: c.group,
     // Sealed individually: each one is the same credential with a channel id on
     // the end, so a leak of any single row is a leak of the line.
-    streamUrl: seal(c.url),
+    streamUrl: seal(c.url, ownerId),
     normTitle: normaliseTitle(c.title),
     /*
      * Worked out once, here, and stored.
@@ -351,7 +351,7 @@ export async function refreshPlaylist(userId, { playlistId = null, knownHash = n
     ? await q.getPlaylistFor({ userId, playlistId })
     : await q.getPlaylist(userId);
   if (!row) throw new Error('You have not added a list.');
-  const url = open(row.source_url);
+  const url = open(row.source_url, userId);
   if (!url) throw new Error('That stored list could not be read. Please add it again.');
   /*
    * The id goes through, and it is load-bearing rather than tidy.
@@ -393,7 +393,15 @@ export async function refreshDuePlaylists({ log = console.log, limit = 25 } = {}
 
   let changed = 0;
   let failed = 0;
+  let locked = 0;
   for (const row of due) {
+    // The address is sealed with the reader's own vault. A locked reader's list
+    // waits for them to unlock; it is not an error and is not backed off.
+    if (!(await ensurePlaylistKey(row.user_id))) {
+      locked++;
+      await q.postponePlaylistRefresh({ userId: row.user_id, playlistId: row.id }).catch(() => {});
+      continue;
+    }
     try {
       // By id: a reader can have several lists due at once, and refreshing "their
       // list" would poll the first one repeatedly and never touch the others.
@@ -409,8 +417,8 @@ export async function refreshDuePlaylists({ log = console.log, limit = 25 } = {}
     }
   }
 
-  log(`[playlists] ${due.length} due, ${changed} changed, ${failed} failed`);
-  return { checked: due.length, changed, failed };
+  log(`[playlists] ${due.length} due, ${changed} changed, ${failed} failed, ${locked} locked`);
+  return { checked: due.length, changed, failed, locked };
 }
 
 /**
@@ -520,7 +528,7 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
     playlistId: byId.get(m.id)?.playlist_id ?? null,
     providerLabel: byId.get(m.id)?.playlist_label ?? null,
     providerManaged: byId.get(m.id)?.playlist_managed === true,
-    url: open(m.url),
+    url: open(m.url, userId),
     verified: byId.get(m.id)?.is_live === true && freshEnough(byId.get(m.id)?.checked_at),
   });
 

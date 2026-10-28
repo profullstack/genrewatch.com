@@ -17,7 +17,12 @@ process.env.PLAYLIST_SECRET = 'test-secret-for-sealing-values';
 const { mock } = await import('bun:test');
 
 const ROOT = new URL('../../', import.meta.url).pathname;
-const { open, seal } = await import(`${ROOT}packages/auth/src/secretbox.js`);
+const { open: openFor, seal: sealFor } = await import(`${ROOT}packages/auth/src/secretbox.js`);
+const { unlockStore } = await import(`${ROOT}packages/auth/src/vault.js`);
+// The reader's vault is unlocked for the length of the probe (packages/auth/src/vault.js).
+unlockStore().unlock('u1', new Uint8Array(32).fill(7), 3600);
+const open = (v) => openFor(v, 'u1');
+const seal = (v) => sealFor(v, 'u1');
 
 /** The one row this feature stores, held in memory. */
 let row = null;
