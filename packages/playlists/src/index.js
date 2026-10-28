@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ensurePlaylistKey, open, seal } from '@genre/auth';
+import { ensurePlaylistKey, open, openOrLocked, playlistKeyFor, seal } from '@genre/auth';
 import { matchTerms, normaliseTitle, parseM3uStream, rankChannelsForTitle } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
@@ -472,6 +472,22 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
     q.playlistCandidates(userId, { terms: matchTerms({ title, genreName, categoryName }) }),
   ]);
   if (channelCount === 0) return none;
+  /*
+   * Locked vault: the entries are there but sealed with the reader's key, which
+   * this process does not hold. The page says so and offers the unlock, rather
+   * than the whole page failing.
+   */
+  if (!playlistKeyFor(userId)) {
+    return {
+      hasList: true,
+      channelCount,
+      locked: true,
+      onDemand: [],
+      matches: [],
+      genre: [],
+      unavailable: [],
+    };
+  }
   if (rows.length === 0) {
     return { hasList: true, channelCount, onDemand: [], matches: [], genre: [], unavailable: [] };
   }
@@ -528,7 +544,8 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
     playlistId: byId.get(m.id)?.playlist_id ?? null,
     providerLabel: byId.get(m.id)?.playlist_label ?? null,
     providerManaged: byId.get(m.id)?.playlist_managed === true,
-    url: open(m.url, userId),
+    // openOrLocked: a channel still on the old key mid-migration is skipped, not fatal.
+    url: openOrLocked(m.url, userId).value,
     verified: byId.get(m.id)?.is_live === true && freshEnough(byId.get(m.id)?.checked_at),
   });
 
