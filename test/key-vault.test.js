@@ -178,8 +178,17 @@ describe('a reader with no vault yet (0.25.1)', () => {
   });
 
   test('the settings form submits on Enter, and the bundles are IIFE-wrapped', async () => {
+    // The card is the house one (@profullstack/sealed-secrets/vault-card).
     const page = await Bun.file(`${ROOT}apps/web/src/views/pages.jsx`).text();
-    expect(page).toContain('<form class="stack" data-vault-form>');
+    expect(page).toContain('keyVaultCardHtml({');
+    const { keyVaultCardHtml } = await import(
+      `${ROOT}apps/web/node_modules/@profullstack/sealed-secrets/src/vault-card.js`
+    );
+    const html = keyVaultCardHtml({ app: 'genrewatch', scope: 'playlists', userId: 'u1' });
+    expect(html).toContain('<form class="stack" data-vault-form');
+    expect(html).toMatch(/type="submit"[^>]*data-vault-create/);
+    const entry = await Bun.file(`${ROOT}apps/web/src/client/vault-entry.js`).text();
+    expect(entry).toContain('@profullstack/sealed-secrets/vault-ui/auto');
     const build = await Bun.file(`${ROOT}apps/web/build-client.js`).text();
     expect(build).toContain("format: 'iife'");
   });

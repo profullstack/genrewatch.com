@@ -1,3 +1,4 @@
+import { createVaultHandlers, mountVaultRoutes } from '@profullstack/sealed-secrets/vault-server';
 import { timingSafeEqual } from 'node:crypto';
 import * as auth from '@genre/auth';
 import {
@@ -3122,67 +3123,34 @@ async function vaultView(userId) {
   };
 }
 
-app.get('/my/vault', async (c) => {
-  const user = requireUser(c);
-  c.header('cache-control', 'no-store');
-  return c.json({ ...(await vaultView(user.id)), seal: await q.userVaultSeal(user.id) });
-});
-
-app.post('/my/vault', async (c) => {
-  const user = requireUser(c);
-  const body = await c.req.json().catch(() => ({}));
-  if (!auth.isSealRecordValue(body.seal))
-    return c.json({ error: 'A sealed vault record is required.' }, 400);
-  const created = await q.createUserVault({ userId: user.id, seal: body.seal });
-  if (!created) return c.json({ error: 'You already have a key vault.' }, 409);
-  // From here new values need the vault; the unlock that follows re-seals the v1 ones.
-  auth.noteVaultOwner(user.id);
-  return c.json({ exists: true }, 201);
-});
-
-/** A new passphrase: the same data key wrapped again; both records must open with it. */
-app.put('/my/vault', async (c) => {
-  const user = requireUser(c);
-  const body = await c.req.json().catch(() => ({}));
-  const current = await q.userVaultSeal(user.id);
-  if (!current) return c.json({ error: 'No key vault yet.' }, 404);
-  if (!auth.isSealRecordValue(body.seal) || typeof body.dek !== 'string') {
-    return c.json({ error: 'seal and dek are required' }, 400);
-  }
-  const ok = await auth.verifyRewrap(String(user.id), current, body.seal, body.dek);
-  if (!ok) return c.json({ error: 'That does not open your vault.' }, 403);
-  await q.replaceUserVault({ userId: user.id, seal: body.seal });
-  return c.json({ exists: true });
-});
-
-app.post('/my/vault/unlock', async (c) => {
-  const user = requireUser(c);
-  const body = await c.req.json().catch(() => ({}));
-  const seal = await q.userVaultSeal(user.id);
-  if (!seal) return c.json({ error: 'Set up your key vault first.', code: 'vault_missing' }, 404);
-  let ttl;
-  try {
-    ttl = auth.ttlSeconds(body.ttl);
-  } catch {
-    return c.json(
-      { error: 'Choose how long to stay unlocked, like 8h or 7d (7 days at most).' },
-      400,
-    );
-  }
-  try {
-    const status = await auth.unlockWithDataKey(user.id, seal, body.dek, ttl);
-    const migration = await auth.migrateLegacyFor(user.id);
-    return c.json({ ...status, migration });
-  } catch (err) {
-    if (err.status === 403) return c.json({ error: err.message }, 403);
-    throw err;
-  }
-});
-
-app.post('/my/vault/lock', async (c) => {
-  const user = requireUser(c);
-  auth.unlockStore().lock(String(user.id));
-  return c.json({ unlocked: false, expiresAt: null });
+// The routes are the house ones (@profullstack/sealed-secrets/vault-server); what
+// is ours is where the record lives and what an unlock keeps: only the playlist
+// key derived from the data key, never the data key itself.
+mountVaultRoutes(app, {
+  userId: (c) => requireUser(c).id,
+  handlers: createVaultHandlers({
+    sealer: auth.sealer,
+    store: {
+      get: (userId) => q.userVaultSeal(userId),
+      create: (userId, seal) => q.createUserVault({ userId, seal }),
+      replace: (userId, seal) => q.replaceUserVault({ userId, seal }),
+    },
+    // From here new values need the vault; the unlock that follows re-seals the v1 ones.
+    onCreate: (userId) => auth.noteVaultOwner(userId),
+    onUnlock: async (userId, dek, ttl) => {
+      const key = auth.derivePlaylistKey(dek, userId);
+      const status = auth.unlockStore().unlock(String(userId), key, ttl);
+      key.fill(0);
+      const migration = await auth.migrateLegacyFor(userId);
+      return { ...status, migration };
+    },
+    onLock: (userId) => auth.unlockStore().lock(String(userId)),
+    status: (userId) => auth.unlockStore().status(String(userId)),
+    view: async (userId) => {
+      const { exists, ...rest } = await vaultView(userId);
+      return rest;
+    },
+  }),
 });
 
 /**
