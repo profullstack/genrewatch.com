@@ -11,6 +11,7 @@
     "@genre/auth": "workspace:*",
     "@genre/config": "workspace:*",
     "@genre/db": "workspace:*",
-    "@genre/playlists": "workspace:*"
+    "@genre/playlists": "workspace:*",
+    "@profullstack/stream-providers": "^0.1.1"
   }
 }

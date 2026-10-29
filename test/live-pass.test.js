@@ -99,7 +99,9 @@ describe('the provider client', () => {
       };
       const line = await provider.createLine({ packageId: 113653, connections: 3, fetchImpl });
       expect(seen.url).toBe(`${config.live.provider.baseUrl}/api/v1/create-line`);
-      expect(seen.init.headers.authorization).toBe('Bearer test-key');
+      // X-ApiKey: the live reseller API refuses a bearer ("Unauthorized").
+      expect(seen.init.headers['x-apikey']).toBe('test-key');
+      expect(seen.init.headers.authorization).toBeUndefined();
       expect(seen.body.package).toBe(113653);
       // Two beyond the one a line comes with.
       expect(seen.body.additional_cons).toBe(2);
