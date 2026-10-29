@@ -465,7 +465,12 @@ export const config = {
       get apiKey() {
         return opt('IPTV_ARGON_API_KEY');
       },
-      baseUrl: opt('IPTV_ARGON_API_BASE_URL', 'https://api.argontv.nl'),
+      /*
+       * The distributors host, not api.argontv.nl: that name has no DNS record
+       * (checked 2026-10-29; tipoffwatch found the same on 2026-09-06), so every
+       * call failed at name resolution, which reads like the provider being down.
+       */
+      baseUrl: opt('IPTV_ARGON_API_BASE_URL', 'https://distributors.argontv.nl'),
       /** The channel bouquet a new line gets. From the reseller dashboard. */
       get templateId() {
         const v = opt('IPTV_ARGON_TEMPLATE_ID');
