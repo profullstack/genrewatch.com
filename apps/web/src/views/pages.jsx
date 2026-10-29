@@ -3,6 +3,7 @@ import { COLUMNS as PROFILE_COLUMNS, renderProfileFields } from '@profullstack/p
 import { keyVaultCardHtml } from '@profullstack/sealed-secrets/vault-card';
 import { raw } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
+import { coinpayConfig } from '../lib/coinpay-signin.js';
 import { watchListNode } from '../lib/jsonld.js';
 import { WATCH_KIND_LABEL, watchSourcesOf } from '../lib/watch-sources.js';
 import {
@@ -2050,6 +2051,21 @@ export const SignIn = ({
               {magicError}
             </p>
           ) : null}
+          {/* Sign in with CoinPay first: the house master account. Bound to the
+              CoinPay account itself, never matched to an account by email. Left
+              off an invite sign-up, which only counts through the emailed link. */}
+          {coinpayConfig() && !invite ? (
+            <>
+              <a
+                class="cta coinpay-signin"
+                data-coinpay-signin
+                href={`/api/v1/coinpay/oauth/start?next=${encodeURIComponent(next ?? '/following')}`}
+              >
+                {mode === 'signup' ? 'Sign up with CoinPay' : 'Sign in with CoinPay'}
+              </a>
+              <div class="or">or</div>
+            </>
+          ) : null}
           <form method="post" action="/api/auth/magic">
             <input type="hidden" name="next" value={next ?? '/following'} />
             {mode === 'signup' ? <input type="hidden" name="mode" value="signup" /> : null}
@@ -2364,6 +2380,9 @@ export const Settings = ({
   user,
   prefs,
   passkeys,
+  // Sign in with CoinPay: { connected, email, onlyWayIn, notice, error }, or null
+  // when CoinPay is not configured.
+  coinpay = null,
   /*
    * Every line this reader has, in their order, each already carrying the masked
    * address the handler worked out for it.
@@ -2830,6 +2849,46 @@ export const Settings = ({
       </button>
       <p id="add-passkey-msg" class="feedback" hidden />
     </section>
+
+    {coinpay ? (
+      <section id="coinpay">
+        <h2>CoinPay</h2>
+        {coinpay.notice ? <p class="feedback ok">{coinpay.notice}</p> : null}
+        {coinpay.error ? (
+          <p class="feedback error" role="alert">
+            {coinpay.error}
+          </p>
+        ) : null}
+        {coinpay.connected ? (
+          <>
+            <p class="muted">
+              Connected{coinpay.email ? ` (${coinpay.email})` : ''}. You can sign in with CoinPay.
+            </p>
+            {coinpay.onlyWayIn ? (
+              <p class="muted small">
+                CoinPay is the only way into this account, so it cannot be disconnected.
+              </p>
+            ) : (
+              <form method="post" action="/api/v1/coinpay/disconnect">
+                <button class="ghost" type="submit">
+                  Disconnect CoinPay
+                </button>
+              </form>
+            )}
+          </>
+        ) : (
+          <>
+            <p class="muted">Connect your CoinPay account to sign in with it next time.</p>
+            <a
+              class="ghost button"
+              href={'/api/v1/coinpay/oauth/start?mode=connect&next=%2Fsettings'}
+            >
+              Connect CoinPay
+            </a>
+          </>
+        )}
+      </section>
+    ) : null}
 
     {/* A password, for the television.
         Set from here and only from here: whoever can set one already has this

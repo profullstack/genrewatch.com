@@ -19,6 +19,7 @@
     "@genre/payments": "workspace:*",
     "@genre/playlists": "workspace:*",
     "@genre/queue": "workspace:*",
+    "@profullstack/coinpay-onboard": "0.3.1",
     "@profullstack/footer": "latest",
     "@profullstack/leaderboard": "^0.3.1",
     "@profullstack/notifications": "^0.1.4",
