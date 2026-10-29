@@ -1,5 +1,6 @@
 import { config } from '@genre/config';
 import { COLUMNS as PROFILE_COLUMNS, renderProfileFields } from '@profullstack/profile';
+import { keyVaultCardHtml } from '@profullstack/sealed-secrets/vault-card';
 import { raw } from 'hono/html';
 import { assetUrl } from '../lib/asset-version.js';
 import { watchListNode } from '../lib/jsonld.js';
@@ -3030,94 +3031,20 @@ export const PushCheck = ({ user }) => (
 /**
  * The key vault card. Playlist addresses carry provider logins, so they are
  * sealed with a passphrase only the reader knows (packages/auth/src/vault.js).
- * All crypto runs in vendor-vault.js in the browser; this only draws the form.
+ * The markup is the house card (@profullstack/sealed-secrets/vault-card) and all
+ * crypto runs in vendor-vault.js (its vault-ui/auto entry) in the browser.
  */
-export const KeyVaultCard = ({ user, vault }) => (
-  <section id="key-vault" class="card" data-app={vault.app} data-user={user.id}>
-    <h2>Key vault</h2>
-    <p class="muted small">
-      Your playlist addresses carry your provider login, so they are sealed with a passphrase only
-      you know. We cannot read them, and neither could anyone who broke into our servers. Playing,
-      refreshing and checking your lists works while the vault is unlocked; a restart on our side
-      locks it again and your lists wait until you unlock.
-    </p>
-    <p class="muted small">
-      If you lose both your passphrase and your recovery key, the stored addresses are gone for
-      good: nobody here can open them, and you would add your lists again.
-    </p>
-    <p data-vault-status class="notice" aria-live="polite">
-      {!vault.exists
-        ? 'No vault yet.'
-        : vault.unlocked
-          ? `Unlocked until ${new Date(vault.expiresAt).toUTCString()}.`
-          : 'Locked.'}
-      {vault.legacy ? ` ${vault.legacy} older item(s) will be re-sealed when you unlock.` : ''}
-    </p>
-    {vault.exists && vault.unlocked ? (
-      <p>
-        <button type="button" data-vault-lock>
-          Lock now
-        </button>
-      </p>
-    ) : (
-      // A form so Enter submits; vault-entry.js handles it, nothing is posted.
-      <form class="stack" data-vault-form>
-        <input
-          type="password"
-          name="passphrase"
-          autocomplete={vault.exists ? 'current-password' : 'new-password'}
-          placeholder={
-            vault.exists ? 'Passphrase (or recovery key)' : 'Passphrase, 10 characters or more'
-          }
-        />
-        {vault.exists ? (
-          <label class="small">
-            <input type="checkbox" name="recovery" /> That is my recovery key
-          </label>
-        ) : (
-          <input
-            type="password"
-            name="confirm"
-            autocomplete="new-password"
-            placeholder="The same again"
-          />
-        )}
-        <label class="small">
-          Stay unlocked for{' '}
-          <select name="ttl">
-            <option value="1h">1 hour</option>
-            <option value="8h" selected>
-              8 hours
-            </option>
-            <option value="1d">1 day</option>
-            <option value="7d">7 days</option>
-          </select>
-        </label>
-        {vault.exists ? (
-          <button type="submit" data-vault-unlock>
-            Unlock
-          </button>
-        ) : (
-          <button type="submit" data-vault-create>
-            Create my vault
-          </button>
-        )}
-        {vault.exists ? (
-          <details>
-            <summary class="small">Change passphrase</summary>
-            <input
-              type="password"
-              name="new_passphrase"
-              autocomplete="new-password"
-              placeholder="New passphrase"
-            />
-            <button type="button" data-vault-rewrap>
-              Change it
-            </button>
-          </details>
-        ) : null}
-      </form>
-    )}
-    <script src={assetUrl('vendor-vault.js')} defer />
-  </section>
-);
+export const KeyVaultCard = ({ user, vault }) =>
+  raw(
+    keyVaultCardHtml({
+      app: vault.app,
+      scope: 'playlists',
+      userId: String(user.id),
+      vault,
+      intro: [
+        'Your playlist addresses carry your provider login, so they are sealed with a passphrase only you know. We cannot read them, and neither could anyone who broke into our servers. Playing, refreshing and checking your lists works while the vault is unlocked; a restart on our side locks it again and your lists wait until you unlock.',
+      ],
+      lost: 'If you lose both your passphrase and your recovery key, the stored addresses are gone for good: nobody here can open them, and you would add your lists again.',
+      scriptSrc: assetUrl('vendor-vault.js'),
+    }),
+  );
