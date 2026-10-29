@@ -49,6 +49,24 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { nextAdvert } from './lib/ads.js';
 import { assetUrl, isCurrentVersion, loadAssetVersions } from './lib/asset-version.js';
 import { attempt, callerAddress, forgive, MISS, VIEW } from './lib/auth-throttle.js';
+import {
+  authorizeUrl as coinpayAuthorizeUrl,
+  coinpayConfig,
+  dbCoinpayStore,
+  decodePending as decodeCoinpayPending,
+  disconnectCoinpay,
+  encodePending as encodeCoinpayPending,
+  isPlaceholderEmail as isCoinpayPlaceholder,
+  newPendingAuth as newCoinpayPending,
+  OAUTH_COOKIE as COINPAY_COOKIE,
+  OAUTH_COOKIE_MAX_AGE as COINPAY_COOKIE_MAX_AGE,
+  OAUTH_COOKIE_PATH as COINPAY_COOKIE_PATH,
+  redirectUri as coinpayRedirectUri,
+  resolveCoinpayUser,
+  SETTINGS_PATH as COINPAY_SETTINGS_PATH,
+  stateMatches as coinpayStateMatches,
+} from './lib/coinpay-signin.js';
+import { finishSignIn as finishCoinpaySignIn } from '@profullstack/coinpay-onboard/oauth';
 import { buildCalendar } from './lib/ics.js';
 import { agentName, leaderboard } from './lib/leaderboard.js';
 import { robotsTxt } from './lib/robots.js';
@@ -2306,7 +2324,15 @@ const viewBackoff = authBackoff(
 
 app.get('/login', viewBackoff);
 app.get('/login', async (c) =>
-  c.html(await render(<SignIn mode="login" next={c.req.query('next')} />)),
+  c.html(
+    await render(
+      <SignIn
+        mode="login"
+        next={c.req.query('next')}
+        magicError={c.req.query('coinpay_error')?.slice(0, 300)}
+      />,
+    ),
+  ),
 );
 app.get('/signup', viewBackoff);
 app.get('/signup', async (c) =>
@@ -2464,6 +2490,127 @@ app.get('/auth/magic', async (c) => {
   }
 
   return c.redirect(c.req.query('next') ?? '/following', 303);
+});
+
+/*
+ * Sign in with CoinPay (lib/coinpay-signin.js). The account is found by the
+ * CoinPay `sub` only, never by the email CoinPay reports. mode=connect links
+ * CoinPay to the signed-in account from Settings.
+ */
+app.get('/api/v1/coinpay/oauth/start', viewBackoff);
+app.get('/api/v1/coinpay/oauth/start', async (c) => {
+  const cfg = coinpayConfig();
+  if (!cfg) return c.text('Sign in with CoinPay is not configured.', 503);
+  const mode = c.req.query('mode') === 'connect' ? 'connect' : 'login';
+  if (mode === 'connect' && !c.get('user')) {
+    return c.redirect(`/login?next=${encodeURIComponent(COINPAY_SETTINGS_PATH)}`, 302);
+  }
+  const pending = newCoinpayPending(mode, c.req.query('next'));
+  setCookie(c, COINPAY_COOKIE, encodeCoinpayPending(pending), {
+    httpOnly: true,
+    secure: cfg.siteUrl.startsWith('https://'),
+    sameSite: 'Lax',
+    path: COINPAY_COOKIE_PATH,
+    maxAge: COINPAY_COOKIE_MAX_AGE,
+  });
+  c.header('cache-control', 'no-store');
+  return c.redirect(coinpayAuthorizeUrl(cfg, pending), 302);
+});
+
+app.get(
+  '/api/v1/coinpay/oauth/callback',
+  authBackoff('token', (c, retryAfter) =>
+    c.text(`Too many attempts. Try again in ${waitFor(retryAfter)}.`, 429),
+  ),
+);
+app.get('/api/v1/coinpay/oauth/callback', async (c) => {
+  const cfg = coinpayConfig();
+  if (!cfg) return c.text('Sign in with CoinPay is not configured.', 503);
+  const pending = decodeCoinpayPending(getCookie(c, COINPAY_COOKIE));
+  const failPath = pending?.mode === 'connect' ? COINPAY_SETTINGS_PATH : '/login';
+  const back = (path, error) => {
+    // Clear the one-shot cookie with an APPENDED header (setCookie), so a
+    // session cookie set before this with c.header survives.
+    setCookie(c, COINPAY_COOKIE, '', { path: COINPAY_COOKIE_PATH, maxAge: 0 });
+    c.header('cache-control', 'no-store');
+    const sep = path.includes('?') ? '&' : '?';
+    return c.redirect(
+      error ? `${path}${sep}coinpay_error=${encodeURIComponent(error)}` : path,
+      302,
+    );
+  };
+
+  if (!pending) return back('/login', 'CoinPay sign-in expired. Try again.');
+  if (!coinpayStateMatches(pending.state, c.req.query('state'))) {
+    return back(failPath, 'CoinPay sign-in failed: state mismatch.');
+  }
+  if (c.req.query('error')) {
+    return back(
+      failPath,
+      `CoinPay: ${String(c.req.query('error_description') || c.req.query('error')).slice(0, 200)}`,
+    );
+  }
+  const code = c.req.query('code');
+  if (!code) return back(failPath, 'CoinPay sign-in failed: no code.');
+  const me = c.get('user');
+  if (pending.mode === 'connect' && !me)
+    return back('/login', 'Sign in first, then connect CoinPay.');
+
+  let claims;
+  try {
+    const r = await finishCoinpaySignIn({
+      code,
+      verifier: pending.verifier,
+      nonce: pending.nonce,
+      clientId: cfg.clientId,
+      clientSecret: cfg.clientSecret,
+      redirectUri: coinpayRedirectUri(cfg),
+      base: cfg.issuer,
+    });
+    claims = {
+      sub: r.sub,
+      email: r.email ? r.email.slice(0, 320) : null,
+      name: r.name ? r.name.trim().slice(0, 200) : null,
+    };
+  } catch (err) {
+    console.error('[coinpay-signin] finish', err.message);
+    return back(failPath, 'CoinPay sign-in failed. Try again.');
+  }
+
+  let resolved;
+  try {
+    resolved = await resolveCoinpayUser(
+      { mode: pending.mode, currentUserId: me?.id ?? null, claims },
+      dbCoinpayStore(q),
+    );
+  } catch (err) {
+    console.error('[coinpay-signin] resolve', err.message);
+    return back(failPath, 'CoinPay sign-in failed. Try again.');
+  }
+  if (!resolved.ok) return back(failPath, resolved.error);
+  if (pending.mode === 'connect') return back(`${COINPAY_SETTINGS_PATH}?coinpay=connected`);
+  if (me?.id === resolved.userId) return back(pending.next);
+
+  const sessionId = await q.startSession({
+    userId: resolved.userId,
+    ttlDays: config.session.ttlDays,
+    userAgent: c.req.header('user-agent'),
+  });
+  // Session first with c.header (replaces), then back() appends the clear.
+  c.header('set-cookie', auth.sessionCookie(sessionId));
+  return back(pending.next);
+});
+
+app.post('/api/v1/coinpay/disconnect', async (c) => {
+  const user = requireUser(c);
+  const r = await disconnectCoinpay(user, dbCoinpayStore(q));
+  if (c.req.header('accept')?.includes('application/json')) return c.json(r, r.ok ? 200 : 409);
+  return c.redirect(
+    r.ok
+      ? `${COINPAY_SETTINGS_PATH}?coinpay=disconnected`
+      : `${COINPAY_SETTINGS_PATH}?coinpay_error=${encodeURIComponent(r.error)}`,
+    303,
+  );
 });
 
 /**
@@ -3222,6 +3369,9 @@ app.get('/settings', async (c) => {
    * their own and is very often NOT first, and reading only the first row would
    * hide the pass card from exactly the readers who are paying for it.
    */
+  const coinpayIdentity = coinpayConfig()
+    ? await q.coinpayIdentityByUser(user.id).catch(() => null)
+    : null;
   const hasManaged = playlists.some((p) => p.managed);
   const livePass = hasManaged ? await q.activeLivePass(user.id) : null;
   // No 'restored' case any more: nothing restores. Removing a managed list used to
@@ -3285,6 +3435,22 @@ app.get('/settings', async (c) => {
           }
         }
         passkeys={passkeys}
+        coinpay={
+          coinpayConfig()
+            ? {
+                connected: Boolean(coinpayIdentity),
+                email: coinpayIdentity?.coinpay_email ?? null,
+                onlyWayIn: isCoinpayPlaceholder(user.email),
+                notice:
+                  c.req.query('coinpay') === 'connected'
+                    ? 'CoinPay connected.'
+                    : c.req.query('coinpay') === 'disconnected'
+                      ? 'CoinPay disconnected.'
+                      : null,
+                error: c.req.query('coinpay_error')?.slice(0, 300) ?? null,
+              }
+            : null
+        }
         lines={lines}
         // The line the sharing card acts on: the first the reader owns. Our
         // managed line is never shareable, so a reader whose only list came with

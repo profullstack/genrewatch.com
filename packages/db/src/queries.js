@@ -4167,3 +4167,57 @@ export async function legacySealedCounts() {
   `;
   return row;
 }
+
+/* ------------------------------------------------------ Sign in with CoinPay -- */
+/*
+ * Rows bind a user to a CoinPay `sub` (migration 0025). Nothing here looks a user
+ * up by email: CoinPay never verifies addresses.
+ */
+
+const COINPAY_COLS = sql`user_id, coinpay_sub, coinpay_email, created_via`;
+
+export async function coinpayIdentityBySub(sub) {
+  const [row] =
+    await sql`select ${COINPAY_COLS} from coinpay_identities where coinpay_sub = ${sub}`;
+  return row ?? null;
+}
+
+export async function coinpayIdentityByUser(userId) {
+  const [row] = await sql`select ${COINPAY_COLS} from coinpay_identities where user_id = ${userId}`;
+  return row ?? null;
+}
+
+/** Insert; 'conflict' when the sub or the user is already bound. */
+export async function linkCoinpayIdentity(row) {
+  const inserted = await sql`
+    insert into coinpay_identities ${sql({
+      user_id: row.user_id,
+      coinpay_sub: row.coinpay_sub,
+      coinpay_email: row.coinpay_email ?? null,
+      coinpay_name: row.coinpay_name ?? null,
+      created_via: row.created_via,
+      last_login_at: new Date(),
+    })}
+    on conflict do nothing
+    returning user_id
+  `;
+  return inserted.length ? 'ok' : 'conflict';
+}
+
+export async function unlinkCoinpayIdentity(userId) {
+  await sql`delete from coinpay_identities where user_id = ${userId}`;
+}
+
+export async function touchCoinpayIdentity(sub) {
+  await sql`update coinpay_identities set last_login_at = now() where coinpay_sub = ${sub}`;
+}
+
+/** A new account for a first CoinPay login, under a placeholder address nobody reads. */
+export async function createUserWithEmail(email) {
+  const [row] = await sql`insert into users ${sql({ email })} returning id`;
+  return row.id;
+}
+
+export async function deleteUser(userId) {
+  await sql`delete from users where id = ${userId}`;
+}
