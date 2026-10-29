@@ -105,6 +105,38 @@ export function adoptPlaylistKey(userId, keyBytes, ttlSecondsLeft) {
   );
 }
 
+/*
+ * Who has a vault. A reader who never made one still has everything sealed under
+ * the old server key (v1), and keeps reading and writing it that way until they
+ * do: v1 is a key this server already holds, so it is no weaker than before the
+ * vault shipped, and refusing it locked every list on the site (0.25.0). Kept
+ * in memory so seal/open can stay synchronous; refreshed from user_vaults every
+ * minute (vault-migrate.js) and marked the moment a vault is created.
+ */
+const OWNERS = Symbol.for(`${VAULT_APP}.vault.owners`);
+const owners = () => (globalThis[OWNERS] ??= new Set());
+export const hasVault = (userId) => owners().has(String(userId));
+export function noteVaultOwner(userId) {
+  owners().add(String(userId));
+}
+export function setVaultOwners(ids) {
+  globalThis[OWNERS] = new Set(ids.map(String));
+}
+
+/** True while this reader's values are sealed under the legacy key: no vault yet. */
+export function usesLegacyKey(userId, env = process.env) {
+  return (
+    Boolean(userId) &&
+    !playlistKeyFor(userId) &&
+    !hasVault(userId) &&
+    legacyMigrationEnabled(env) &&
+    Boolean(env.PLAYLIST_SECRET)
+  );
+}
+
+/** Sealing works for this reader right now: unlocked, or no vault yet. */
+export const canSealFor = (userId) => Boolean(playlistKeyFor(userId)) || usesLegacyKey(userId);
+
 export function legacyMigrationEnabled(env = process.env) {
   return (
     String(env.LEGACY_KEY_MIGRATION ?? 'on')
@@ -120,7 +152,7 @@ export function legacyMigrationEnabled(env = process.env) {
  * keeps it for at most ten minutes. Nothing is asked for a locked reader.
  */
 export async function ensurePlaylistKey(userId, env = process.env) {
-  if (playlistKeyFor(userId)) return true;
+  if (playlistKeyFor(userId) || usesLegacyKey(userId, env)) return true;
   const base = env.VAULT_INTERNAL_URL;
   const token = env.VAULT_INTERNAL_TOKEN;
   if (!base || !token) return false;

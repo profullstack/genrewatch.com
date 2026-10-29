@@ -3135,6 +3135,8 @@ app.post('/my/vault', async (c) => {
     return c.json({ error: 'A sealed vault record is required.' }, 400);
   const created = await q.createUserVault({ userId: user.id, seal: body.seal });
   if (!created) return c.json({ error: 'You already have a key vault.' }, 409);
+  // From here new values need the vault; the unlock that follows re-seals the v1 ones.
+  auth.noteVaultOwner(user.id);
   return c.json({ exists: true }, 201);
 });
 

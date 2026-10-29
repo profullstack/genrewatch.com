@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ensurePlaylistKey, open, openOrLocked, playlistKeyFor, seal } from '@genre/auth';
+import { canSealFor, ensurePlaylistKey, open, openOrLocked, seal } from '@genre/auth';
 import { matchTerms, normaliseTitle, parseM3uStream, rankChannelsForTitle } from '@genre/catalog';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
@@ -477,7 +477,7 @@ export async function ownChannelsFor({ userId, title, genreName = null, category
    * this process does not hold. The page says so and offers the unlock, rather
    * than the whole page failing.
    */
-  if (!playlistKeyFor(userId)) {
+  if (!canSealFor(userId)) {
     return {
       hasList: true,
       channelCount,

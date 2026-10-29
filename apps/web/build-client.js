@@ -36,6 +36,10 @@ for (const [entry, name] of BUNDLES) {
     naming: name,
     minify: true,
     target: 'browser',
+    // Classic scripts share one global scope. Unwrapped, two minified bundles
+    // collide on names like `P` ("Identifier 'P' has already been declared") and
+    // the second one never runs: on Settings that was the key vault or WebAuthn.
+    format: 'iife',
     /*
      * The player loads its engines on demand, and a bundler with no code
      * splitting answers a dynamic import by inlining it. A live channel is

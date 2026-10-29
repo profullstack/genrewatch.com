@@ -3060,7 +3060,8 @@ export const KeyVaultCard = ({ user, vault }) => (
         </button>
       </p>
     ) : (
-      <div class="stack">
+      // A form so Enter submits; vault-entry.js handles it, nothing is posted.
+      <form class="stack" data-vault-form>
         <input
           type="password"
           name="passphrase"
@@ -3093,11 +3094,11 @@ export const KeyVaultCard = ({ user, vault }) => (
           </select>
         </label>
         {vault.exists ? (
-          <button type="button" data-vault-unlock>
+          <button type="submit" data-vault-unlock>
             Unlock
           </button>
         ) : (
-          <button type="button" data-vault-create>
+          <button type="submit" data-vault-create>
             Create my vault
           </button>
         )}
@@ -3115,7 +3116,7 @@ export const KeyVaultCard = ({ user, vault }) => (
             </button>
           </details>
         ) : null}
-      </div>
+      </form>
     )}
     <script src={assetUrl('vendor-vault.js')} defer />
   </section>

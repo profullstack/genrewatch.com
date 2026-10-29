@@ -4087,6 +4087,12 @@ export async function userVaultSeal(userId) {
   return typeof row.seal === 'string' ? JSON.parse(row.seal) : row.seal;
 }
 
+/** Every reader with a key vault (packages/auth/src/vault.js keeps the set in memory). */
+export async function vaultOwnerIds() {
+  const rows = await sql`select user_id from user_vaults`;
+  return rows.map((r) => String(r.user_id));
+}
+
 export async function createUserVault({ userId, seal }) {
   const rows = await sql`
     insert into user_vaults (user_id, seal) values (${userId}, ${JSON.stringify(seal)}::jsonb)

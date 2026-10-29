@@ -121,8 +121,9 @@ export const PremiumPage = ({
           {paymentsEnabled ? (
             <>
               <p>
-                {money(priceCents, currency)} for {term(termDays)}, paid through CoinPay in any major coin or PayPal.
-                It does not renew itself — there is nothing to cancel and no card on file.
+                {money(priceCents, currency)} for {term(termDays)}, paid through CoinPay in any
+                major coin or PayPal. It does not renew itself — there is nothing to cancel and no
+                card on file.
               </p>
               {user ? (
                 <form method="post" action="/api/membership/buy">

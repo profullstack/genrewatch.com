@@ -1,4 +1,4 @@
-import { open, playlistKeyFor, seal } from '@genre/auth';
+import { canSealFor, open, seal } from '@genre/auth';
 import { config } from '@genre/config';
 import * as q from '@genre/db/queries';
 import { importPlaylist } from '@genre/playlists';
@@ -137,7 +137,7 @@ export async function ensureLine(userId, { log = console.log } = {}) {
    * at the provider until it can be stored: creating a line we then cannot save
    * would leave a paid-for line nobody can find, and a retry would open another.
    */
-  if (!playlistKeyFor(userId)) return { ok: false, reason: 'locked', locked: true };
+  if (!canSealFor(userId)) return { ok: false, reason: 'locked', locked: true };
 
   const done = [];
   let line = await q.providerLine(userId);
