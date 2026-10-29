@@ -34,4 +34,9 @@ export {
 } from '@profullstack/x402-gateway/agents';
 
 export const robotsTxt = () =>
-  gatewayRobots({ siteUrl: config.siteUrl, disallow: DISALLOW, refused: ['AwarioBot'], training: [...TRAINING_AGENTS, ...SCRAPER_AGENTS] });
+  gatewayRobots({
+    siteUrl: config.siteUrl,
+    disallow: DISALLOW,
+    refused: ['AwarioBot'],
+    training: [...TRAINING_AGENTS, ...SCRAPER_AGENTS],
+  });

@@ -29,6 +29,7 @@ const legacySeal = (plain, secret) => {
 describe('sealing under the reader key', () => {
   test('locked: sealing and opening refuse, with a 423', () => {
     vault.resetUnlockStoreForTests();
+    vault.noteVaultOwner('u1');
     expect(() => seal('http://x/get.php?username=a&password=b', 'u1')).toThrow(
       vault.VaultLockedError,
     );
@@ -76,12 +77,20 @@ describe('sealing under the reader key', () => {
 });
 
 describe('the old server key', () => {
-  test('v1 values never open at runtime, even with PLAYLIST_SECRET set', () => {
-    vault.resetUnlockStoreForTests();
-    vault.unlockStore().unlock('u5', randomBytes(32), 3600);
-    const old = legacySeal('http://old/line', 'the-old-secret');
-    expect(isLegacySealed(old)).toBe(true);
-    expect(() => open(old, 'u5')).toThrow(/re-seal/);
+  test('v1 values still open while the migration is on, and refuse after the cutoff', () => {
+    const saved = { ...process.env };
+    try {
+      process.env.PLAYLIST_SECRET = 'the-old-secret';
+      vault.resetUnlockStoreForTests();
+      vault.unlockStore().unlock('u5', randomBytes(32), 3600);
+      const old = legacySeal('http://old/line', 'the-old-secret');
+      expect(isLegacySealed(old)).toBe(true);
+      expect(open(old, 'u5')).toBe('http://old/line');
+      process.env.LEGACY_KEY_MIGRATION = 'off';
+      expect(() => open(old, 'u5')).toThrow(/re-seal/);
+    } finally {
+      process.env = saved;
+    }
   });
 
   test('only the migration reads them, and not after the cutoff', () => {
@@ -115,5 +124,63 @@ describe('the worker', () => {
   test('without the internal URL and token, it asks nobody and stays locked', async () => {
     vault.resetUnlockStoreForTests();
     expect(await vault.ensurePlaylistKey('u6', {})).toBe(false);
+  });
+});
+
+describe('a reader with no vault yet (0.25.1)', () => {
+  const withSecret = (fn) => {
+    const saved = { ...process.env };
+    try {
+      process.env.PLAYLIST_SECRET = 'the-old-secret';
+      delete process.env.LEGACY_KEY_MIGRATION;
+      vault.resetUnlockStoreForTests();
+      vault.setVaultOwners([]);
+      return fn();
+    } finally {
+      process.env = saved;
+      vault.setVaultOwners([]);
+    }
+  };
+
+  test('reads their old lists and writes new ones under the legacy key', () =>
+    withSecret(() => {
+      const old = legacySeal('http://old/line', 'the-old-secret');
+      expect(open(old, 'n1')).toBe('http://old/line');
+      const fresh = seal('http://new/line', 'n1');
+      expect(fresh.startsWith('v1.')).toBe(true);
+      expect(open(fresh, 'n1')).toBe('http://new/line');
+      expect(openLegacy(fresh, { PLAYLIST_SECRET: 'the-old-secret' })).toBe('http://new/line');
+      expect(vault.canSealFor('n1')).toBe(true);
+    }));
+
+  test('the refresh worker does not postpone them as locked', () =>
+    withSecret(async () => {
+      expect(await vault.ensurePlaylistKey('n2')).toBe(true);
+    }));
+
+  test('once they have a vault, a locked reader writes nothing and gets a 423', () =>
+    withSecret(() => {
+      vault.noteVaultOwner('n3');
+      expect(vault.canSealFor('n3')).toBe(false);
+      expect(() => seal('http://x', 'n3')).toThrow(vault.VaultLockedError);
+    }));
+
+  test('without PLAYLIST_SECRET there is no legacy path: a 423, not plaintext', () => {
+    const saved = { ...process.env };
+    try {
+      delete process.env.PLAYLIST_SECRET;
+      vault.resetUnlockStoreForTests();
+      vault.setVaultOwners([]);
+      expect(() => seal('http://x', 'n4')).toThrow(vault.VaultLockedError);
+    } finally {
+      process.env = saved;
+    }
+  });
+
+  test('the settings form submits on Enter, and the bundles are IIFE-wrapped', async () => {
+    const page = await Bun.file(`${ROOT}apps/web/src/views/pages.jsx`).text();
+    expect(page).toContain('<form class="stack" data-vault-form>');
+    const build = await Bun.file(`${ROOT}apps/web/build-client.js`).text();
+    expect(build).toContain("format: 'iife'");
   });
 });

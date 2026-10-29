@@ -150,7 +150,8 @@ function fakeDb() {
     },
     async subjectsByImdbIds(ids) {
       const out = new Map();
-      for (const s of subjects.values()) if (s.imdbId && ids.includes(s.imdbId)) out.set(s.imdbId, s);
+      for (const s of subjects.values())
+        if (s.imdbId && ids.includes(s.imdbId)) out.set(s.imdbId, s);
       return out;
     },
     async subjectsByNormTitle(keys) {

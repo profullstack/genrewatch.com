@@ -1,6 +1,6 @@
 import * as q from '@genre/db/queries';
 import { openLegacy, seal } from './secretbox.js';
-import { legacyMigrationEnabled, playlistKeyFor } from './vault.js';
+import { legacyMigrationEnabled, playlistKeyFor, setVaultOwners } from './vault.js';
 
 /**
  * The one-shot move from the old server key (v1) to the reader's vault (v2).
@@ -86,4 +86,23 @@ export async function migrateChannels(userId, log = console.log) {
   }
   if (done) log(`[vault] re-sealed ${done} channel URLs for ${userId}`);
   return done;
+}
+
+/**
+ * Keep this process's set of vault owners current (vault.js usesLegacyKey). A
+ * failed read keeps the last set; a vault made in another process shows up
+ * within a minute, and its owner's first unlock re-seals anything written v1.
+ */
+export async function startVaultOwnerSync({ everyMs = 60_000, log = console.error } = {}) {
+  const load = async () => {
+    try {
+      setVaultOwners(await q.vaultOwnerIds());
+    } catch (err) {
+      log(`[vault] could not read vault owners: ${err?.message ?? err}`);
+    }
+  };
+  await load();
+  const timer = setInterval(load, everyMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }

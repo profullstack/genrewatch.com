@@ -7,6 +7,7 @@
     "start": "bun src/main.js"
   },
   "dependencies": {
+    "@genre/auth": "workspace:*",
     "@genre/catalog": "workspace:*",
     "@genre/config": "workspace:*",
     "@genre/db": "workspace:*",
