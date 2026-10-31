@@ -257,7 +257,7 @@ export const Layout = (props) => (
 
       <main id="main">{props.children}</main>
 
-      <footer>
+      <aside class="catalog-attribution muted" aria-label="Catalogue data attribution">
         {/* The providers this catalogue is actually built from. TMDB's terms
             require the disclaimer verbatim. */}
         <p class="muted">
@@ -288,7 +288,7 @@ export const Layout = (props) => (
           , furnished by <a href={dataSource.url}>{dataSource.name}</a>. This product uses the TMDB
           API but is not endorsed or certified by TMDB.
         </p>
-      </footer>
+      </aside>
       {/* The links, copyright and webring row; the pit.world footer is last. */}
       <ProfullstackFooter />
 
