@@ -39,6 +39,7 @@ import {
   createProfileStore,
   mountProfileRoutes,
   PROFILE_ENHANCE_SCRIPT,
+  saveOpenProfileContact,
   saveSignupProfile,
   validateProfile,
 } from '@profullstack/profile';
@@ -2557,6 +2558,7 @@ app.get('/api/v1/coinpay/oauth/callback', async (c) => {
     return back('/login', 'Sign in first, then connect CoinPay.');
 
   let claims;
+  let openprofileUrl = null;
   try {
     const r = await finishCoinpaySignIn({
       code,
@@ -2567,6 +2569,7 @@ app.get('/api/v1/coinpay/oauth/callback', async (c) => {
       redirectUri: coinpayRedirectUri(cfg),
       base: cfg.issuer,
     });
+    openprofileUrl = typeof r.userinfo?.openprofile_url === 'string' ? r.userinfo.openprofile_url : null;
     claims = {
       sub: r.sub,
       email: r.email ? r.email.slice(0, 320) : null,
@@ -2588,6 +2591,13 @@ app.get('/api/v1/coinpay/oauth/callback', async (c) => {
     return back(failPath, 'CoinPay sign-in failed. Try again.');
   }
   if (!resolved.ok) return back(failPath, resolved.error);
+  if (pending.mode === 'connect' && openprofileUrl) {
+    try {
+      await saveOpenProfileContact(profiles, String(resolved.userId), openprofileUrl);
+    } catch (err) {
+      console.warn('[coinpay-signin] OpenProfile import skipped:', err instanceof Error ? err.message : err);
+    }
+  }
   if (pending.mode === 'connect') return back(`${COINPAY_SETTINGS_PATH}?coinpay=connected`);
   if (me?.id === resolved.userId) return back(pending.next);
 
