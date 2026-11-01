@@ -2426,7 +2426,7 @@ export const Settings = ({
   // The reader's key vault: { app, exists, unlocked, expiresAt, legacy }.
   vault = null,
 }) => (
-  <Layout title="Settings" user={user}>
+  <Layout title="Settings" user={user} script="/vendor-profile.js">
     <h1>Settings</h1>
 
     {vault ? <KeyVaultCard user={user} vault={vault} /> : null}
@@ -2725,7 +2725,7 @@ export const Settings = ({
       {contactError ? <p class="feedback error">{contactError}</p> : null}
       {contactSaved ? <p class="feedback ok">Contact details saved.</p> : null}
       <form method="post" action="/api/settings/contact">
-        {raw(renderProfileFields({ fields: SIGNUP_FIELDS, values: contact ?? {} }))}
+        {raw(renderProfileFields({ fields: SIGNUP_FIELDS, values: contact ?? {}, importOpenProfile: true }))}
         <button class="cta" type="submit">
           Save contact details
         </button>
