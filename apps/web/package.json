@@ -23,7 +23,7 @@
     "@profullstack/footer": "latest",
     "@profullstack/leaderboard": "^0.3.1",
     "@profullstack/notifications": "^0.1.4",
-    "@profullstack/player": "0.16.0",
+    "@profullstack/player": "0.17.0",
     "@profullstack/profile": "0.1.8",
     "@profullstack/sealed-secrets": "0.2.0",
     "@profullstack/throttle": "^0.4.1",
