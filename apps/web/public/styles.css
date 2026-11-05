@@ -11,16 +11,16 @@
 @import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap");
 
 :root {
-  --ground: oklch(0.15 0.012 260);
-  --panel: oklch(0.205 0.014 260);
-  --panel2: oklch(0.245 0.015 260);
-  --line: oklch(0.3 0.016 260);
-  --fg: oklch(0.96 0.004 260);
-  --muted: oklch(0.68 0.012 260);
+  --ground: #080b10;
+  --panel: #13171e;
+  --panel2: #1c2128;
+  --line: #292e36;
+  --fg: #f0f2f4;
+  --muted: #9499a0;
   /* Two accents, same lightness and chroma, hue apart: attention vs urgency. */
-  --accent: oklch(0.72 0.19 45);
-  --live: oklch(0.72 0.19 25);
-  --ok: oklch(0.78 0.16 155);
+  --accent: #ff7527;
+  --live: #ff6a65;
+  --ok: #4ed589;
   --radius: 11px;
   --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
   --disp: "Barlow Condensed", var(--sans);
@@ -48,6 +48,7 @@ a {
   text-decoration: none;
 }
 a:hover {
+  color: #ff9960;
   color: oklch(0.8 0.16 45);
 }
 
@@ -119,6 +120,7 @@ main {
     max(1.15rem, env(safe-area-inset-right, 0px)) 0.35rem
     max(1.15rem, env(safe-area-inset-left, 0px));
   border-bottom: 1px solid var(--line);
+  background: linear-gradient(#10141a, var(--ground));
   background: linear-gradient(oklch(0.19 0.014 260), var(--ground));
   position: sticky;
   top: 0;
@@ -195,10 +197,12 @@ main {
 }
 .cta {
   background: var(--accent);
+  color: #150a06;
   color: oklch(0.16 0.02 45);
   border-color: var(--accent);
 }
 .cta:hover {
+  background: #ff8f52;
   background: oklch(0.78 0.17 45);
 }
 .cta:disabled {
@@ -273,7 +277,9 @@ li.event {
   margin-bottom: 0.5rem;
 }
 li.event.in {
+  border-color: rgba(255, 106, 101, 0.55);
   border-color: oklch(0.72 0.19 25 / 0.55);
+  background: linear-gradient(90deg, rgba(255, 106, 101, 0.1), var(--panel) 42%);
   background: linear-gradient(90deg, oklch(0.72 0.19 25 / 0.1), var(--panel) 42%);
 }
 
@@ -526,6 +532,7 @@ li.subject img {
 button.following {
   border-color: var(--accent);
   color: var(--accent);
+  background: rgba(255, 117, 39, 0.12);
   background: oklch(0.72 0.19 45 / 0.12);
 }
 
@@ -1185,6 +1192,7 @@ ul.comments li {
 .chip button:focus-visible {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 117, 39, 0.35);
   box-shadow: 0 0 0 3px oklch(0.72 0.19 45 / 0.35);
 }
 
@@ -1491,6 +1499,7 @@ button,
 
 .small-btn.danger {
   color: var(--live);
+  border-color: rgba(255, 106, 101, 0.45);
   border-color: oklch(0.72 0.19 25 / 0.45);
 }
 
@@ -1566,6 +1575,7 @@ button,
    specificity that can actually reach it. */
 .topbar nav a.cta,
 .topbar nav a.cta:hover {
+  color: #150a06;
   color: oklch(0.16 0.02 45);
 }
 .topbar nav a.ghost {
@@ -1602,6 +1612,7 @@ button,
 .cats .cat.current {
   background: var(--accent);
   border-color: var(--accent);
+  color: #150a06;
   color: oklch(0.16 0.02 45);
 }
 /* Sports leaves the site, so it is marked rather than styled like the rest. */
@@ -1770,6 +1781,7 @@ time.line.undated {
 .badge.kind-premiere,
 .badge.kind-season-premiere {
   background: var(--accent);
+  color: #150a06;
   color: oklch(0.16 0.02 45);
 }
 .badge.kind-launch {
@@ -2010,6 +2022,7 @@ li.result img {
 }
 .badge.owned {
   background: var(--ok);
+  color: #061009;
   color: oklch(0.16 0.02 155);
   flex: none;
 }
@@ -2499,3 +2512,20 @@ li.result img {
 /* Every line gets a card of its own now, so the one-line list this styled is
    gone. What replaced the old objection -- several credentials on one page -- is
    the masking, which was always what made showing one safe. */
+
+
+/* The sRGB values above keep the page readable on an engine without
+   oklch(); every modern one takes these originals back. */
+@supports (color: oklch(0 0 0)) {
+  :root {
+    --ground: oklch(0.15 0.012 260);
+    --panel: oklch(0.205 0.014 260);
+    --panel2: oklch(0.245 0.015 260);
+    --line: oklch(0.3 0.016 260);
+    --fg: oklch(0.96 0.004 260);
+    --muted: oklch(0.68 0.012 260);
+    --accent: oklch(0.72 0.19 45);
+    --live: oklch(0.72 0.19 25);
+    --ok: oklch(0.78 0.16 155);
+  }
+}
