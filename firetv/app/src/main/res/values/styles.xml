@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="tv_bg">#12161f</color>
+    <color name="tv_fg">#e7ecf4</color>
+    <color name="tv_accent">#00cdff</color>
+
+    <style name="TvTheme" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/tv_bg</item>
+        <item name="android:colorAccent">@color/tv_accent</item>
+        <item name="android:colorPrimary">@color/tv_bg</item>
+        <item name="android:colorPrimaryDark">@color/tv_bg</item>
+        <item name="android:textColor">@color/tv_fg</item>
+    </style>
+
+    <style name="TvDialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/tv_accent</item>
+        <item name="android:background">@color/tv_bg</item>
+        <item name="android:textColor">@color/tv_fg</item>
+    </style>
+</resources>
