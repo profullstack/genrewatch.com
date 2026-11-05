@@ -5,11 +5,12 @@
  * return a short string the activity acts on. Written in ES5 on purpose: Fire
  * OS 5 devices still ship WebView 70-something.
  */
-(function () {
+(() => {
   if (window.__pitTV) return;
   window.__pitTV = true;
 
-  var SEL = 'a[href],button:not([disabled]),input:not([type=hidden]):not([disabled]),' +
+  var SEL =
+    'a[href],button:not([disabled]),input:not([type=hidden]):not([disabled]),' +
     'select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])';
   var TEXT = /^(search|text|email|url|tel|number|password|)$/;
   var field = null; // the text field OK was pressed on, while the keyboard is up
@@ -17,8 +18,11 @@
   // The focus ring is set through CSSOM on the element itself: genrewatch.com (and
   // many sites) ship style-src 'self', which blocks an injected <style> but not
   // element.style. A TV needs a ring you can see from the couch.
-  var RING = [['outline', '4px solid #00cdff'], ['outline-offset', '3px'],
-    ['box-shadow', '0 0 0 8px rgba(18,22,31,.85)']];
+  var RING = [
+    ['outline', '4px solid #00cdff'],
+    ['outline-offset', '3px'],
+    ['box-shadow', '0 0 0 8px rgba(18,22,31,.85)'],
+  ];
   function ring(el, on) {
     if (!el || !el.style) return;
     for (var i = 0; i < RING.length; i++) {
@@ -30,8 +34,20 @@
   function addStyle() {
     if (styled) return;
     styled = true;
-    document.addEventListener('focusin', function (e) { ring(e.target, true); }, true);
-    document.addEventListener('focusout', function (e) { ring(e.target, false); }, true);
+    document.addEventListener(
+      'focusin',
+      (e) => {
+        ring(e.target, true);
+      },
+      true,
+    );
+    document.addEventListener(
+      'focusout',
+      (e) => {
+        ring(e.target, false);
+      },
+      true,
+    );
     var a = document.activeElement;
     if (a && a !== document.body && a !== document.documentElement) ring(a, true);
   }
@@ -50,11 +66,19 @@
   function isText(el) {
     if (!el) return false;
     if (el.tagName === 'TEXTAREA') return !el.readOnly;
-    return el.tagName === 'INPUT' && TEXT.test((el.getAttribute('type') || '').toLowerCase()) && !el.readOnly;
+    return (
+      el.tagName === 'INPUT' &&
+      TEXT.test((el.getAttribute('type') || '').toLowerCase()) &&
+      !el.readOnly
+    );
   }
 
   function go(el) {
-    try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+    try {
+      el.focus({ preventScroll: true });
+    } catch (e) {
+      el.focus();
+    }
     var r = el.getBoundingClientRect();
     if (r.top < 60 || r.bottom > window.innerHeight - 60) {
       window.scrollBy(0, r.top + r.height / 2 - window.innerHeight / 2);
@@ -79,11 +103,14 @@
     return 0;
   }
 
-  window.pitNav = function (dir) {
+  window.pitNav = (dir) => {
     addStyle();
     var cur = document.activeElement;
     var all = document.querySelectorAll(SEL);
-    var vh = window.innerHeight, i, el, r;
+    var vh = window.innerHeight,
+      i,
+      el,
+      r;
 
     if (!cur || cur === document.body || cur === document.documentElement || !shown(cur)) {
       for (i = 0; i < all.length; i++) {
@@ -96,19 +123,38 @@
     }
 
     var c = cur.getBoundingClientRect();
-    var best = null, bestScore = Infinity, main, cross;
+    var best = null,
+      bestScore = Infinity,
+      main,
+      cross;
     for (i = 0; i < all.length; i++) {
       el = all[i];
       if (el === cur || cur.contains(el) || el.contains(cur) || !shown(el)) continue;
       r = el.getBoundingClientRect();
-      if (dir === 'down') { if (r.top < c.bottom - 4) continue; main = r.top - c.bottom; cross = gap(c.left, c.right, r.left, r.right); }
-      else if (dir === 'up') { if (r.bottom > c.top + 4) continue; main = c.top - r.bottom; cross = gap(c.left, c.right, r.left, r.right); }
-      else if (dir === 'right') { if (r.left < c.right - 4) continue; main = r.left - c.right; cross = gap(c.top, c.bottom, r.top, r.bottom); }
-      else { if (r.right > c.left + 4) continue; main = c.left - r.right; cross = gap(c.top, c.bottom, r.top, r.bottom); }
+      if (dir === 'down') {
+        if (r.top < c.bottom - 4) continue;
+        main = r.top - c.bottom;
+        cross = gap(c.left, c.right, r.left, r.right);
+      } else if (dir === 'up') {
+        if (r.bottom > c.top + 4) continue;
+        main = c.top - r.bottom;
+        cross = gap(c.left, c.right, r.left, r.right);
+      } else if (dir === 'right') {
+        if (r.left < c.right - 4) continue;
+        main = r.left - c.right;
+        cross = gap(c.top, c.bottom, r.top, r.bottom);
+      } else {
+        if (r.right > c.left + 4) continue;
+        main = c.left - r.right;
+        cross = gap(c.top, c.bottom, r.top, r.bottom);
+      }
       // Sideways moves only go to things on roughly the same row.
       if ((dir === 'left' || dir === 'right') && cross > c.height * 2) continue;
       var score = Math.max(main, 0) + cross * 3;
-      if (score < bestScore) { bestScore = score; best = el; }
+      if (score < bestScore) {
+        bestScore = score;
+        best = el;
+      }
     }
 
     // Long gaps (a block of prose, a big image) are read by scrolling, not skipped.
@@ -121,17 +167,20 @@
 
   // OK on the remote. Text fields go to the native Fire TV keyboard, which a
   // WebView never raises reliably; everything else is clicked here.
-  window.pitEnter = function () {
+  window.pitEnter = () => {
     addStyle();
     var el = document.activeElement;
     if (!el || el === document.body) return 'none';
     if (isText(el)) {
       field = el;
-      return 'text:' + JSON.stringify({
-        value: el.value || '',
-        hint: el.getAttribute('placeholder') || el.getAttribute('aria-label') || '',
-        type: (el.getAttribute('type') || 'text').toLowerCase()
-      });
+      return (
+        'text:' +
+        JSON.stringify({
+          value: el.value || '',
+          hint: el.getAttribute('placeholder') || el.getAttribute('aria-label') || '',
+          type: (el.getAttribute('type') || 'text').toLowerCase(),
+        })
+      );
     }
     if (el.tagName === 'SELECT') return 'native';
     el.click();
@@ -139,17 +188,22 @@
   };
 
   // The keyboard's answer goes back into the field; a search box submits.
-  window.pitFill = function (value) {
+  window.pitFill = (value) => {
     var el = field && document.contains(field) ? field : document.activeElement;
     field = null;
     if (!isText(el)) return 'gone';
     el.value = value;
-    try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+    try {
+      el.focus({ preventScroll: true });
+    } catch (e) {
+      el.focus();
+    }
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     var type = (el.getAttribute('type') || '').toLowerCase();
     if (el.form && (type === 'search' || el.name === 'q')) {
-      if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit();
+      if (el.form.requestSubmit) el.form.requestSubmit();
+      else el.form.submit();
       return 'submitted';
     }
     return 'filled';
