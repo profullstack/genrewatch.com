@@ -16,6 +16,7 @@ import * as q from '@genre/db/queries';
 import * as live from '@genre/live';
 import { sendInviteEmail, sendLoginLink } from '@genre/notify';
 import * as pay from '@genre/payments';
+import { grantCoinpayPass } from '@genre/payments/coinpay-pass';
 import * as member from '@genre/payments/membership';
 import {
   claimStreamSlot,
@@ -2558,6 +2559,7 @@ app.get('/api/v1/coinpay/oauth/callback', async (c) => {
     return back('/login', 'Sign in first, then connect CoinPay.');
 
   let claims;
+  let pass = null;
   let openprofileUrl = null;
   try {
     const r = await finishCoinpaySignIn({
@@ -2570,6 +2572,7 @@ app.get('/api/v1/coinpay/oauth/callback', async (c) => {
       base: cfg.issuer,
     });
     openprofileUrl = typeof r.userinfo?.openprofile_url === 'string' ? r.userinfo.openprofile_url : null;
+    pass = r.pass ?? r.userinfo?.pass ?? null;
     claims = {
       sub: r.sub,
       email: r.email ? r.email.slice(0, 320) : null,
@@ -2591,6 +2594,18 @@ app.get('/api/v1/coinpay/oauth/callback', async (c) => {
     return back(failPath, 'CoinPay sign-in failed. Try again.');
   }
   if (!resolved.ok) return back(failPath, resolved.error);
+  // Profullstack Pass: the claim is only seen here, so an active pass becomes a
+  // free Premium term until it expires (once per pass, bound to the CoinPay sub).
+  try {
+    await grantCoinpayPass(sql, {
+      userId: resolved.userId,
+      sub: claims.sub,
+      pass,
+      currency: config.membership.currency,
+    });
+  } catch (err) {
+    console.error('[coinpay-signin] pass', err instanceof Error ? err.message : err);
+  }
   if (pending.mode === 'connect' && openprofileUrl) {
     try {
       await saveOpenProfileContact(profiles, String(resolved.userId), openprofileUrl);

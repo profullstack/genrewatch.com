@@ -125,6 +125,11 @@ export const PremiumPage = ({
                 major coin or PayPal. It does not renew itself — there is nothing to cancel and no
                 card on file.
               </p>
+              <p class="muted">
+                Deposit $99 in your CoinPay wallet and get a free month:{' '}
+                <a href="https://coinpayportal.com/pass">CoinPay Pass</a>. Sign in with CoinPay to
+                use it.
+              </p>
               {user ? (
                 <form method="post" action="/api/membership/buy">
                   <button class="cta" type="submit">
