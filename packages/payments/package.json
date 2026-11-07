@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.js",
-    "./membership": "./src/membership.js"
+    "./membership": "./src/membership.js",
+    "./coinpay-pass": "./src/coinpay-pass.js"
   }
 }
