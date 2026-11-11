@@ -141,6 +141,15 @@ export const Layout = (props) => (
           async
         />
       ) : null}
+      {/* WebMCP (@profullstack/webmcp): site_info, open_page and search_site (genres and
+          subjects, /api/v1/search) for the AI agent in the visitor's browser. */}
+      <script
+        type="module"
+        data-webmcp=""
+        src="https://cdn.jsdelivr.net/npm/@profullstack/webmcp@0/src/embed.js"
+        data-search-api="/api/v1/search?q={query}&limit={limit}"
+        data-pages='{"genres":"/genres","feeds":"/feeds","live_tv":"/live","my_calendar":"/following","premium":"/premium"}'
+      />
     </head>
     {/* Carries the zone the server has on file, so app.js can report a correction
         from any page rather than only from settings -- someone who never opens
