@@ -278,7 +278,10 @@ const crawlGateway = createGateway({
    */
   denyCidrs: OVH_RANGES,
   chargeSpoofedBrowsers: true,
-  exempt: (request) => (request.headers.get('cookie') ?? '').includes(`${config.session.cookie}=`),
+  // A session cookie that is merely present is a hint, never a pass (x402-gateway
+  // 0.18.3): it spares a signed-in reader's odd browser string, but GPTBot with a
+  // made-up cookie is still charged. It used to be `exempt`, which let it read free.
+  sessionCookie: config.session.cookie,
   contact: `${config.siteUrl}/contact`,
   /*
    * Write the sale down. Until now a pass existed only for as long as the
